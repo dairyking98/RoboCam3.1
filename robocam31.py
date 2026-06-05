@@ -5,11 +5,12 @@ import cv2
 from PIL import Image, ImageTk
 import os
 import glob
+import time
 
 from robocam.config import get_config
 from robocam.motion import MotionController
 from robocam.camera import Camera
-from robocam.calibration import CalibrationManager
+from robocam.calibration import CalibrationManager, WellPlate
 from robocam.experiment import ExperimentRunner
 
 class App:
@@ -33,7 +34,8 @@ class App:
         try:
             self.motion = MotionController(simulate=self.simulate)
             self.exp_runner = ExperimentRunner(self.motion, self.camera)
-            self.lbl_status.config(text=f"Connected: {self.config.get('hardware.motion_backend', 'marlin').upper()}", foreground="green")
+            backend_name = self.config.get("hardware.motion_backend", "marlin").upper()
+            self.lbl_status.config(text=f"Connected: {backend_name}", foreground="green")
             self._update_pos_label()
         except Exception as e:
             self.lbl_status.config(text=f"Connection Error: {e}", foreground="red")
@@ -143,10 +145,15 @@ class App:
         self.var_w = tk.IntVar(value=12)
         self.var_d = tk.IntVar(value=8)
         ttk.Entry(size_frame, textvariable=self.var_w, width=5).pack(side=tk.LEFT)
-        ttk.Label(size_frame, text="x").pack(side=tk.LEFT)
+        ttk.Label(size_frame, text="cols x").pack(side=tk.LEFT, padx=2)
         ttk.Entry(size_frame, textvariable=self.var_d, width=5).pack(side=tk.LEFT)
+        ttk.Label(size_frame, text="rows").pack(side=tk.LEFT, padx=2)
         
-        ttk.Button(frame, text="Save Calibration", command=self._save_calib).grid(row=6, column=0, columnspan=2, pady=20)
+        ttk.Label(frame, text="Pattern:").grid(row=6, column=0, sticky=tk.W, pady=5)
+        self.var_pattern = tk.StringVar(value=WellPlate.PATTERN_RASTER)
+        ttk.Combobox(frame, textvariable=self.var_pattern, values=[WellPlate.PATTERN_RASTER, WellPlate.PATTERN_SNAKE], state="readonly").grid(row=6, column=1, sticky=tk.W)
+        
+        ttk.Button(frame, text="Save Calibration", command=self._save_calib).grid(row=7, column=0, columnspan=2, pady=20)
         
     def _build_exp_tab(self):
         frame = ttk.Frame(self.tab_exp)
@@ -174,6 +181,9 @@ class App:
         self.btn_start.pack(side=tk.LEFT, padx=5)
         self.btn_stop = ttk.Button(ctrl_frame, text="Stop", command=self._stop_exp, state=tk.DISABLED)
         self.btn_stop.pack(side=tk.LEFT, padx=5)
+        
+        self.lbl_exp_status = ttk.Label(frame, text="Status: Ready", font=("Arial", 10, "italic"), foreground="blue")
+        self.lbl_exp_status.grid(row=4, column=0, columnspan=2, pady=10, sticky=tk.W)
         
         self._refresh_cals()
         
@@ -235,6 +245,7 @@ class App:
     def _save_calib(self):
         self.cal_mgr.width = self.var_w.get()
         self.cal_mgr.depth = self.var_d.get()
+        self.cal_mgr.pattern = self.var_pattern.get()
         try:
             name = "calib_" + str(int(time.time()))
             self.cal_mgr.save(name)
@@ -243,6 +254,10 @@ class App:
         except Exception as e:
             messagebox.showerror("Error", str(e))
             
+    def _update_exp_status(self, msg):
+        self.lbl_exp_status.config(text=f"Status: {msg}")
+        self.root.update_idletasks()
+
     def _start_exp(self):
         if not self.motion or not self.exp_runner:
             messagebox.showerror("Error", "Motion controller not connected.")
@@ -264,7 +279,13 @@ class App:
         self.btn_stop.config(state=tk.NORMAL)
         
         def task():
-            self.exp_runner.run(self.var_exp_name.get(), positions, labels, self.var_delay.get())
+            self.exp_runner.run(
+                self.var_exp_name.get(), 
+                positions, 
+                labels, 
+                self.var_delay.get(),
+                callback=lambda msg: self.root.after(0, self._update_exp_status, msg)
+            )
             self.root.after(0, self._exp_done)
             
         threading.Thread(target=task, daemon=True).start()
@@ -303,7 +324,10 @@ class App:
         
     def on_close(self):
         self.camera.stop()
-        self.exp_runner.stop()
+        if self.exp_runner:
+            self.exp_runner.stop()
+        if self.motion:
+            self.motion.disconnect()
         self.root.destroy()
 
 if __name__ == "__main__":
