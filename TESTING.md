@@ -1,61 +1,139 @@
-# RoboCam 3.1 Testing & QA Plan
+# RoboCam 3.1 — Testing & QA Plan
 
-This document outlines the testing procedures, known issues, and to-do items to be executed during the live Raspberry Pi session via Tailscale.
-
----
-
-## 1. Hardware Connection Tests
-
-### Camera Detection
-- [ ] **Player One SDK Detection**: Verify that `camera.py` successfully locates the Player One SDK on the Pi.
-- [ ] **Player One Capture**: Verify that the Mars 662M initializes, sets `POA_RAW8` format, and successfully streams frames to the Tkinter GUI.
-- [ ] **Picamera2 Fallback**: If the Player One camera is unplugged, verify that the Pi HQ camera initializes instead.
-- [ ] **Color Space**: Ensure the live preview colors look correct (Player One RAW8 is converted to BGR, then to RGB for Tkinter).
-
-### Motion Controller Connection
-- [ ] **Marlin (Serial)**: Connect via USB, verify auto-baud rate detection, and confirm the `Connected: MARLIN` status appears.
-- [ ] **Klipper (Network)**: Switch backend to Klipper, enter the Pi/Mainsail IP, and confirm `Connected: KLIPPER` status.
-- [ ] **M400 Capability Check**: (Marlin only) Verify the console logs show the `M400` test passing on the first move.
+This document outlines the testing procedures, known issues, and to-do items to be executed during the live Raspberry Pi session via Tailscale. Check off items as they are verified.
 
 ---
 
-## 2. Motion & Calibration Tests
+## Pre-Session Checklist (Before Connecting)
+
+- [ ] Pull the latest code on the Pi: `git pull origin master`
+- [ ] Run `bash setup.sh` if this is a fresh clone, or if dependencies have changed
+- [ ] Confirm the Player One SDK was installed: check that `PlayerOne_Camera_SDK_Linux_V3.10.0/python/pyPOACamera.py` exists
+- [ ] Confirm the Mars 662M is plugged in via USB
+- [ ] Confirm the printer is powered on and connected (USB for Marlin, or network for Klipper)
+- [ ] Launch the app: `bash start_robocam.sh`
+
+---
+
+## 1. Setup Script Tests
+
+- [ ] `setup.sh` completes without errors on the Pi
+- [ ] Virtual environment is created with `--system-site-packages` (required for libcamera)
+- [ ] `picamera2` installs successfully (or is already present via system packages)
+- [ ] `install_playerone_sdk.py` downloads and extracts the correct ARM64 `.so` library
+- [ ] `pyPOACamera.py` is patched correctly (check for `RTLD_GLOBAL` in the file after install)
+- [ ] `start_robocam.sh` activates the venv and launches the app cleanly
+
+---
+
+## 2. Camera Detection Tests
+
+- [ ] Player One SDK is auto-detected and the Mars 662M initializes on startup
+- [ ] Live preview appears in the Motion & Camera tab
+- [ ] Preview colors look correct (RAW8 grayscale converted to BGR/RGB properly)
+- [ ] Status bar shows `Camera: playerone`
+- [ ] If the Player One camera is unplugged, the app falls back to Picamera2 or cv2 without crashing
+
+---
+
+## 3. Motion Controller Tests
+
+### Marlin (Serial)
+- [ ] USB serial port is auto-detected (check console for `Connected to printer on /dev/ttyUSB0`)
+- [ ] Status bar shows `Connected: MARLIN`
+- [ ] `M400` capability is tested on the first move and result is logged to console
+- [ ] Position label updates after each jog
+
+### Klipper (Network)
+- [ ] Switch backend to `klipper` and enter the Tailscale IP of the printer
+- [ ] Click **Apply & Reconnect** and confirm `Connected: KLIPPER` in green
+- [ ] Position is polled from Moonraker (`/printer/objects/query?toolhead`) and displayed correctly
 
 ### Jogging & Homing
-- [ ] **Homing**: Click "Home All" and verify the printer homes X, Y, and Z.
-- [ ] **Jogging**: Test the X/Y/Z jog buttons at 0.1mm, 1.0mm, and 10.0mm steps.
-- [ ] **Position Sync**: Verify the UI position label (X/Y/Z) updates correctly after every jog.
-
-### 4-Corner Calibration
-- [ ] **Setting Corners**: Jog to all 4 corners of a well plate and click the respective "Set" buttons.
-- [ ] **Interpolation Math**: Save a 12x8 calibration and inspect the generated JSON file in `config/calibrations/` to ensure the `interpolated_positions` look mathematically sound (no wild jumps).
-- [ ] **Snake vs Raster**: Generate two calibrations (one Snake, one Raster) and verify the JSON coordinate ordering reflects the pattern choice.
+- [ ] **Home All**: printer homes X, Y, Z and position label resets to `0.00`
+- [ ] **Jog X+/X-** at 0.1mm, 1.0mm, 10.0mm steps
+- [ ] **Jog Y+/Y-** at 0.1mm, 1.0mm, 10.0mm steps
+- [ ] **Jog Z+/Z-** at 0.1mm, 1.0mm, 10.0mm steps
+- [ ] Position label updates correctly after every jog move
 
 ---
 
-## 3. Experiment Runner Tests
+## 4. Calibration Tests
 
-### Execution
-- [ ] **Load Calibration**: Select a saved calibration in the Experiment tab.
-- [ ] **Start Run**: Click Start and verify the printer moves to `A1`.
-- [ ] **Delay & Capture**: Verify the printer pauses for the configured delay, captures the image, and then moves to `A2` (or the next well).
-- [ ] **Status Feedback**: Verify the UI status label updates correctly (`Moving to A1...` -> `Waiting for stabilization...` -> `Recording...`).
-- [ ] **Pause/Stop**: Test the Stop button mid-experiment to ensure the thread exits gracefully without crashing the app.
-
-### Data Output
-- [ ] **Images**: Check the `outputs/` directory to ensure JPGs are saved correctly and are not corrupted.
-- [ ] **CSV Log**: Open the generated CSV and verify the columns (Well, X, Y, Z, Image_File, Timestamp) are populated correctly.
+- [ ] Jog to all 4 corners of a well plate and set UL, UR, LL, LR
+- [ ] Save a 12×8 Raster calibration and inspect the JSON in `config/calibrations/`
+- [ ] Verify the `interpolated_positions` array contains 96 entries with no wild coordinate jumps
+- [ ] Save a 12×8 Snake calibration and verify the coordinate ordering reverses on odd rows
+- [ ] Load the calibration in the Experiment tab and confirm it appears in the dropdown
 
 ---
 
-## 4. Known Issues & To-Do List
+## 5. Experiment Runner Tests
 
-### To-Do Before Deployment
-- [ ] **Exposure & Gain Controls**: The current `camera.py` hardcodes the Player One exposure and gain. We need to expose these settings to the UI (likely in the Motion & Camera tab) so they can be adjusted live.
-- [ ] **Z-Axis Handling During Experiment**: Currently, the experiment moves X, Y, and Z simultaneously. We may need to add a "Z-hop" feature (raise Z, move XY, lower Z) if the lens is too close to the well plate walls during travel.
-- [ ] **Laser/GPIO Support**: RoboCam-Suite 2.0 had GPIO support for triggering a laser. This was omitted in 3.1 for simplicity, but we need to confirm if it needs to be ported back.
-- [ ] **Resolution Settings**: Hardcoded to `1920x1080` in `camera.py`. Need to confirm if the Mars 662M should run at its native max resolution instead.
+- [ ] Select a calibration and click **Start Experiment**
+- [ ] Printer moves to well `A1` and the status label reads `Moving to A1 (1/96)...`
+- [ ] Printer pauses for the configured delay and status reads `Waiting for stabilization at A1...`
+- [ ] Camera captures and status reads `Recording well A1...`
+- [ ] Printer moves to `A2` (Raster) or `A12` (Snake) next
+- [ ] **Stop** button halts the experiment cleanly without crashing the GUI
+- [ ] Check `outputs/` for the timestamped experiment folder
+- [ ] Verify JPG images are saved and not corrupted
+- [ ] Open the CSV and verify all columns (Well, X, Y, Z, Image_File, Timestamp) are populated
 
-### Known Quirks
-- **Tkinter Threading**: Tkinter is not thread-safe. The `update_camera_preview` loop runs on the main thread via `.after()`, while the `ExperimentRunner` runs in a background thread. The `callback` passed to the runner uses `.after(0, ...)` to safely update the UI, but heavy I/O during capture could theoretically cause slight UI stutters.
-- **Player One SDK Lock**: The Player One SDK is notoriously thread-unsafe. `camera.py` currently does not implement the strict threading lock seen in Suite 2.0 because the capture loop here is simpler, but if crashes occur during experiments, a `threading.Lock()` around `GetImageData` will need to be added.
+---
+
+## 6. Known Issues
+
+The following issues are known and must be addressed before the system is considered production-ready.
+
+**Exposure & Gain Controls** — The Player One camera exposure time and gain are currently hardcoded in `camera.py`. These need to be exposed as adjustable controls in the Motion & Camera tab (sliders or entry fields) so the user can tune image brightness live without editing code.
+
+**Z-Hop During Travel** — The experiment runner currently moves X, Y, and Z simultaneously in a single `G0` command. If the lens is positioned very close to the well plate walls, this could cause a collision during lateral travel. A configurable Z-hop (raise Z before XY move, lower Z at destination) needs to be added to the `ExperimentRunner`.
+
+**Player One SDK Thread Safety** — The Player One SDK is not thread-safe. The current `camera.py` does not implement a mutex around `GetImageData`. If frame corruption or crashes occur during experiments (when the preview loop and the capture call both try to read from the camera simultaneously), a `threading.Lock()` must be added around all SDK calls, matching the pattern used in RoboCam-Suite 2.0.
+
+**Resolution Configuration** — The camera resolution is hardcoded to `1920×1080`. The Mars 662M has a native maximum resolution that should be confirmed and set as the default, with the option to select lower resolutions for faster preview frame rates.
+
+---
+
+## 7. Klipper Peripheral Control (Future Development)
+
+This section tracks the planned implementation of custom Klipper peripheral control for repurposing unused 3D printer hardware (extruder, fans, heated bed, GPIO pins) for laboratory automation tasks such as laser control, sample heating, and media dispensing.
+
+### Phase 1 — Foundation (Next Sprint)
+- [ ] Create `robocam/peripherals.py` with a `KlipperPeripheralController` class
+- [ ] Implement `laser_on()` / `laser_off()` using `SET_PIN PIN=laser VALUE=1/0`
+- [ ] Implement `set_fan_speed(speed: float)` using `M106 S<0-255>`
+- [ ] Add a **Peripherals** tab to the GUI with laser toggle and fan speed slider
+- [ ] Document the required `printer.cfg` additions for each peripheral
+
+### Phase 2 — Temperature Control
+- [ ] Implement `set_bed_temp(celsius: float)` and `wait_for_bed_temp()` using `M140` / `M190`
+- [ ] Implement `set_hotend_temp(celsius: float)` using `M104` / `M109`
+- [ ] Add temperature readback via Moonraker (`/printer/objects/query?heater_bed&extruder`)
+- [ ] Add temperature display widgets to the Peripherals tab
+
+### Phase 3 — Extruder as Pump / Dispenser
+- [ ] Implement `dispense(volume_ul: float, flow_rate: float)` using `G1 E<mm> F<speed>`
+- [ ] Create a calibration routine to map extruder steps to dispensed volume (µL/mm)
+- [ ] Integrate dispense call into the experiment loop (dispense at each well before capture)
+
+### Phase 4 — Marlin Compatibility Layer
+- [ ] Audit which peripheral commands are compatible with Marlin (M106, M104, M140, G1 E)
+- [ ] Add conditional logic in `peripherals.py` so the same API works on both backends
+- [ ] Document which features are Klipper-only vs cross-compatible
+
+---
+
+## 8. To-Do Summary
+
+| Priority | Item | Status |
+|---|---|---|
+| High | Exposure & gain controls in GUI | Pending |
+| High | Z-hop during experiment travel | Pending |
+| High | Player One SDK thread lock | Pending |
+| Medium | Resolution config in GUI | Pending |
+| Medium | Peripherals tab (laser, fan) | Planned |
+| Medium | Temperature control widgets | Planned |
+| Low | Extruder as pump/dispenser | Planned |
+| Low | Marlin peripheral compatibility layer | Planned |
