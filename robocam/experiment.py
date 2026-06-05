@@ -27,9 +27,14 @@ class ExperimentRunner:
         self.current_well = ""
         self.status_msg = "Ready"
         
+        self.is_fast_raw_mode = False
+        self.last_written_image_path = None
+        
     def run(self, name: str, positions: List[Tuple[float, float, float]], labels: List[str], delay_per_well: float = 1.0, callback=None, fast_raw_mode: bool = False):
         self.running = True
         self.paused = False
+        self.is_fast_raw_mode = fast_raw_mode
+        self.last_written_image_path = None
         self.status_msg = "Starting experiment..."
         if callback: callback(self.status_msg)
         
@@ -99,6 +104,7 @@ class ExperimentRunner:
                             if self.camera.backend == "picamera2":
                                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                             cv2.imwrite(img_path, frame)
+                            self.last_written_image_path = img_path
                         else:
                             logger.warning(f"Failed to capture frame for well {label}")
                         
@@ -117,6 +123,7 @@ class ExperimentRunner:
         finally:
             self.running = False
             self.current_well = ""
+            self.is_fast_raw_mode = False
             
     def stop(self):
         self.running = False

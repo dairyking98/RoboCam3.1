@@ -80,6 +80,11 @@ This document outlines the testing procedures, known issues, and to-do items to 
 - [ ] Verify JPG images are saved and not corrupted
 - [ ] Open the CSV and verify all columns (Well, X, Y, Z, Image_File, Timestamp) are populated
 
+### Preview Modes
+- [ ] **Idle**: Live high-framerate preview with green crosshairs is displayed.
+- [ ] **Standard Recording**: Preview updates slowly (0.5s) by polling the last saved `.jpg` to avoid SDK thread contention. Crosshairs are hidden.
+- [ ] **Fast Raw Recording**: Preview is replaced by a black placeholder reading "Preview disabled during Fast Raw Capture".
+
 ---
 
 ## 6. Known Issues

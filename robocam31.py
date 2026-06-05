@@ -358,6 +358,31 @@ class App:
         messagebox.showinfo("Done", "Experiment completed or stopped.")
         
     def update_camera_preview(self):
+        # Determine the preview mode based on experiment state
+        is_experiment_running = self.exp_runner and self.exp_runner.running
+        
+        if is_experiment_running and self.exp_runner.is_fast_raw_mode:
+            # Mode 3: Fast Raw Capture -> Disable live preview to avoid SDK lock contention
+            self._display_placeholder("Preview disabled during Fast Raw Capture")
+            self.root.after(500, self.update_camera_preview)
+            return
+            
+        if is_experiment_running and not self.exp_runner.is_fast_raw_mode:
+            # Mode 2: Standard Recording -> Poll last written frame from disk (slow FPS)
+            last_path = self.exp_runner.last_written_image_path
+            if last_path and os.path.exists(last_path):
+                try:
+                    # Read from disk to avoid interrupting the camera stream
+                    frame = cv2.imread(last_path)
+                    if frame is not None:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        self._render_frame_to_gui(frame, add_crosshair=False)
+                except Exception:
+                    pass
+            self.root.after(500, self.update_camera_preview)
+            return
+            
+        # Mode 1: Idle -> Direct live frame to preview
         if self.camera.running:
             frame = self.camera.get_frame()
             if frame is not None:
@@ -365,21 +390,35 @@ class App:
                     pass # already rgb
                 else:
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                # Add crosshair
-                h, w = frame.shape[:2]
-                cv2.line(frame, (w//2, 0), (w//2, h), (0, 255, 0), 1)
-                cv2.line(frame, (0, h//2), (w, h//2), (0, 255, 0), 1)
-                
-                # Resize for display
-                frame = cv2.resize(frame, (640, 480))
-                
-                img = Image.fromarray(frame)
-                imgtk = ImageTk.PhotoImage(image=img)
-                self.cam_label.imgtk = imgtk
-                self.cam_label.configure(image=imgtk)
+                self._render_frame_to_gui(frame, add_crosshair=True)
                 
         self.root.after(33, self.update_camera_preview)
+        
+    def _display_placeholder(self, text):
+        """Displays a black frame with white text."""
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text_size = cv2.getTextSize(text, font, 0.8, 2)[0]
+        text_x = (640 - text_size[0]) // 2
+        text_y = (480 + text_size[1]) // 2
+        cv2.putText(frame, text, (text_x, text_y), font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        img = Image.fromarray(frame)
+        imgtk = ImageTk.PhotoImage(image=img)
+        self.cam_label.imgtk = imgtk
+        self.cam_label.configure(image=imgtk)
+        
+    def _render_frame_to_gui(self, frame, add_crosshair=True):
+        """Helper to resize, optionally draw crosshair, and update the Tkinter label."""
+        h, w = frame.shape[:2]
+        if add_crosshair:
+            cv2.line(frame, (w//2, 0), (w//2, h), (0, 255, 0), 1)
+            cv2.line(frame, (0, h//2), (w, h//2), (0, 255, 0), 1)
+            
+        frame = cv2.resize(frame, (640, 480))
+        img = Image.fromarray(frame)
+        imgtk = ImageTk.PhotoImage(image=img)
+        self.cam_label.imgtk = imgtk
+        self.cam_label.configure(image=imgtk)
         
     def on_close(self):
         self.camera.stop()
