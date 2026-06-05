@@ -19,13 +19,25 @@ class App:
         self.root.geometry("1000x800")
         
         self.simulate = False
-        self.motion = MotionController(simulate=self.simulate)
+        self.config = get_config()
+        self.motion = None
         self.camera = Camera(simulate=self.simulate)
         self.cal_mgr = CalibrationManager()
-        self.exp_runner = ExperimentRunner(self.motion, self.camera)
+        self.exp_runner = None
         
         self._build_gui()
+        self._connect_motion()
         self.update_camera_preview()
+        
+    def _connect_motion(self):
+        try:
+            self.motion = MotionController(simulate=self.simulate)
+            self.exp_runner = ExperimentRunner(self.motion, self.camera)
+            self.lbl_status.config(text=f"Connected: {self.config.get('hardware.motion_backend', 'marlin').upper()}", foreground="green")
+            self._update_pos_label()
+        except Exception as e:
+            self.lbl_status.config(text=f"Connection Error: {e}", foreground="red")
+            self.motion = None
         
     def _build_gui(self):
         notebook = ttk.Notebook(self.root)
@@ -44,6 +56,24 @@ class App:
         self._build_exp_tab()
         
     def _build_motion_tab(self):
+        # Top: Connection Settings
+        conn_frame = ttk.LabelFrame(self.tab_motion, text="Connection Settings")
+        conn_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(conn_frame, text="Backend:").grid(row=0, column=0, padx=5, pady=5)
+        self.var_backend = tk.StringVar(value=self.config.get("hardware.motion_backend", "marlin"))
+        cb_backend = ttk.Combobox(conn_frame, textvariable=self.var_backend, values=["marlin", "klipper"], state="readonly", width=10)
+        cb_backend.grid(row=0, column=1, padx=5, pady=5)
+        
+        ttk.Label(conn_frame, text="Klipper Host:").grid(row=0, column=2, padx=5, pady=5)
+        self.var_klipper_host = tk.StringVar(value=self.config.get("hardware.klipper.host", "127.0.0.1"))
+        ttk.Entry(conn_frame, textvariable=self.var_klipper_host, width=15).grid(row=0, column=3, padx=5, pady=5)
+        
+        ttk.Button(conn_frame, text="Apply & Reconnect", command=self._apply_connection).grid(row=0, column=4, padx=10, pady=5)
+        
+        self.lbl_status = ttk.Label(conn_frame, text="Disconnected", foreground="red")
+        self.lbl_status.grid(row=0, column=5, padx=10, pady=5)
+        
         # Left side: Camera Preview
         cam_frame = ttk.LabelFrame(self.tab_motion, text="Camera Preview")
         cam_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -144,6 +174,13 @@ class App:
         
         self._refresh_cals()
         
+    def _apply_connection(self):
+        self.config.set("hardware.motion_backend", self.var_backend.get())
+        self.config.set("hardware.klipper.host", self.var_klipper_host.get())
+        self.lbl_status.config(text="Connecting...", foreground="orange")
+        self.root.update()
+        self._connect_motion()
+        
     def _refresh_cals(self):
         cal_dir = get_config().get("paths.calibration_dir", "config/calibrations")
         if os.path.exists(cal_dir):
@@ -153,16 +190,18 @@ class App:
                 self.cb_cal.set(files[0])
                 
     def _update_pos_label(self):
-        if self.motion.X is not None:
+        if self.motion and self.motion.X is not None:
             self.lbl_pos.config(text=f"X: {self.motion.X:.2f} Y: {self.motion.Y:.2f} Z: {self.motion.Z:.2f}")
             
     def _cmd_home(self):
+        if not self.motion: return
         def task():
             self.motion.home()
             self.root.after(0, self._update_pos_label)
         threading.Thread(target=task, daemon=True).start()
         
     def _jog(self, X=0, Y=0, Z=0):
+        if not self.motion: return
         step = self.step_var.get()
         def task():
             self.motion.move_relative(X=X*step if X else None, 
@@ -172,8 +211,8 @@ class App:
         threading.Thread(target=task, daemon=True).start()
         
     def _set_corner(self, corner):
-        if self.motion.X is None:
-            messagebox.showerror("Error", "Position unknown. Please home first.")
+        if not self.motion or self.motion.X is None:
+            messagebox.showerror("Error", "Position unknown. Please connect and home first.")
             return
             
         pos = (self.motion.X, self.motion.Y, self.motion.Z)
@@ -202,6 +241,10 @@ class App:
             messagebox.showerror("Error", str(e))
             
     def _start_exp(self):
+        if not self.motion or not self.exp_runner:
+            messagebox.showerror("Error", "Motion controller not connected.")
+            return
+            
         cal_file = self.var_cal_file.get()
         if not cal_file:
             messagebox.showerror("Error", "Select a calibration file")

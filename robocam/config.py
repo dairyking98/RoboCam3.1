@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 class Config:
     DEFAULT_CONFIG = {
         "hardware": {
+            "motion_backend": "marlin",
             "printer": {
                 "baudrate": 115200,
                 "timeout": 10.0,
@@ -15,6 +16,13 @@ class Config:
                 "position_update_delay": 0.1,
                 "connection_retry_delay": 2.0,
                 "max_retries": 5
+            },
+            "klipper": {
+                "host": "127.0.0.1",
+                "port": 7125,
+                "timeout": 10.0,
+                "home_timeout": 90.0,
+                "movement_wait_timeout": 30.0
             },
             "camera": {
                 "preview_resolution": [800, 600],
@@ -74,6 +82,17 @@ class Config:
             else:
                 return default
         return value
+        
+    def set(self, key_path: str, new_value: Any):
+        keys = key_path.split('.')
+        d = self.config
+        for key in keys[:-1]:
+            if key not in d or not isinstance(d[key], dict):
+                d[key] = {}
+            d = d[key]
+        d[keys[-1]] = new_value
+        if self.config_file:
+            self.save_config(str(self.config_file))
 
 _global_config = None
 

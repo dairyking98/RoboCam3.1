@@ -3,13 +3,22 @@ import serial.tools.list_ports
 import time
 import re
 import logging
+import requests
 from typing import Optional, Tuple
 from .config import get_config
 
 logger = logging.getLogger(__name__)
 
-class MotionController:
-    def __init__(self, simulate: bool = False):
+class MotionBackend:
+    def connect(self): raise NotImplementedError
+    def send_gcode(self, command: str, timeout: Optional[float] = None, ignore_errors: bool = False): raise NotImplementedError
+    def home(self): raise NotImplementedError
+    def update_position(self) -> Tuple[float, float, float]: raise NotImplementedError
+    def move_relative(self, X=None, Y=None, Z=None, speed=None): raise NotImplementedError
+    def move_absolute(self, X=None, Y=None, Z=None, speed=None): raise NotImplementedError
+
+class MarlinBackend(MotionBackend):
+    def __init__(self):
         self.config = get_config()
         printer_cfg = self.config.get("hardware.printer", {})
         
@@ -20,18 +29,11 @@ class MotionController:
         self.command_delay = printer_cfg.get("command_delay", 0.1)
         self.max_retries = printer_cfg.get("max_retries", 5)
         
-        self.simulate = simulate
         self.X, self.Y, self.Z = None, None, None
         self.serial_conn = None
         self._m400_supported = False
         
-        if self.simulate:
-            self.X, self.Y, self.Z = 0.0, 0.0, 0.0
-            logger.info("MotionController running in SIMULATION MODE")
-        else:
-            self._connect()
-            
-    def _connect(self):
+    def connect(self):
         port = self._find_port()
         if not port:
             raise ConnectionError("No serial port found.")
@@ -45,10 +47,8 @@ class MotionController:
                 time.sleep(3)
                 self._dump_output()
                 
-                # Test M114
                 self.update_position()
                 
-                # Test M400
                 try:
                     self.send_gcode("M400", timeout=5.0)
                     self._m400_supported = True
@@ -59,7 +59,7 @@ class MotionController:
             except serial.SerialException as e:
                 retries += 1
                 time.sleep(2)
-        raise ConnectionError("Failed to connect.")
+        raise ConnectionError("Failed to connect to Marlin printer.")
         
     def _find_port(self):
         ports = serial.tools.list_ports.comports()
@@ -82,10 +82,6 @@ class MotionController:
                 break
                 
     def send_gcode(self, command: str, timeout: Optional[float] = None, ignore_errors: bool = False):
-        if self.simulate:
-            time.sleep(self.command_delay)
-            return
-            
         if not self.serial_conn:
             raise ConnectionError("Not connected")
             
@@ -111,10 +107,6 @@ class MotionController:
             time.sleep(0.01)
             
     def home(self):
-        if self.simulate:
-            self.X, self.Y, self.Z = 0.0, 0.0, 0.0
-            return
-            
         try:
             self.send_gcode('G28', timeout=self.home_timeout)
             self.update_position()
@@ -128,9 +120,6 @@ class MotionController:
                 raise
                 
     def update_position(self) -> Tuple[float, float, float]:
-        if self.simulate:
-            return self.X, self.Y, self.Z
-            
         self.serial_conn.write(b"M114\n")
         time.sleep(0.1)
         
@@ -165,12 +154,6 @@ class MotionController:
             time.sleep(2.0)
             
     def move_relative(self, X=None, Y=None, Z=None, speed=None):
-        if self.simulate:
-            if X is not None: self.X += X
-            if Y is not None: self.Y += Y
-            if Z is not None: self.Z += Z
-            return
-            
         self.send_gcode('G91')
         cmd = "G0"
         if speed: cmd += f" F{speed}"
@@ -183,12 +166,6 @@ class MotionController:
         self.update_position()
         
     def move_absolute(self, X=None, Y=None, Z=None, speed=None):
-        if self.simulate:
-            if X is not None: self.X = X
-            if Y is not None: self.Y = Y
-            if Z is not None: self.Z = Z
-            return
-            
         self.send_gcode('G90')
         cmd = "G0"
         if speed: cmd += f" F{speed}"
@@ -199,3 +176,151 @@ class MotionController:
         self.send_gcode(cmd)
         self._wait_movement()
         self.update_position()
+
+
+class KlipperBackend(MotionBackend):
+    def __init__(self):
+        self.config = get_config()
+        klipper_cfg = self.config.get("hardware.klipper", {})
+        
+        self.host = klipper_cfg.get("host", "127.0.0.1")
+        self.port = klipper_cfg.get("port", 7125)
+        self.timeout = klipper_cfg.get("timeout", 10.0)
+        self.home_timeout = klipper_cfg.get("home_timeout", 90.0)
+        self.movement_wait_timeout = klipper_cfg.get("movement_wait_timeout", 30.0)
+        
+        self.base_url = f"http://{self.host}:{self.port}"
+        self.X, self.Y, self.Z = None, None, None
+        
+    def connect(self):
+        try:
+            resp = requests.get(f"{self.base_url}/printer/info", timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("result", {}).get("state") != "ready":
+                raise ConnectionError(f"Klipper is not ready: {data.get('result', {}).get('state_message')}")
+            self.update_position()
+        except requests.RequestException as e:
+            raise ConnectionError(f"Failed to connect to Moonraker API: {e}")
+            
+    def send_gcode(self, command: str, timeout: Optional[float] = None, ignore_errors: bool = False):
+        timeout = timeout or self.timeout
+        try:
+            resp = requests.post(f"{self.base_url}/printer/gcode/script", 
+                                 json={"script": command}, 
+                                 timeout=timeout)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            if not ignore_errors:
+                raise RuntimeError(f"Failed to send G-code '{command}' via Moonraker: {e}")
+                
+    def home(self):
+        self.send_gcode("G28", timeout=self.home_timeout)
+        self.update_position()
+        
+    def update_position(self) -> Tuple[float, float, float]:
+        try:
+            resp = requests.get(f"{self.base_url}/printer/objects/query?toolhead", timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            pos = data.get("result", {}).get("status", {}).get("toolhead", {}).get("position", [])
+            if len(pos) >= 3:
+                self.X, self.Y, self.Z = pos[0], pos[1], pos[2]
+        except requests.RequestException as e:
+            logger.error(f"Failed to query position: {e}")
+            
+        return self.X, self.Y, self.Z
+        
+    def _wait_movement(self, timeout=None):
+        timeout = timeout or self.movement_wait_timeout
+        self.send_gcode("M400", timeout=timeout)
+        
+    def move_relative(self, X=None, Y=None, Z=None, speed=None):
+        self.send_gcode('G91')
+        cmd = "G0"
+        if speed: cmd += f" F{speed}"
+        if X is not None: cmd += f" X{X}"
+        if Y is not None: cmd += f" Y{Y}"
+        if Z is not None: cmd += f" Z{Z}"
+        
+        self.send_gcode(cmd)
+        self._wait_movement()
+        self.update_position()
+        
+    def move_absolute(self, X=None, Y=None, Z=None, speed=None):
+        self.send_gcode('G90')
+        cmd = "G0"
+        if speed: cmd += f" F{speed}"
+        if X is not None: cmd += f" X{X}"
+        if Y is not None: cmd += f" Y{Y}"
+        if Z is not None: cmd += f" Z{Z}"
+        
+        self.send_gcode(cmd)
+        self._wait_movement()
+        self.update_position()
+
+
+class SimulationBackend(MotionBackend):
+    def __init__(self):
+        self.X, self.Y, self.Z = 0.0, 0.0, 0.0
+        
+    def connect(self):
+        logger.info("Simulated motion backend connected.")
+        
+    def send_gcode(self, command: str, timeout: Optional[float] = None, ignore_errors: bool = False):
+        time.sleep(0.1)
+        
+    def home(self):
+        self.X, self.Y, self.Z = 0.0, 0.0, 0.0
+        time.sleep(1.0)
+        
+    def update_position(self) -> Tuple[float, float, float]:
+        return self.X, self.Y, self.Z
+        
+    def move_relative(self, X=None, Y=None, Z=None, speed=None):
+        if X is not None: self.X += X
+        if Y is not None: self.Y += Y
+        if Z is not None: self.Z += Z
+        time.sleep(0.5)
+        
+    def move_absolute(self, X=None, Y=None, Z=None, speed=None):
+        if X is not None: self.X = X
+        if Y is not None: self.Y = Y
+        if Z is not None: self.Z = Z
+        time.sleep(0.5)
+
+
+class MotionController:
+    def __init__(self, simulate: bool = False):
+        self.config = get_config()
+        self.simulate = simulate
+        
+        if self.simulate:
+            self.backend = SimulationBackend()
+        else:
+            backend_type = self.config.get("hardware.motion_backend", "marlin").lower()
+            if backend_type == "klipper":
+                self.backend = KlipperBackend()
+            else:
+                self.backend = MarlinBackend()
+                
+        self.backend.connect()
+        
+    @property
+    def X(self): return self.backend.X
+    @property
+    def Y(self): return self.backend.Y
+    @property
+    def Z(self): return self.backend.Z
+    
+    def home(self):
+        self.backend.home()
+        
+    def update_position(self):
+        return self.backend.update_position()
+        
+    def move_relative(self, X=None, Y=None, Z=None, speed=None):
+        self.backend.move_relative(X=X, Y=Y, Z=Z, speed=speed)
+        
+    def move_absolute(self, X=None, Y=None, Z=None, speed=None):
+        self.backend.move_absolute(X=X, Y=Y, Z=Z, speed=speed)

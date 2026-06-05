@@ -5,7 +5,7 @@ RoboCam 3.1 is a Python-only desktop application that bridges the simplicity of 
 ## Key Features
 
 1. **Unified Desktop Interface**: A single, clean Tkinter GUI with tabbed navigation (Motion, Calibration, Experiment).
-2. **Robust Motion Control**: Incorporates the `robocam_ccc` serial logic from RoboCam 3.0, including `M400` wait commands, `M999` recovery, and reliable position tracking.
+2. **Dual Motion Backends**: Seamlessly switch between **Marlin** (USB/Serial) and **Klipper** (Moonraker HTTP API over network). Includes robust error recovery, `M400` wait commands, and reliable position tracking for both platforms.
 3. **4-Corner Calibration**: Uses bilinear interpolation to generate accurate well-plate paths from four corner coordinates, accounting for rotation and skew.
 4. **Automated Experiments**: Runs automated image capture sequences across the well plate with configurable delays and CSV data export.
 5. **JSON Configuration**: Centralized settings for hardware, timeouts, and paths.
@@ -16,7 +16,7 @@ RoboCam 3.1 is a Python-only desktop application that bridges the simplicity of 
 1. Ensure you have Python 3.x installed.
 2. Install dependencies:
    ```bash
-   pip install pyserial opencv-python pillow
+   pip install pyserial opencv-python pillow requests
    ```
    *(Note: `picamera2` is required if running on a Raspberry Pi with a native camera module).*
 
@@ -30,7 +30,10 @@ python3 robocam31.py
 
 ### Workflow
 
-1. **Motion & Camera**: Use the jog controls to move the camera over the well plate. The live preview helps you position the lens accurately.
+1. **Motion & Camera**: 
+   - Select your backend (`marlin` or `klipper`).
+   - If using Klipper, enter your printer's IP address and click **Apply & Reconnect**.
+   - Use the jog controls to move the camera over the well plate. The live preview helps you position the lens accurately.
 2. **Calibration**: 
    - Move to the Upper Left well and click "Set UL".
    - Repeat for Upper Right, Lower Left, and Lower Right.
