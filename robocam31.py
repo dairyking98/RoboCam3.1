@@ -96,6 +96,14 @@ class App:
         self.scale_gain.grid(row=0, column=4, padx=5, pady=5)
         self.lbl_gain_val = ttk.Label(cam_ctrl_frame, text=str(self.var_gain.get()))
         self.lbl_gain_val.grid(row=0, column=5, padx=5, pady=5)
+        
+        ttk.Label(cam_ctrl_frame, text="Resolution:").grid(row=1, column=0, padx=5, pady=5)
+        self.var_res = tk.StringVar()
+        self.cb_res = ttk.Combobox(cam_ctrl_frame, textvariable=self.var_res, state="readonly", width=15)
+        self.cb_res.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        self.cb_res.bind("<<ComboboxSelected>>", self._on_res_change)
+        
+        self._populate_resolutions()
 
         # Left side: Camera Preview
         cam_frame = ttk.LabelFrame(self.tab_motion, text="Camera Preview")
@@ -217,6 +225,25 @@ class App:
         g = int(float(val))
         self.lbl_gain_val.config(text=str(g))
         self.camera.set_gain(g)
+        
+    def _populate_resolutions(self):
+        if hasattr(self.camera, 'get_supported_resolutions'):
+            res_list = self.camera.get_supported_resolutions()
+            str_list = [f"{w}x{h}" for w, h in res_list]
+            self.cb_res['values'] = str_list
+            current = f"{self.camera.resolution[0]}x{self.camera.resolution[1]}"
+            if current in str_list:
+                self.cb_res.set(current)
+            elif str_list:
+                self.cb_res.set(str_list[-1])
+                self._on_res_change(None)
+                
+    def _on_res_change(self, event):
+        val = self.var_res.get()
+        if val and "x" in val:
+            w, h = map(int, val.split("x"))
+            if hasattr(self.camera, 'set_resolution'):
+                self.camera.set_resolution(w, h)
 
     def _apply_connection(self):
         self.config.set("hardware.motion_backend", self.var_backend.get())

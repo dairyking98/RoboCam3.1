@@ -162,6 +162,11 @@ class Camera:
             
             self.backend = "playerone"
             self.running = True
+            
+            # Fetch max resolution from properties to populate supported list later
+            self._max_width = props.maxWidth
+            self._max_height = props.maxHeight
+            
             logger.info(f"Player One camera opened: {w}x{h}")
         finally:
             sys.path[:] = prev
@@ -218,6 +223,46 @@ class Camera:
         with self._sdk_lock:
             val = int(round(float(gain)))
             self._poa.SetGain(self._camera_id, val, False)
+
+    def get_supported_resolutions(self) -> list[Tuple[int, int]]:
+        """Return supported resolutions based on camera properties."""
+        standards = [
+            (640, 480),
+            (800, 600),
+            (1024, 768),
+            (1280, 720),
+            (1280, 960),
+            (1600, 1200),
+            (1920, 1080)
+        ]
+        
+        if self.simulate or not self.running or self.backend != "playerone":
+            return standards + [(1936, 1100)]
+            
+        res = []
+        for w, h in standards:
+            if w <= getattr(self, "_max_width", 1920) and h <= getattr(self, "_max_height", 1080):
+                res.append((w, h))
+                
+        native = (getattr(self, "_max_width", 1920), getattr(self, "_max_height", 1080))
+        if native not in res:
+            res.append(native)
+            
+        res.sort(key=lambda x: x[0] * x[1])
+        return res
+
+    def set_resolution(self, w: int, h: int) -> None:
+        """Set the camera resolution dynamically."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            self.resolution = (w, h)
+            return
+            
+        with self._sdk_lock:
+            self._poa.StopExposure(self._camera_id)
+            self._poa.SetImageSize(self._camera_id, w, h)
+            self.resolution = (w, h)
+            self._poa.StartExposure(self._camera_id, False)
+            logger.info(f"Resolution changed to {w}x{h}")
 
     def get_frame(self) -> Optional[np.ndarray]:
         """Returns a BGR image frame for display or saving."""

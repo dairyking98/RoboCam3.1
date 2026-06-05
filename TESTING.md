@@ -92,7 +92,7 @@ The following issues are known and must be addressed before the system is consid
 
 ~~**Player One SDK Thread Safety** — The Player One SDK is not thread-safe.~~ *(Fixed: `threading.Lock` implemented around all SDK calls)*
 
-**Resolution Configuration** — The camera resolution is hardcoded to `1920×1080`. The Mars 662M has a native maximum resolution that should be confirmed and set as the default, with the option to select lower resolutions for faster preview frame rates.
+~~**Resolution Configuration** — The camera resolution is hardcoded to `1920×1080`.~~ *(Fixed: Dynamic resolution polling from SDK and GUI dropdown added)*
 
 ---
 
@@ -132,7 +132,7 @@ This section tracks the planned implementation of custom Klipper peripheral cont
 | High | Exposure & gain controls in GUI | Done |
 | High | Z-hop during experiment travel | Pending |
 | High | Player One SDK thread lock | Done |
-| Medium | Resolution config in GUI | Pending |
+| Medium | Resolution config in GUI | Done |
 | Medium | Peripherals tab (laser, fan) | Planned |
 | Medium | Temperature control widgets | Planned |
 | Low | Extruder as pump/dispenser | Planned |

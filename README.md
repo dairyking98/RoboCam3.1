@@ -70,7 +70,9 @@ python3 robocam31.py
 
 **Step 1 — Motion & Camera Tab**
 
-Select your motion backend (`marlin` or `klipper`). If using Klipper, enter the printer's IP address (e.g., `192.168.1.100` or a Tailscale IP) and click **Apply & Reconnect**. The status bar will confirm the connection and display the active camera backend (PlayerOne, Picamera2, or cv2). Use the jog controls to move the camera over the well plate. The live preview features a center crosshair to help align the lens.
+Select your motion backend (`marlin` or `klipper`). If using Klipper, enter the printer's IP address (e.g., `192.168.1.100` or a Tailscale IP) and click **Apply & Reconnect**. The status bar will confirm the connection and display the active camera backend (PlayerOne, Picamera2, or cv2). 
+
+You can dynamically adjust the camera's **Exposure**, **Gain**, and **Resolution** using the controls on the left. The resolution dropdown is automatically populated by polling the Player One SDK for the sensor's maximum supported dimensions. Use the jog controls to move the camera over the well plate. The live preview features a center crosshair to help align the lens.
 
 **Step 2 — Calibration Tab**
 
@@ -78,7 +80,13 @@ Jog to each of the four corners of the well plate and click the corresponding **
 
 **Step 3 — Experiment Tab**
 
-Select the saved calibration file from the dropdown. Set the desired stabilization delay per well. Click **Start Experiment** and watch the live status indicator as the rig moves to each well (e.g., `Moving to A1 (1/96)...` → `Recording well A1...`). Images and a CSV log are saved in the `outputs/` directory.
+Select the saved calibration file from the dropdown. Set the desired stabilization delay per well. 
+
+You have two capture modes available:
+- **Standard Mode**: Saves standard `.jpg` images directly.
+- **Fast Raw Capture (.npy)**: Saves the raw sensor buffer to disk instantly, prioritizing framerate. You must post-process these files later using `python3 scripts/post_process_raw.py outputs/<experiment_folder>`.
+
+Click **Start Experiment** and watch the live status indicator as the rig moves to each well (e.g., `Moving to A1 (1/96)...` → `Recording well A1...`). Images and a CSV log are saved in the `outputs/` directory.
 
 ---
 
