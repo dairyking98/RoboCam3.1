@@ -79,6 +79,24 @@ class App:
         self.lbl_cam_status = ttk.Label(conn_frame, text=f"Camera: {self.camera.backend or 'None'}", foreground="blue")
         self.lbl_cam_status.grid(row=0, column=6, padx=10, pady=5)
         
+        # Camera Controls (Exposure / Gain)
+        cam_ctrl_frame = ttk.LabelFrame(self.tab_motion, text="Camera Settings")
+        cam_ctrl_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(cam_ctrl_frame, text="Exposure (µs):").grid(row=0, column=0, padx=5, pady=5)
+        self.var_exp = tk.IntVar(value=self.camera.get_exposure())
+        self.scale_exp = ttk.Scale(cam_ctrl_frame, from_=100, to=1000000, variable=self.var_exp, command=self._on_exp_change, length=200)
+        self.scale_exp.grid(row=0, column=1, padx=5, pady=5)
+        self.lbl_exp_val = ttk.Label(cam_ctrl_frame, text=str(self.var_exp.get()))
+        self.lbl_exp_val.grid(row=0, column=2, padx=5, pady=5)
+        
+        ttk.Label(cam_ctrl_frame, text="Gain:").grid(row=0, column=3, padx=5, pady=5)
+        self.var_gain = tk.IntVar(value=self.camera.get_gain())
+        self.scale_gain = ttk.Scale(cam_ctrl_frame, from_=0, to=500, variable=self.var_gain, command=self._on_gain_change, length=150)
+        self.scale_gain.grid(row=0, column=4, padx=5, pady=5)
+        self.lbl_gain_val = ttk.Label(cam_ctrl_frame, text=str(self.var_gain.get()))
+        self.lbl_gain_val.grid(row=0, column=5, padx=5, pady=5)
+
         # Left side: Camera Preview
         cam_frame = ttk.LabelFrame(self.tab_motion, text="Camera Preview")
         cam_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -175,18 +193,31 @@ class App:
         self.var_delay = tk.DoubleVar(value=1.0)
         ttk.Entry(frame, textvariable=self.var_delay, width=5).grid(row=2, column=1, sticky=tk.W, pady=5)
         
+        self.var_fast_raw = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frame, text="Fast Raw Capture (.npy) - Requires Post-Processing", variable=self.var_fast_raw).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=5)
+        
         ctrl_frame = ttk.Frame(frame)
-        ctrl_frame.grid(row=3, column=0, columnspan=2, pady=20)
+        ctrl_frame.grid(row=4, column=0, columnspan=2, pady=20)
         self.btn_start = ttk.Button(ctrl_frame, text="Start Experiment", command=self._start_exp)
         self.btn_start.pack(side=tk.LEFT, padx=5)
         self.btn_stop = ttk.Button(ctrl_frame, text="Stop", command=self._stop_exp, state=tk.DISABLED)
         self.btn_stop.pack(side=tk.LEFT, padx=5)
         
         self.lbl_exp_status = ttk.Label(frame, text="Status: Ready", font=("Arial", 10, "italic"), foreground="blue")
-        self.lbl_exp_status.grid(row=4, column=0, columnspan=2, pady=10, sticky=tk.W)
+        self.lbl_exp_status.grid(row=5, column=0, columnspan=2, pady=10, sticky=tk.W)
         
         self._refresh_cals()
         
+    def _on_exp_change(self, val):
+        us = int(float(val))
+        self.lbl_exp_val.config(text=str(us))
+        self.camera.set_exposure(us)
+        
+    def _on_gain_change(self, val):
+        g = int(float(val))
+        self.lbl_gain_val.config(text=str(g))
+        self.camera.set_gain(g)
+
     def _apply_connection(self):
         self.config.set("hardware.motion_backend", self.var_backend.get())
         self.config.set("hardware.klipper.host", self.var_klipper_host.get())
@@ -284,7 +315,8 @@ class App:
                 positions, 
                 labels, 
                 self.var_delay.get(),
-                callback=lambda msg: self.root.after(0, self._update_exp_status, msg)
+                callback=lambda msg: self.root.after(0, self._update_exp_status, msg),
+                fast_raw_mode=self.var_fast_raw.get()
             )
             self.root.after(0, self._exp_done)
             

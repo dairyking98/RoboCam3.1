@@ -4,6 +4,7 @@ import os
 import sys
 import glob
 import logging
+import threading
 import numpy as np
 from typing import Optional, Tuple
 
@@ -107,6 +108,9 @@ class Camera:
         self._camera_id = None
         self.running = False
         
+        # Lock to protect SDK calls from simultaneous UI preview and experiment thread access
+        self._sdk_lock = threading.Lock()
+        
         if not self.simulate:
             # Try PlayerOne first
             if get_playerone_camera_count() > 0:
@@ -149,6 +153,13 @@ class Camera:
             poa.SetImageBin(self._camera_id, 1)
             poa.SetImageFormat(self._camera_id, poa.POAImgFormat.POA_RAW8)
             
+            # Set default exposure and gain
+            poa.SetExp(self._camera_id, 20000, False)
+            poa.SetGain(self._camera_id, 100, False)
+            
+            # Video mode continuous capture
+            poa.StartExposure(self._camera_id, False)
+            
             self.backend = "playerone"
             self.running = True
             logger.info(f"Player One camera opened: {w}x{h}")
@@ -178,32 +189,68 @@ class Camera:
             logger.error("Failed to open cv2 camera")
             self.running = False
 
-    def get_frame(self):
+    def get_exposure(self) -> int:
+        """Get exposure in microseconds."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return 20000
+        with self._sdk_lock:
+            _, val, _ = self._poa.GetConfig(self._camera_id, self._poa.POAConfig.POA_EXPOSURE)
+            return int(val)
+
+    def set_exposure(self, us: int) -> None:
+        """Set exposure in microseconds."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return
+        with self._sdk_lock:
+            val = int(round(float(us)))
+            self._poa.SetExp(self._camera_id, val, False)
+
+    def get_gain(self) -> int:
+        if self.simulate or not self.running or self.backend != "playerone":
+            return 100
+        with self._sdk_lock:
+            _, val, _ = self._poa.GetConfig(self._camera_id, self._poa.POAConfig.POA_GAIN)
+            return int(val)
+
+    def set_gain(self, gain: int) -> None:
+        if self.simulate or not self.running or self.backend != "playerone":
+            return
+        with self._sdk_lock:
+            val = int(round(float(gain)))
+            self._poa.SetGain(self._camera_id, val, False)
+
+    def get_frame(self) -> Optional[np.ndarray]:
+        """Returns a BGR image frame for display or saving."""
         if self.simulate or not self.running:
             return np.zeros((self.resolution[1], self.resolution[0], 3), dtype=np.uint8)
             
         if self.backend == "playerone":
-            poa = self._poa
-            cid = self._camera_id
-            poa.StartExposure(cid, True)
-            
-            for _ in range(100):
-                _err, ready = poa.ImageReady(cid)
-                if ready:
-                    break
-                time.sleep(0.01)
-            else:
+            if not self._sdk_lock.acquire(timeout=0.05):
                 return None
+            try:
+                poa = self._poa
+                cid = self._camera_id
                 
-            w, h = self.resolution
-            buf = np.zeros(w * h, dtype=np.uint8)
-            err = poa.GetImageData(cid, buf, 500)
-            if err != poa.POAErrors.POA_OK:
-                return None
-            frame = buf.reshape((h, w)).copy()
-            # PlayerOne returns grayscale RAW8, convert to BGR for uniform handling in app
-            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            
+                deadline = time.monotonic() + 0.1
+                while time.monotonic() < deadline:
+                    err, ready = poa.ImageReady(cid)
+                    if err == poa.POAErrors.POA_OK and ready:
+                        break
+                    time.sleep(0.005)
+                else:
+                    return None
+                    
+                w, h = self.resolution
+                buf = np.zeros(w * h, dtype=np.uint8)
+                err = poa.GetImageData(cid, buf, 500)
+                if err != poa.POAErrors.POA_OK:
+                    return None
+                    
+                frame = buf.reshape((h, w)).copy()
+                return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            finally:
+                self._sdk_lock.release()
+                
         elif self.backend == "picamera2":
             return self.picam2.capture_array("main")
             
@@ -214,14 +261,58 @@ class Camera:
                 
         return np.zeros((self.resolution[1], self.resolution[0], 3), dtype=np.uint8)
 
+    def get_raw_frame(self) -> Optional[np.ndarray]:
+        """Returns the raw 1D/2D buffer directly from the sensor for fast writing."""
+        if self.simulate or not self.running:
+            return np.zeros((self.resolution[1], self.resolution[0]), dtype=np.uint8)
+            
+        if self.backend == "playerone":
+            if not self._sdk_lock.acquire(timeout=0.05):
+                return None
+            try:
+                poa = self._poa
+                cid = self._camera_id
+                
+                deadline = time.monotonic() + 0.1
+                while time.monotonic() < deadline:
+                    err, ready = poa.ImageReady(cid)
+                    if err == poa.POAErrors.POA_OK and ready:
+                        break
+                    time.sleep(0.005)
+                else:
+                    return None
+                    
+                w, h = self.resolution
+                buf = np.zeros(w * h, dtype=np.uint8)
+                err = poa.GetImageData(cid, buf, 500)
+                if err != poa.POAErrors.POA_OK:
+                    return None
+                return buf.reshape((h, w)).copy()
+            finally:
+                self._sdk_lock.release()
+                
+        elif self.backend == "picamera2":
+            # Picamera2 array is usually RGB, return grayscale equivalent for "raw" fast-write
+            frame = self.picam2.capture_array("main")
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            
+        elif self.backend == "cv2":
+            ret, frame = self.cv2_cap.read()
+            if ret:
+                return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                
+        return np.zeros((self.resolution[1], self.resolution[0]), dtype=np.uint8)
+
     def stop(self):
         self.running = False
         if self.backend == "playerone" and self._poa is not None:
-            try:
-                self._poa.CloseCamera(self._camera_id)
-            except Exception:
-                pass
-            self._poa = None
+            with self._sdk_lock:
+                try:
+                    self._poa.StopExposure(self._camera_id)
+                    self._poa.CloseCamera(self._camera_id)
+                except Exception:
+                    pass
+                self._poa = None
         elif self.picam2:
             try:
                 self.picam2.stop()

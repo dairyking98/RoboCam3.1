@@ -3,6 +3,7 @@ import time
 import cv2
 import csv
 import logging
+import numpy as np
 from datetime import datetime
 from typing import List, Tuple
 from .config import get_config
@@ -11,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 class ExperimentRunner:
     """
-    Experiment Runner aligned with RoboCam-Suite 2.0 behavior.
+    Experiment Runner aligned with RoboCam-Suite 2.0 behavior, 
+    now supporting fast raw capture to prioritize framerate.
     """
     def __init__(self, motion_controller, camera):
         self.motion = motion_controller
@@ -25,7 +27,7 @@ class ExperimentRunner:
         self.current_well = ""
         self.status_msg = "Ready"
         
-    def run(self, name: str, positions: List[Tuple[float, float, float]], labels: List[str], delay_per_well: float = 1.0, callback=None):
+    def run(self, name: str, positions: List[Tuple[float, float, float]], labels: List[str], delay_per_well: float = 1.0, callback=None, fast_raw_mode: bool = False):
         self.running = True
         self.paused = False
         self.status_msg = "Starting experiment..."
@@ -65,7 +67,6 @@ class ExperimentRunner:
                     logger.info(self.status_msg)
                     if callback: callback(self.status_msg)
                     
-                    # Ensure position is updated properly
                     self.motion.move_absolute(X=x, Y=y, Z=z)
                     
                     self.status_msg = f"Waiting for stabilization at {label}..."
@@ -76,20 +77,31 @@ class ExperimentRunner:
                     logger.info(self.status_msg)
                     if callback: callback(self.status_msg)
                     
-                    # Capture
-                    img_name = f"{label}_{timestamp}.jpg"
-                    img_path = os.path.join(exp_dir, img_name)
-                    
-                    frame = self.camera.get_frame()
-                    if frame is not None:
-                        # Convert RGB to BGR for OpenCV save if it's from picamera
-                        if self.camera.backend == "picamera2":
-                            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                        cv2.imwrite(img_path, frame)
-                    else:
-                        logger.warning(f"Failed to capture frame for well {label}")
-                        
                     capture_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    if fast_raw_mode:
+                        # Capture raw sensor buffer and dump to binary .npy for maximum speed
+                        img_name = f"{label}_{timestamp}.npy"
+                        img_path = os.path.join(exp_dir, img_name)
+                        
+                        raw_frame = self.camera.get_raw_frame()
+                        if raw_frame is not None:
+                            np.save(img_path, raw_frame)
+                        else:
+                            logger.warning(f"Failed to capture raw frame for well {label}")
+                    else:
+                        # Standard BGR/RGB capture to JPG
+                        img_name = f"{label}_{timestamp}.jpg"
+                        img_path = os.path.join(exp_dir, img_name)
+                        
+                        frame = self.camera.get_frame()
+                        if frame is not None:
+                            if self.camera.backend == "picamera2":
+                                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                            cv2.imwrite(img_path, frame)
+                        else:
+                            logger.warning(f"Failed to capture frame for well {label}")
+                        
                     writer.writerow([label, x, y, z, img_name, capture_time])
                     f.flush()
                     

@@ -86,11 +86,11 @@ This document outlines the testing procedures, known issues, and to-do items to 
 
 The following issues are known and must be addressed before the system is considered production-ready.
 
-**Exposure & Gain Controls** — The Player One camera exposure time and gain are currently hardcoded in `camera.py`. These need to be exposed as adjustable controls in the Motion & Camera tab (sliders or entry fields) so the user can tune image brightness live without editing code.
+~~**Exposure & Gain Controls** — The Player One camera exposure time and gain are currently hardcoded in `camera.py`.~~ *(Fixed: Live sliders added to GUI)*
 
 **Z-Hop During Travel** — The experiment runner currently moves X, Y, and Z simultaneously in a single `G0` command. If the lens is positioned very close to the well plate walls, this could cause a collision during lateral travel. A configurable Z-hop (raise Z before XY move, lower Z at destination) needs to be added to the `ExperimentRunner`.
 
-**Player One SDK Thread Safety** — The Player One SDK is not thread-safe. The current `camera.py` does not implement a mutex around `GetImageData`. If frame corruption or crashes occur during experiments (when the preview loop and the capture call both try to read from the camera simultaneously), a `threading.Lock()` must be added around all SDK calls, matching the pattern used in RoboCam-Suite 2.0.
+~~**Player One SDK Thread Safety** — The Player One SDK is not thread-safe.~~ *(Fixed: `threading.Lock` implemented around all SDK calls)*
 
 **Resolution Configuration** — The camera resolution is hardcoded to `1920×1080`. The Mars 662M has a native maximum resolution that should be confirmed and set as the default, with the option to select lower resolutions for faster preview frame rates.
 
@@ -129,9 +129,9 @@ This section tracks the planned implementation of custom Klipper peripheral cont
 
 | Priority | Item | Status |
 |---|---|---|
-| High | Exposure & gain controls in GUI | Pending |
+| High | Exposure & gain controls in GUI | Done |
 | High | Z-hop during experiment travel | Pending |
-| High | Player One SDK thread lock | Pending |
+| High | Player One SDK thread lock | Done |
 | Medium | Resolution config in GUI | Pending |
 | Medium | Peripherals tab (laser, fan) | Planned |
 | Medium | Temperature control widgets | Planned |
