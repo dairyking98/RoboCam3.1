@@ -74,6 +74,9 @@ class App:
         self.lbl_status = ttk.Label(conn_frame, text="Disconnected", foreground="red")
         self.lbl_status.grid(row=0, column=5, padx=10, pady=5)
         
+        self.lbl_cam_status = ttk.Label(conn_frame, text=f"Camera: {self.camera.backend or 'None'}", foreground="blue")
+        self.lbl_cam_status.grid(row=0, column=6, padx=10, pady=5)
+        
         # Left side: Camera Preview
         cam_frame = ttk.LabelFrame(self.tab_motion, text="Camera Preview")
         cam_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
