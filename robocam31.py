@@ -267,11 +267,16 @@ class App:
         jog_frame.pack(fill=tk.X, pady=5)
         
         self.step_var = tk.DoubleVar(value=1.0)
+        self.var_custom_step = tk.StringVar(value="")
         steps = ttk.Frame(jog_frame)
         steps.pack(pady=5)
-        ttk.Radiobutton(steps, text="0.1", variable=self.step_var, value=0.1).pack(side=tk.LEFT)
-        ttk.Radiobutton(steps, text="1.0", variable=self.step_var, value=1.0).pack(side=tk.LEFT)
-        ttk.Radiobutton(steps, text="10.0", variable=self.step_var, value=10.0).pack(side=tk.LEFT)
+        for val in [0.1, 1.0, 10.0]:
+            ttk.Radiobutton(steps, text=str(val), variable=self.step_var, value=val).pack(side=tk.LEFT)
+        ttk.Radiobutton(steps, text="Custom:", variable=self.step_var, value=-1).pack(side=tk.LEFT)
+        custom_entry = ttk.Entry(steps, textvariable=self.var_custom_step, width=6)
+        custom_entry.pack(side=tk.LEFT, padx=2)
+        custom_entry.bind("<FocusIn>", lambda e: self.step_var.set(-1))
+        custom_entry.bind("<Return>", lambda e: self.step_var.set(-1))
         
         grid = ttk.Frame(jog_frame)
         grid.pack(pady=5)
@@ -282,12 +287,30 @@ class App:
         ttk.Button(grid, text="Z+", command=lambda: self._jog(Z=1)).grid(row=0, column=3, padx=10)
         ttk.Button(grid, text="Z-", command=lambda: self._jog(Z=-1)).grid(row=2, column=3, padx=10)
 
+        # Go-To XYZ
+        goto_frame = ttk.LabelFrame(ctrl_frame, text="Go To Position")
+        goto_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(goto_frame, text="X:").grid(row=0, column=0, padx=3, pady=5)
+        self.var_goto_x = tk.StringVar(value="")
+        ttk.Entry(goto_frame, textvariable=self.var_goto_x, width=7).grid(row=0, column=1, padx=3, pady=5)
+        ttk.Label(goto_frame, text="Y:").grid(row=0, column=2, padx=3, pady=5)
+        self.var_goto_y = tk.StringVar(value="")
+        ttk.Entry(goto_frame, textvariable=self.var_goto_y, width=7).grid(row=0, column=3, padx=3, pady=5)
+        ttk.Label(goto_frame, text="Z:").grid(row=0, column=4, padx=3, pady=5)
+        self.var_goto_z = tk.StringVar(value="")
+        ttk.Entry(goto_frame, textvariable=self.var_goto_z, width=7).grid(row=0, column=5, padx=3, pady=5)
+        ttk.Button(goto_frame, text="Go", command=self._goto_xyz).grid(row=0, column=6, padx=5, pady=5)
+
     def _build_jog_buttons(self, parent):
         steps = ttk.Frame(parent)
         steps.pack(pady=4)
-        ttk.Radiobutton(steps, text="0.1", variable=self.step_var, value=0.1).pack(side=tk.LEFT)
-        ttk.Radiobutton(steps, text="1.0", variable=self.step_var, value=1.0).pack(side=tk.LEFT)
-        ttk.Radiobutton(steps, text="10.0", variable=self.step_var, value=10.0).pack(side=tk.LEFT)
+        for val in [0.1, 1.0, 10.0]:
+            ttk.Radiobutton(steps, text=str(val), variable=self.step_var, value=val).pack(side=tk.LEFT)
+        ttk.Radiobutton(steps, text="Custom:", variable=self.step_var, value=-1).pack(side=tk.LEFT)
+        custom_entry = ttk.Entry(steps, textvariable=self.var_custom_step, width=6)
+        custom_entry.pack(side=tk.LEFT, padx=2)
+        custom_entry.bind("<FocusIn>", lambda e: self.step_var.set(-1))
+        custom_entry.bind("<Return>", lambda e: self.step_var.set(-1))
 
         grid = ttk.Frame(parent)
         grid.pack(pady=4)
@@ -297,6 +320,17 @@ class App:
         ttk.Button(grid, text="Y-", command=lambda: self._jog(Y=-1)).grid(row=2, column=1)
         ttk.Button(grid, text="Z+", command=lambda: self._jog(Z=1)).grid(row=0, column=3, padx=8)
         ttk.Button(grid, text="Z-", command=lambda: self._jog(Z=-1)).grid(row=2, column=3, padx=8)
+
+        # Go-To XYZ (inline in calibration tab too)
+        goto_frame = ttk.LabelFrame(parent, text="Go To Position")
+        goto_frame.pack(fill=tk.X, pady=4)
+        ttk.Label(goto_frame, text="X:").grid(row=0, column=0, padx=3, pady=4)
+        ttk.Entry(goto_frame, textvariable=self.var_goto_x, width=7).grid(row=0, column=1, padx=3, pady=4)
+        ttk.Label(goto_frame, text="Y:").grid(row=0, column=2, padx=3, pady=4)
+        ttk.Entry(goto_frame, textvariable=self.var_goto_y, width=7).grid(row=0, column=3, padx=3, pady=4)
+        ttk.Label(goto_frame, text="Z:").grid(row=0, column=4, padx=3, pady=4)
+        ttk.Entry(goto_frame, textvariable=self.var_goto_z, width=7).grid(row=0, column=5, padx=3, pady=4)
+        ttk.Button(goto_frame, text="Go", command=self._goto_xyz).grid(row=0, column=6, padx=5, pady=4)
 
     def _build_camera_controls(self, parent, include_resolution=False):
         ttk.Label(parent, text="Exposure (ms):").grid(row=0, column=0, padx=3, pady=3, sticky=tk.W)
@@ -649,10 +683,41 @@ class App:
     def _jog(self, X=0, Y=0, Z=0):
         if not self.motion: return
         step = self.step_var.get()
+        if step == -1:
+            try:
+                step = float(self.var_custom_step.get())
+            except (ValueError, AttributeError):
+                step = 1.0
+        if step <= 0:
+            step = 1.0
         def task():
-            self.motion.move_relative(X=X*step if X else None, 
-                                      Y=Y*step if Y else None, 
+            self.motion.move_relative(X=X*step if X else None,
+                                      Y=Y*step if Y else None,
                                       Z=Z*step if Z else None)
+            self.root.after(0, self._update_pos_label)
+        threading.Thread(target=task, daemon=True).start()
+
+    def _goto_xyz(self):
+        if not self.motion: return
+        cur_x = self.motion.X or 0.0
+        cur_y = self.motion.Y or 0.0
+        cur_z = self.motion.Z or 0.0
+        def _parse(var, fallback):
+            s = var.get().strip()
+            return float(s) if s else fallback
+        try:
+            x = _parse(self.var_goto_x, cur_x)
+            y = _parse(self.var_goto_y, cur_y)
+            z = _parse(self.var_goto_z, cur_z)
+        except ValueError:
+            from tkinter import messagebox
+            messagebox.showerror("Go To Error", "Enter valid numeric values (or leave blank to keep current position).")
+            return
+        def task():
+            self.motion.move_absolute(X=x, Y=y, Z=z)
+            self.var_goto_x.set(f"{x:.3f}")
+            self.var_goto_y.set(f"{y:.3f}")
+            self.var_goto_z.set(f"{z:.3f}")
             self.root.after(0, self._update_pos_label)
         threading.Thread(target=task, daemon=True).start()
         
