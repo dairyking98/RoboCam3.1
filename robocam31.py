@@ -572,15 +572,18 @@ class App:
 
     def _navigate_to_well(self, row, col):
         if not self.motion: return
-        # Try to generate path from current corners
         self.cal_mgr.width = self.var_w.get()
         self.cal_mgr.depth = self.var_d.get()
         self.cal_mgr.pattern = self.var_pattern.get()
         try:
-            positions, _ = self.cal_mgr.generate_path()
+            # Use generate_path_with_labels — the correct method name
+            labeled = self.cal_mgr.generate_path_with_labels()
+            # labeled is a list of (label, (x, y, z)) in scan order
+            # Convert row/col to the flat raster index so we always find the right well
             idx = row * self.cal_mgr.width + col
-            if 0 <= idx < len(positions):
-                x, y, z = positions[idx]
+            if 0 <= idx < len(labeled):
+                _, pos = labeled[idx]
+                x, y, z = pos
                 def task():
                     self.motion.move_absolute(X=x, Y=y, Z=z)
                     self.root.after(0, self._update_pos_label)
