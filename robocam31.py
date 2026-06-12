@@ -489,7 +489,7 @@ class App:
         self.var_exp_mode = tk.StringVar(value="Image")
         mode_cb = ttk.Combobox(
             grp, textvariable=self.var_exp_mode,
-            values=["Image", "Raw .npy", "Video", "Laser Video"],
+            values=["Image", "Raw .npy", "Video"],
             state="readonly", width=12
         )
         mode_cb.grid(row=2, column=1, sticky=tk.W, pady=5)
@@ -503,26 +503,34 @@ class App:
         self.var_image_fmt = tk.StringVar(value="jpg")
         ttk.Combobox(grp, textvariable=self.var_image_fmt, values=["jpg", "png", "tif"], state="readonly", width=7).grid(row=4, column=1, sticky=tk.W, pady=5)
 
-        # --- Video timing fields ---
-        # pre_duration: used by both Video (total duration) and Laser Video (pre-laser record)
+        # --- Duration: shown for Raw .npy and Video ---
         self.lbl_pre_duration = ttk.Label(grp, text="Record duration (s):")
         self.lbl_pre_duration.grid(row=5, column=0, sticky=tk.W, pady=5)
         self.var_pre_duration = tk.DoubleVar(value=5.0)
         self.ent_pre_duration = ttk.Entry(grp, textvariable=self.var_pre_duration, width=7)
         self.ent_pre_duration.grid(row=5, column=1, sticky=tk.W, pady=5)
 
-        # laser_on and post_duration: only shown for Laser Video mode
+        # --- Laser checkbox: shown for Raw .npy and Video ---
+        self.var_use_laser = tk.BooleanVar(value=False)
+        self.chk_laser = ttk.Checkbutton(
+            grp, text="Use Laser",
+            variable=self.var_use_laser,
+            command=self._on_exp_mode_change
+        )
+        self.chk_laser.grid(row=6, column=0, columnspan=2, sticky=tk.W, pady=5)
+
+        # --- Laser timing: only shown when Use Laser is checked ---
         self.lbl_laser_on = ttk.Label(grp, text="Laser ON (s):")
-        self.lbl_laser_on.grid(row=6, column=0, sticky=tk.W, pady=5)
+        self.lbl_laser_on.grid(row=7, column=0, sticky=tk.W, pady=2)
         self.var_laser_on = tk.DoubleVar(value=1.0)
         self.ent_laser_on = ttk.Entry(grp, textvariable=self.var_laser_on, width=7)
-        self.ent_laser_on.grid(row=6, column=1, sticky=tk.W, pady=5)
+        self.ent_laser_on.grid(row=7, column=1, sticky=tk.W, pady=2)
 
         self.lbl_post_duration = ttk.Label(grp, text="Post-laser (s):")
-        self.lbl_post_duration.grid(row=7, column=0, sticky=tk.W, pady=5)
+        self.lbl_post_duration.grid(row=8, column=0, sticky=tk.W, pady=2)
         self.var_post_duration = tk.DoubleVar(value=2.0)
         self.ent_post_duration = ttk.Entry(grp, textvariable=self.var_post_duration, width=7)
-        self.ent_post_duration.grid(row=7, column=1, sticky=tk.W, pady=5)
+        self.ent_post_duration.grid(row=8, column=1, sticky=tk.W, pady=2)
 
         # Apply initial visibility
         self._on_exp_mode_change()
@@ -568,27 +576,33 @@ class App:
         self._update_sel_count()
         
     def _on_exp_mode_change(self, event=None):
-        """Show/hide laser fields and relabel pre_duration based on selected mode."""
+        """Show/hide fields based on mode and laser checkbox state."""
         mode = self.var_exp_mode.get()
-        is_laser = mode == "Laser Video"
-        is_video = mode in ("Video", "Laser Video")
+        is_timed = mode in ("Raw .npy", "Video")  # modes that have a duration
+        use_laser = self.var_use_laser.get()
 
-        # Show/hide the video timing rows
-        if is_video:
+        # Duration field: shown for Raw and Video, hidden for Image
+        if is_timed:
             self.lbl_pre_duration.grid()
             self.ent_pre_duration.grid()
+            # Relabel based on whether laser is active
+            if use_laser:
+                self.lbl_pre_duration.config(text="Pre-laser (s):")
+            else:
+                self.lbl_pre_duration.config(text="Record duration (s):")
         else:
             self.lbl_pre_duration.grid_remove()
             self.ent_pre_duration.grid_remove()
 
-        # Relabel pre_duration depending on context
-        if is_laser:
-            self.lbl_pre_duration.config(text="Pre-laser (s):")
+        # Laser checkbox: shown for Raw and Video only
+        if is_timed:
+            self.chk_laser.grid()
         else:
-            self.lbl_pre_duration.config(text="Record duration (s):")
+            self.chk_laser.grid_remove()
+            self.var_use_laser.set(False)
 
-        # Laser ON and Post-laser only shown for Laser Video
-        if is_laser:
+        # Laser timing fields: only shown when Use Laser is checked AND mode is timed
+        if is_timed and use_laser:
             self.lbl_laser_on.grid()
             self.ent_laser_on.grid()
             self.lbl_post_duration.grid()
@@ -900,6 +914,7 @@ class App:
             "delay": self.var_delay.get(),
             "image_format": self.var_image_fmt.get(),
             "pre_duration": self.var_pre_duration.get(),
+            "use_laser": self.var_use_laser.get(),
             "laser_on": self.var_laser_on.get(),
             "post_duration": self.var_post_duration.get(),
             "calibration_file": self.var_cal_file.get(),
@@ -911,6 +926,7 @@ class App:
         self.var_delay.set(float(data.get("delay", self.var_delay.get())))
         self.var_image_fmt.set(data.get("image_format", self.var_image_fmt.get()))
         self.var_pre_duration.set(float(data.get("pre_duration", self.var_pre_duration.get())))
+        self.var_use_laser.set(bool(data.get("use_laser", False)))
         self.var_laser_on.set(float(data.get("laser_on", self.var_laser_on.get())))
         self.var_post_duration.set(float(data.get("post_duration", self.var_post_duration.get())))
         self._on_exp_mode_change()
@@ -987,7 +1003,6 @@ class App:
                 "Image": "image",
                 "Raw .npy": "raw",
                 "Video": "video",
-                "Laser Video": "laser_video",
             }
             self.exp_runner.run(
                 self.var_exp_name.get(),
@@ -997,6 +1012,7 @@ class App:
                 callback=lambda msg: self.root.after(0, self._update_exp_status, msg),
                 mode=mode_map.get(self.var_exp_mode.get(), "image"),
                 image_format=self.var_image_fmt.get(),
+                use_laser=self.var_use_laser.get(),
                 pre_duration=self.var_pre_duration.get(),
                 laser_on_duration=self.var_laser_on.get(),
                 post_duration=self.var_post_duration.get(),
