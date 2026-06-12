@@ -8,17 +8,15 @@ RoboCam 3.1 is a Python-only desktop application for automated well-plate imagin
 
 | Feature | Description |
 |---|---|
-| **Unified Desktop GUI** | Single Tkinter application with three tabs: Motion & Camera, Calibration, Experiment. No web server required. |
+| **Unified Desktop GUI** | Single Tkinter application with four tabs: Setup, Manual Control, Calibration, Experiment. No web server required. |
 | **Dual Motion Backends** | Switch between **Marlin** (USB/Serial) and **Klipper** (Moonraker HTTP API over network/Tailscale) without restarting. |
 | **Player One Camera** | First-class support for Player One Astronomy cameras (Mars 662M, etc.) via the `pyPOACamera` SDK. Auto-detects and falls back to Picamera2 or OpenCV. |
 | **Live Camera Controls** | Adjust **Exposure**, **Gain**, and **Resolution** live from the GUI. Resolution list is polled directly from the SDK sensor properties. |
 | **4-Corner Calibration** | Bilinear interpolation from four physical corner coordinates accounts for plate rotation and skew. Saves/loads JSON profiles. |
 | **Raster & Snake Patterns** | Choose between row-by-row raster scan or alternating snake scan for efficient well-plate traversal. |
-| **Two Capture Modes** | Standard `.jpg` capture or **Fast Raw** `.npy` capture (raw sensor buffer, no CPU encoding) for maximum framerate. |
+| **Three Capture Modes** | **Image** (single still), **Raw .npy** (timed raw sensor burst), and **Video** (MJPG AVI). Raw and Video capture at max framerate with real FPS metadata. |
+| **Hardware Stimulation** | Integrated Laser/GPIO controller. Trigger a laser via direct Raspberry Pi GPIO or Klipper G-code, perfectly timed with timed captures. |
 | **Smart Preview Modes** | Live preview when idle; last-frame polling during standard recording; preview disabled during fast raw capture to prevent SDK lock contention. |
-| **Automated Experiments** | Full experiment loop with configurable stabilization delay, live status feedback, and CSV data export. |
-| **Simulation Mode** | Built-in hardware simulation for UI testing without a printer or camera attached. |
-| **Klipper Peripheral Roadmap** | Architecture designed to support laser control, temperature control, and pump dispensing via repurposed printer hardware (see below). |
 
 ---
 
@@ -32,12 +30,13 @@ RoboCam3.1/
 │   ├── motion.py                 # Abstract motion backend: Marlin, Klipper, Simulation
 │   ├── calibration.py            # WellPlate bilinear interpolation and CalibrationManager
 │   ├── experiment.py             # ExperimentRunner: motion, capture, CSV logging
+│   ├── peripherals.py            # LaserController for RPi GPIO and Klipper outputs
 │   └── config.py                 # JSON-based configuration management
 ├── scripts/
 │   ├── install_playerone_sdk.py  # Downloads and patches Player One SDK for Linux/ARM
 │   └── post_process_raw.py       # Converts fast raw .npy files to .jpg after experiment
 ├── config/
-│   └── calibrations/             # Saved calibration JSON files
+│   └── default_config.json       # Base configuration file
 ├── outputs/                      # Timestamped experiment output folders
 ├── setup.sh                      # Linux/macOS/Raspberry Pi setup script
 ├── setup.bat                     # Windows setup script
@@ -86,61 +85,61 @@ The setup script performs the following steps:
 bash start_robocam.sh
 ```
 
-Or manually:
-```bash
-source .venv/bin/activate
-python3 robocam31.py
-```
-
 ---
 
 ## Usage
 
-### Step 1 — Motion & Camera Tab
+### Step 1 — Setup Tab
 
-Select the motion backend (`marlin` or `klipper`) from the **Connection Settings** bar at the top of the tab.
+Configure hardware connections before operating the machine.
 
-- **Marlin**: The app auto-detects the USB serial port by scanning for CH340, FTDI, or Arduino descriptors.
-- **Klipper**: Enter the printer's IP address or hostname (e.g., `100.x.x.x` for a Tailscale IP, or `mainsailos.local`). The app communicates via the Moonraker HTTP API on port 7125.
+- **Printer Connection**: Select your backend (`marlin` or `klipper`), enter the Klipper IP if applicable, and click **Apply & Reconnect**.
+- **Camera Settings**: Adjust Exposure (ms) and Gain using sliders or precise numeric entry. Select the camera resolution.
+- **Laser / GPIO Configuration**: Choose how your laser is connected (`disabled`, `rpi_gpio`, or `klipper`). Set the Raspberry Pi BCM pin (default `21`) or the Klipper G-code commands (`SET_PIN PIN=laser VALUE=1`). Click **Apply Laser Settings**.
 
-Click **Apply & Reconnect** to connect. The status bar will show `Connected: MARLIN` or `Connected: KLIPPER` in green, along with the active camera backend (e.g., `Camera: playerone`).
+### Step 2 — Manual Control Tab
 
-**Camera Settings** (below the connection bar):
+Directly control the hardware outside of an experiment.
 
-| Control | Description |
-|---|---|
-| **Exposure (µs)** | Slider from 100 µs to 1,000,000 µs. Updates the Player One camera live. |
-| **Gain** | Slider from 0 to 500. Updates the Player One camera live. |
-| **Resolution** | Dropdown populated by querying the SDK sensor properties. Changing resolution restarts the exposure stream cleanly. |
+- **Machine Controls**: Click **Home All Axes** to home the printer. Click **Disable Steppers** to move the stage by hand.
+- **Jog Controls**: Move X, Y, and Z by preset amounts (0.1, 1.0, 10.0) or type a custom step size.
+- **Go To Position**: Type exact X, Y, Z coordinates to move the stage immediately.
+- **Laser Control**: Manually toggle the laser ON or OFF for testing.
+- **Manual G-code**: Send raw G-code commands directly to the printer and view the log.
 
-The live preview shows a green crosshair overlay to assist with lens alignment.
-
-### Step 2 — Calibration Tab
+### Step 3 — Calibration Tab
 
 1. Jog the camera to each of the four physical corners of the well plate using the jog controls.
 2. Click the corresponding **Set** button for each corner: **UL** (upper-left), **UR** (upper-right), **LL** (lower-left), **LR** (lower-right).
 3. Enter the grid dimensions (e.g., `12` columns × `8` rows for a standard 96-well plate).
 4. Select the scan **Pattern**: **Raster** (left-to-right, top-to-bottom) or **Snake** (alternating direction each row).
-5. Click **Save Calibration** to write the bilinear-interpolated positions to a JSON file in `config/calibrations/`.
+5. Click **Update Map & Save** to write the bilinear-interpolated positions to a JSON file in `config/calibrations/`.
+6. You can now click any well on the visual map to immediately jog the printer to that well.
 
-### Step 3 — Experiment Tab
+### Step 4 — Experiment Tab
 
 1. Enter an experiment name.
-2. Select a saved calibration file from the dropdown (click **Refresh** if newly saved files do not appear).
+2. Select a saved calibration file from the dropdown.
 3. Set the **Delay per well** in seconds (stabilization time after each move before capture).
 4. Choose the capture mode:
-   - **Standard Mode** (default): Captures a `.jpg` image at each well. The live preview polls the last saved image at ~0.5 fps during the run.
-   - **Fast Raw Capture (.npy)**: Dumps the raw sensor buffer directly to disk as a NumPy binary file with no CPU-side encoding. The live preview is disabled during this mode to prevent SDK lock contention. Post-process the output after the experiment with:
-     ```bash
-     python3 scripts/post_process_raw.py outputs/<experiment_folder>
-     # Add --mono flag if the sensor is monochrome (RAW8 without Bayer pattern)
-     ```
-5. Click **Start Experiment**. The status label updates in real time (e.g., `Moving to A1 (1/96)...` → `Waiting for stabilization at A1...` → `Recording well A1...`).
-6. Click **Stop** at any time to halt the run cleanly.
+   - **Image**: Captures a single still image per well.
+   - **Raw .npy**: Dumps raw binary sensor data for a specified duration at max framerate.
+   - **Video**: Records an MJPG `.avi` for a specified duration at max framerate.
+5. If using Raw or Video, check **Use Laser** to enable stimulation. This replaces the "Record duration" field with three phases: **Pre-laser**, **Laser ON**, and **Post-laser**. The camera records continuously through all three phases.
+6. Drag on the well grid to select which wells to include in the run.
+7. Click **Start Experiment**.
 
-All output is saved to `outputs/<timestamp>_<experiment_name>/`:
-- One image file per well (`.jpg` or `.npy`)
-- A CSV log with columns: `Well`, `X`, `Y`, `Z`, `Image_File`, `Timestamp`
+---
+
+## Post-Processing Fast Raw Capture
+
+If you run an experiment in **Raw .npy** mode, the camera dumps raw binary sensor data to disk to achieve maximum framerates. These files cannot be viewed directly.
+
+After the experiment finishes, run the post-processing script to debayer the `.npy` files into standard `.jpg` images:
+
+```bash
+python3 scripts/post_process_raw.py outputs/<experiment_folder>
+```
 
 ---
 
@@ -152,82 +151,47 @@ The `Camera` class in `robocam/camera.py` selects a backend in the following ord
 2. **Picamera2** — if `picamera2` is installed (Raspberry Pi HQ camera).
 3. **OpenCV (`cv2`)** — generic USB webcam fallback.
 
-The SDK is searched in the following locations (in order):
-- `PlayerOne_Camera_SDK_Linux_V3.10.0/python/` inside the project root
-- Any `PlayerOne_Camera_SDK_Linux_*/python/` directory in the project root
-- The `PLAYERONE_SDK_PYTHON` environment variable
-- `~/PlayerOne_Camera_SDK_Linux_V3.10.0/python/`
-- Any `~/PlayerOne_Camera_SDK_Linux_*/python/` glob match
-
 ---
 
 ## Motion Backend Details
 
 ### Marlin (Serial)
 
-The `MarlinBackend` in `robocam/motion.py` is ported directly from the `GCodeSerialMotionController` in RoboCam-Suite 2.0. Key behaviors:
-
+The `MarlinBackend` in `robocam/motion.py` features:
 - **Auto-port detection**: Scans serial ports for USB/CH340/FTDI/Arduino descriptors.
-- **M400 capability check**: On the first move, it sends `M400` (wait for moves to finish). If the firmware does not support it, it permanently falls back to a configurable sleep delay for that session.
-- **Command delay**: A configurable `command_delay` (default 50 ms) is inserted after each command to prevent buffer overflow.
+- **M400 capability check**: On the first move, it sends `M400` (wait for moves to finish). If unsupported, it falls back to a sleep delay.
 - **`in_waiting` read loop**: Reads serial data only when bytes are available, avoiding busy-wait CPU spin.
-- **Position sync**: Sends `M114` after every move to keep the GUI position display accurate.
 
 ### Klipper (Moonraker HTTP API)
 
 The `KlipperBackend` communicates with Klipper over the network via the Moonraker REST API:
-
-| Operation | Endpoint |
-|---|---|
-| Send G-code | `POST /printer/gcode/script` |
-| Query position | `GET /printer/objects/query?toolhead` |
-| Check printer state | `GET /printer/info` |
-
-`M400` is always available in Klipper and is used unconditionally for movement completion waiting. The Klipper backend is the recommended backend for network-connected printers and Tailscale-based remote sessions.
+- Send G-code: `POST /printer/gcode/script`
+- Query position: `GET /printer/objects/query?toolhead`
 
 ---
 
-## Klipper Peripheral Control (Roadmap)
+## Klipper Peripheral Roadmap (Lab Automation)
 
-A key advantage of Klipper over Marlin is that **all unused printer peripherals are scriptable via G-code macros**. Hardware originally designed for 3D printing can be repurposed for laboratory automation without any hardware modification.
+RoboCam 3.1's architecture is designed to repurpose unused 3D printer hardware (heaters, fans, extruders) for lab automation tasks via Klipper.
 
-### Planned Peripheral Mappings
+| Printer Hardware | Repurposed Function | G-code / Klipper Command | Status |
+|---|---|---|---|
+| **Output Pin (GPIO)** | Laser gate, shutter, or TTL trigger | `SET_PIN PIN=<name> VALUE=<0/1>` | **Implemented** |
+| **Part Cooling Fan** | Laser enable/disable or illumination control | `M106 S255` (on) / `M107` (off) | Planned |
+| **Extruder Heater** | Incubation chamber heater or sample warmer | `M104 S<temp>` / `M109 S<temp>` (wait) | Planned |
+| **Heated Bed** | Slide warmer or culture plate temperature control | `M140 S<temp>` / `M190 S<temp>` (wait) | Planned |
+| **Extruder Motor** | Peristaltic pump, syringe pump, or media dispenser | `G1 E<mm> F<speed>` | Planned |
 
-| Printer Hardware | Repurposed Function | G-code / Klipper Command |
-|---|---|---|
-| **Part Cooling Fan** | Laser enable/disable or illumination control | `M106 S255` (on) / `M107` (off) |
-| **Extruder Heater** | Incubation chamber heater or sample warmer | `M104 S<temp>` / `M109 S<temp>` (wait) |
-| **Heated Bed** | Slide warmer or culture plate temperature control | `M140 S<temp>` / `M190 S<temp>` (wait) |
-| **Extruder Motor** | Peristaltic pump, syringe pump, or media dispenser | `G1 E<mm> F<speed>` |
-| **Auxiliary Fan (Fan1)** | Secondary illumination or ventilation | `SET_FAN_SPEED FAN=fan1 SPEED=<0-1>` |
-| **Output Pin (GPIO)** | Laser gate, shutter, or TTL trigger | `SET_PIN PIN=<name> VALUE=<0/1>` |
-| **Filament Sensor Input** | External trigger (plate sensor, door interlock) | `QUERY_FILAMENT_SENSOR SENSOR=<name>` |
+### Setting up a Klipper Laser Pin
+To use the `klipper` laser mode today, add this to your `printer.cfg`:
 
-### Implementation Approach
-
-All peripheral control in Klipper is handled through named macros and pin aliases defined in `printer.cfg`. The workflow for adding a new peripheral to RoboCam 3.1 is:
-
-1. **Define the pin in `printer.cfg`**: For example, to use the part cooling fan MOSFET as a laser gate, add an `[output_pin laser]` section.
-2. **Optionally add a Klipper macro**: Wrap the command in a `[gcode_macro LASER_ON]` block for clean, readable calls.
-3. **Call via Moonraker**: RoboCam 3.1 sends the command via `POST /printer/gcode/script` — the same endpoint used for motion — so no new communication infrastructure is needed.
-
-### Example: Laser On/Off via Fan Output
-
-**`printer.cfg` addition:**
 ```ini
 [output_pin laser]
-pin: PA8          # The fan MOSFET pin on your board
-value: 0          # Default off
-shutdown_value: 0 # Safety: off on Klipper shutdown
+pin: PA0  # Replace with your actual controller board pin
+pwm: False
+value: 0
 ```
-
-**RoboCam 3.1 call (via `KlipperBackend.send_gcode`):**
-```python
-motion.backend.send_gcode("SET_PIN PIN=laser VALUE=1")  # Laser ON
-motion.backend.send_gcode("SET_PIN PIN=laser VALUE=0")  # Laser OFF
-```
-
-> **Note:** Marlin-based printers support a subset of these controls (fan via `M106`, bed via `M140`, extruder via `G1 E`). Klipper's `output_pin` and macro system provides far greater flexibility and safety control over arbitrary GPIO pins.
+Then in the RoboCam Setup tab, set the Klipper ON G-code to `SET_PIN PIN=laser VALUE=1`.
 
 ---
 
@@ -242,9 +206,3 @@ motion.backend.send_gcode("SET_PIN PIN=laser VALUE=0")  # Laser OFF
 | `pillow` | Tkinter image display |
 | `picamera2` *(optional, Pi only)* | Raspberry Pi HQ camera support |
 | Player One SDK *(auto-installed)* | Mars 662M and other Player One cameras |
-
----
-
-## Known Issues & To-Do
-
-See [TESTING.md](TESTING.md) for the full testing checklist, known issues, and the phased Klipper peripheral development roadmap.
