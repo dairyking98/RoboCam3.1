@@ -175,97 +175,135 @@ class App:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.tab_motion = ttk.Frame(self.notebook)
+        self.tab_setup = ttk.Frame(self.notebook)
+        self.tab_manual = ttk.Frame(self.notebook)
         self.tab_calib = ttk.Frame(self.notebook)
         self.tab_exp = ttk.Frame(self.notebook)
-        
-        self.notebook.add(self.tab_motion, text="Setup & Manual Control")
+        # Keep tab_motion as alias for calib jog reuse
+        self.tab_motion = self.tab_manual
+
+        self.notebook.add(self.tab_setup, text="Setup")
+        self.notebook.add(self.tab_manual, text="Manual Control")
         self.notebook.add(self.tab_calib, text="Calibration")
         self.notebook.add(self.tab_exp, text="Experiment")
-        
-        self._build_motion_tab()
+
+        self._build_setup_tab()
+        self._build_manual_tab()
         self._build_calib_tab()
         self._build_exp_tab()
         
-    def _build_motion_tab(self):
-        # Top: Connection Settings
-        conn_frame = ttk.LabelFrame(self.tab_motion, text="Connection Settings")
-        conn_frame.pack(fill=tk.X, padx=5, pady=5)
-        
+    def _build_setup_tab(self):
+        """Setup tab: connection settings, camera settings, laser configuration."""
+        # --- Printer Connection ---
+        conn_frame = ttk.LabelFrame(self.tab_setup, text="Printer Connection")
+        conn_frame.pack(fill=tk.X, padx=8, pady=6)
+
         ttk.Label(conn_frame, text="Backend:").grid(row=0, column=0, padx=5, pady=5)
         self.var_backend = tk.StringVar(value=self.config.get("hardware.motion_backend", "marlin"))
         cb_backend = ttk.Combobox(conn_frame, textvariable=self.var_backend, values=["marlin", "klipper"], state="readonly", width=10)
         cb_backend.grid(row=0, column=1, padx=5, pady=5)
-        
+
         ttk.Label(conn_frame, text="Klipper Host:").grid(row=0, column=2, padx=5, pady=5)
         self.var_klipper_host = tk.StringVar(value=self.config.get("hardware.klipper.host", "127.0.0.1"))
-        ttk.Entry(conn_frame, textvariable=self.var_klipper_host, width=15).grid(row=0, column=3, padx=5, pady=5)
-        
+        ttk.Entry(conn_frame, textvariable=self.var_klipper_host, width=18).grid(row=0, column=3, padx=5, pady=5)
+
         ttk.Button(conn_frame, text="Apply & Reconnect", command=self._apply_connection).grid(row=0, column=4, padx=10, pady=5)
-        
+
         self.lbl_status = ttk.Label(conn_frame, text="Disconnected", foreground="red")
         self.lbl_status.grid(row=0, column=5, padx=10, pady=5)
-        
+
         self.lbl_cam_status = ttk.Label(conn_frame, text=f"Camera: {self.camera.backend or 'None'}", foreground="blue")
         self.lbl_cam_status.grid(row=0, column=6, padx=10, pady=5)
-        
-        # Camera Controls (Exposure / Gain)
-        cam_ctrl_frame = ttk.LabelFrame(self.tab_motion, text="Camera Settings")
-        cam_ctrl_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        # Exposure: Slider + Entry
+
+        # --- Camera Settings ---
+        cam_ctrl_frame = ttk.LabelFrame(self.tab_setup, text="Camera Settings")
+        cam_ctrl_frame.pack(fill=tk.X, padx=8, pady=6)
+
         ttk.Label(cam_ctrl_frame, text="Exposure (ms):").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
         self.var_exp_ms = tk.DoubleVar(value=self.camera.get_exposure() / 1000.0)
         self.scale_exp = ttk.Scale(cam_ctrl_frame, from_=0.1, to=2000.0, variable=self.var_exp_ms, command=self._on_exp_slider, length=200)
         self.scale_exp.grid(row=0, column=1, padx=5, pady=5)
-        
         exp_entry = ttk.Entry(cam_ctrl_frame, textvariable=self.var_exp_ms, width=8)
         exp_entry.grid(row=0, column=2, padx=5, pady=5)
         exp_entry.bind("<Return>", self._on_exp_entry)
         exp_entry.bind("<FocusOut>", self._on_exp_entry)
-        
-        # Gain: Slider + Entry
+
         ttk.Label(cam_ctrl_frame, text="Gain:").grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
         self.var_gain = tk.IntVar(value=self.camera.get_gain())
         self.scale_gain = ttk.Scale(cam_ctrl_frame, from_=0, to=500, variable=self.var_gain, command=self._on_gain_slider, length=150)
         self.scale_gain.grid(row=0, column=4, padx=5, pady=5)
-        
         gain_entry = ttk.Entry(cam_ctrl_frame, textvariable=self.var_gain, width=5)
         gain_entry.grid(row=0, column=5, padx=5, pady=5)
         gain_entry.bind("<Return>", self._on_gain_entry)
         gain_entry.bind("<FocusOut>", self._on_gain_entry)
-        
-        # Resolution
+
         ttk.Label(cam_ctrl_frame, text="Resolution:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
         self.var_res = tk.StringVar()
         self.cb_res = ttk.Combobox(cam_ctrl_frame, textvariable=self.var_res, state="readonly", width=15)
         self.cb_res.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
         self.cb_res.bind("<<ComboboxSelected>>", self._on_res_change)
-        
         self._populate_resolutions()
 
-        # Left side: Camera Preview (Motion Tab)
-        cam_frame = ttk.LabelFrame(self.tab_motion, text="Camera Preview")
-        cam_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
+        # --- Laser / GPIO Configuration ---
+        laser_frame = ttk.LabelFrame(self.tab_setup, text="Laser / GPIO Configuration")
+        laser_frame.pack(fill=tk.X, padx=8, pady=6)
+
+        ttk.Label(laser_frame, text="Laser Mode:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.var_laser_mode = tk.StringVar(value=self.config.get("hardware.laser.mode", "disabled"))
+        ttk.Combobox(
+            laser_frame, textvariable=self.var_laser_mode,
+            values=["disabled", "rpi_gpio", "klipper"], state="readonly", width=12
+        ).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ttk.Label(laser_frame, text="RPi GPIO Pin (BCM):").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+        self.var_laser_pin = tk.IntVar(value=int(self.config.get("hardware.laser.rpi_pin", 21)))
+        ttk.Spinbox(laser_frame, from_=0, to=40, textvariable=self.var_laser_pin, width=5).grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
+
+        ttk.Label(laser_frame, text="Klipper ON G-code:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.var_laser_on_gcode = tk.StringVar(value=self.config.get("hardware.laser.klipper_on_gcode", "SET_PIN PIN=laser VALUE=1"))
+        ttk.Entry(laser_frame, textvariable=self.var_laser_on_gcode, width=30).grid(row=1, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
+
+        ttk.Label(laser_frame, text="Klipper OFF G-code:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.var_laser_off_gcode = tk.StringVar(value=self.config.get("hardware.laser.klipper_off_gcode", "SET_PIN PIN=laser VALUE=0"))
+        ttk.Entry(laser_frame, textvariable=self.var_laser_off_gcode, width=30).grid(row=2, column=1, columnspan=3, padx=5, pady=5, sticky=tk.W)
+
+        ttk.Button(laser_frame, text="Apply Laser Settings", command=self._apply_laser_settings).grid(row=3, column=0, columnspan=4, pady=8)
+
+        # --- Camera Preview (Setup tab) ---
+        cam_frame = ttk.LabelFrame(self.tab_setup, text="Camera Preview")
+        cam_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
         self.cam_label = ttk.Label(cam_frame)
         self.cam_label.pack(fill=tk.BOTH, expand=True)
-        
-        # Right side: Controls
-        ctrl_frame = ttk.Frame(self.tab_motion)
+
+    def _build_manual_tab(self):
+        """Manual Control tab: jog, home, disable steppers, laser on/off, raw G-code."""
+        # Left: Camera Preview
+        cam_frame = ttk.LabelFrame(self.tab_manual, text="Camera Preview")
+        cam_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.manual_cam_label = ttk.Label(cam_frame)
+        self.manual_cam_label.pack(fill=tk.BOTH, expand=True)
+
+        # Right: Controls
+        ctrl_frame = ttk.Frame(self.tab_manual)
         ctrl_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
-        
-        pos_frame = ttk.LabelFrame(ctrl_frame, text="Position")
+
+        # Position + Home + Disable Steppers
+        pos_frame = ttk.LabelFrame(ctrl_frame, text="Machine Controls")
         pos_frame.pack(fill=tk.X, pady=5)
         self.lbl_pos = ttk.Label(pos_frame, text="X: 0.00 Y: 0.00 Z: 0.00", font=("Arial", 12, "bold"))
-        self.lbl_pos.pack(pady=10)
-        
-        btn_home = ttk.Button(pos_frame, text="Home All", command=self._cmd_home)
-        btn_home.pack(pady=5)
-        
+        self.lbl_pos.pack(pady=8)
+        btn_row = ttk.Frame(pos_frame)
+        btn_row.pack(pady=4)
+        ttk.Button(btn_row, text="Home All Axes", command=self._cmd_home).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            btn_row, text="Disable Steppers",
+            command=lambda: self._send_raw_safe("M18")
+        ).pack(side=tk.LEFT, padx=4)
+
+        # Jog Controls
         jog_frame = ttk.LabelFrame(ctrl_frame, text="Jog Controls")
         jog_frame.pack(fill=tk.X, pady=5)
-        
+
         self.step_var = tk.DoubleVar(value=1.0)
         self.var_custom_step = tk.StringVar(value="")
         steps = ttk.Frame(jog_frame)
@@ -277,7 +315,7 @@ class App:
         custom_entry.pack(side=tk.LEFT, padx=2)
         custom_entry.bind("<FocusIn>", lambda e: self.step_var.set(-1))
         custom_entry.bind("<Return>", lambda e: self.step_var.set(-1))
-        
+
         grid = ttk.Frame(jog_frame)
         grid.pack(pady=5)
         ttk.Button(grid, text="Y+", command=lambda: self._jog(Y=1)).grid(row=0, column=1)
@@ -300,6 +338,38 @@ class App:
         self.var_goto_z = tk.StringVar(value="")
         ttk.Entry(goto_frame, textvariable=self.var_goto_z, width=7).grid(row=0, column=5, padx=3, pady=5)
         ttk.Button(goto_frame, text="Go", command=self._goto_xyz).grid(row=0, column=6, padx=5, pady=5)
+
+        # Laser Manual Control
+        laser_ctrl = ttk.LabelFrame(ctrl_frame, text="Laser Control")
+        laser_ctrl.pack(fill=tk.X, pady=5)
+        laser_btn_row = ttk.Frame(laser_ctrl)
+        laser_btn_row.pack(pady=6)
+        self.btn_laser_on = ttk.Button(
+            laser_btn_row, text="Laser ON",
+            command=lambda: self._manual_laser(True)
+        )
+        self.btn_laser_on.pack(side=tk.LEFT, padx=6)
+        self.btn_laser_off = ttk.Button(
+            laser_btn_row, text="Laser OFF",
+            command=lambda: self._manual_laser(False)
+        )
+        self.btn_laser_off.pack(side=tk.LEFT, padx=6)
+        self.lbl_laser_state = ttk.Label(laser_ctrl, text="Laser: OFF", foreground="gray")
+        self.lbl_laser_state.pack(pady=2)
+
+        # Raw G-code Sender
+        gcode_frame = ttk.LabelFrame(ctrl_frame, text="Manual G-code Sender")
+        gcode_frame.pack(fill=tk.X, pady=5)
+        gcode_input_row = ttk.Frame(gcode_frame)
+        gcode_input_row.pack(fill=tk.X, padx=3, pady=3)
+        self.var_raw_gcode = tk.StringVar()
+        raw_entry = ttk.Entry(gcode_input_row, textvariable=self.var_raw_gcode, width=22)
+        raw_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        raw_entry.bind("<Return>", lambda e: self._send_raw_gcode())
+        ttk.Button(gcode_input_row, text="Send", command=self._send_raw_gcode).pack(side=tk.LEFT, padx=3)
+        ttk.Button(gcode_input_row, text="Clear", command=lambda: self.txt_gcode_log.delete(1.0, tk.END)).pack(side=tk.LEFT, padx=3)
+        self.txt_gcode_log = tk.Text(gcode_frame, height=6, width=30, state=tk.DISABLED, font=("Courier", 9))
+        self.txt_gcode_log.pack(fill=tk.X, padx=3, pady=3)
 
     def _build_jog_buttons(self, parent):
         steps = ttk.Frame(parent)
@@ -725,7 +795,62 @@ class App:
         self.lbl_status.config(text="Connecting...", foreground="orange")
         self.root.update()
         self._connect_motion()
-        
+
+    def _apply_laser_settings(self):
+        """Save laser config and reconnect the LaserController."""
+        self.config.set("hardware.laser.mode", self.var_laser_mode.get())
+        self.config.set("hardware.laser.rpi_pin", self.var_laser_pin.get())
+        self.config.set("hardware.laser.klipper_on_gcode", self.var_laser_on_gcode.get())
+        self.config.set("hardware.laser.klipper_off_gcode", self.var_laser_off_gcode.get())
+        # Reconnect laser controller if experiment runner exists
+        if self.exp_runner and hasattr(self.exp_runner, 'laser'):
+            try:
+                self.exp_runner.laser.disconnect()
+            except Exception:
+                pass
+            from robocam.peripherals import LaserController
+            self.exp_runner.laser = LaserController(self.motion)
+        messagebox.showinfo("Laser Settings", "Laser settings saved. Reconnect will take effect on next experiment run.")
+
+    def _manual_laser(self, state: bool):
+        """Manually toggle the laser from the Manual Control tab."""
+        from robocam.peripherals import LaserController
+        try:
+            laser = LaserController(self.motion)
+            laser.connect()
+            laser.set_laser(state)
+            label = "ON" if state else "OFF"
+            color = "red" if state else "gray"
+            self.lbl_laser_state.config(text=f"Laser: {label}", foreground=color)
+        except Exception as e:
+            messagebox.showerror("Laser Error", str(e))
+
+    def _send_raw_safe(self, cmd: str):
+        """Send a raw G-code command safely, showing errors in a dialog."""
+        if not self.motion:
+            messagebox.showerror("Not Connected", "No motion controller connected.")
+            return
+        try:
+            self.motion.send_raw(cmd)
+        except Exception as e:
+            messagebox.showerror("G-code Error", str(e))
+
+    def _send_raw_gcode(self):
+        """Send the raw G-code from the manual sender entry box."""
+        cmd = self.var_raw_gcode.get().strip()
+        if not cmd:
+            return
+        self._log_gcode(f">>> {cmd}")
+        self._send_raw_safe(cmd)
+        self.var_raw_gcode.set("")
+
+    def _log_gcode(self, text: str):
+        """Append a line to the G-code log text widget."""
+        self.txt_gcode_log.config(state=tk.NORMAL)
+        self.txt_gcode_log.insert(tk.END, text + "\n")
+        self.txt_gcode_log.see(tk.END)
+        self.txt_gcode_log.config(state=tk.DISABLED)
+
     def _refresh_cals(self):
         cal_dir = get_config().get("paths.calibration_dir", "config/calibrations")
         if os.path.exists(cal_dir):
@@ -1047,8 +1172,10 @@ class App:
         active_tab_text = self.notebook.tab(active_tab_id, "text")
         
         target_label = None
-        if active_tab_text == "Setup & Manual Control":
+        if active_tab_text == "Setup":
             target_label = self.cam_label
+        elif active_tab_text == "Manual Control":
+            target_label = self.manual_cam_label
         elif active_tab_text == "Calibration":
             target_label = self.calib_preview_label
         elif active_tab_text == "Experiment":

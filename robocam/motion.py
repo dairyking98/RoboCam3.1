@@ -360,3 +360,7 @@ class MotionController:
         
     def move_absolute(self, X=None, Y=None, Z=None, speed=None):
         self.backend.move_absolute(X=X, Y=Y, Z=Z, speed=speed)
+
+    def send_raw(self, command: str):
+        """Send a raw G-code command directly to the backend (e.g. M18, M84)."""
+        self.backend.send_gcode(command)
