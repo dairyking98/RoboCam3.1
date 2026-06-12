@@ -27,6 +27,12 @@ class Config:
             "camera": {
                 "preview_resolution": [800, 600],
                 "default_fps": 30.0
+            },
+            "laser": {
+                "mode": "disabled",
+                "rpi_pin": 21,
+                "klipper_on_gcode": "SET_PIN PIN=laser VALUE=1",
+                "klipper_off_gcode": "SET_PIN PIN=laser VALUE=0"
             }
         },
         "paths": {

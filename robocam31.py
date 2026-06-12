@@ -6,6 +6,7 @@ from PIL import Image, ImageTk
 import os
 import glob
 import time
+import json
 import numpy as np
 
 from robocam.config import get_config
@@ -13,6 +14,10 @@ from robocam.motion import MotionController
 from robocam.camera import Camera
 from robocam.calibration import CalibrationManager, WellPlate
 from robocam.experiment import ExperimentRunner
+
+def datetime_name():
+    return time.strftime("%Y%m%d_%H%M%S")
+
 
 class WellGrid(tk.Canvas):
     """Custom Tkinter canvas to draw a clickable/draggable well plate grid."""
@@ -276,6 +281,45 @@ class App:
         ttk.Button(grid, text="Y-", command=lambda: self._jog(Y=-1)).grid(row=2, column=1)
         ttk.Button(grid, text="Z+", command=lambda: self._jog(Z=1)).grid(row=0, column=3, padx=10)
         ttk.Button(grid, text="Z-", command=lambda: self._jog(Z=-1)).grid(row=2, column=3, padx=10)
+
+    def _build_jog_buttons(self, parent):
+        steps = ttk.Frame(parent)
+        steps.pack(pady=4)
+        ttk.Radiobutton(steps, text="0.1", variable=self.step_var, value=0.1).pack(side=tk.LEFT)
+        ttk.Radiobutton(steps, text="1.0", variable=self.step_var, value=1.0).pack(side=tk.LEFT)
+        ttk.Radiobutton(steps, text="10.0", variable=self.step_var, value=10.0).pack(side=tk.LEFT)
+
+        grid = ttk.Frame(parent)
+        grid.pack(pady=4)
+        ttk.Button(grid, text="Y+", command=lambda: self._jog(Y=1)).grid(row=0, column=1)
+        ttk.Button(grid, text="X-", command=lambda: self._jog(X=-1)).grid(row=1, column=0)
+        ttk.Button(grid, text="X+", command=lambda: self._jog(X=1)).grid(row=1, column=2)
+        ttk.Button(grid, text="Y-", command=lambda: self._jog(Y=-1)).grid(row=2, column=1)
+        ttk.Button(grid, text="Z+", command=lambda: self._jog(Z=1)).grid(row=0, column=3, padx=8)
+        ttk.Button(grid, text="Z-", command=lambda: self._jog(Z=-1)).grid(row=2, column=3, padx=8)
+
+    def _build_camera_controls(self, parent, include_resolution=False):
+        ttk.Label(parent, text="Exposure (ms):").grid(row=0, column=0, padx=3, pady=3, sticky=tk.W)
+        ttk.Scale(parent, from_=0.1, to=2000.0, variable=self.var_exp_ms, command=self._on_exp_slider, length=150).grid(row=0, column=1, padx=3, pady=3)
+        exp_entry = ttk.Entry(parent, textvariable=self.var_exp_ms, width=8)
+        exp_entry.grid(row=0, column=2, padx=3, pady=3)
+        exp_entry.bind("<Return>", self._on_exp_entry)
+        exp_entry.bind("<FocusOut>", self._on_exp_entry)
+
+        ttk.Label(parent, text="Gain:").grid(row=1, column=0, padx=3, pady=3, sticky=tk.W)
+        ttk.Scale(parent, from_=0, to=500, variable=self.var_gain, command=self._on_gain_slider, length=150).grid(row=1, column=1, padx=3, pady=3)
+        gain_entry = ttk.Entry(parent, textvariable=self.var_gain, width=8)
+        gain_entry.grid(row=1, column=2, padx=3, pady=3)
+        gain_entry.bind("<Return>", self._on_gain_entry)
+        gain_entry.bind("<FocusOut>", self._on_gain_entry)
+
+        if include_resolution:
+            ttk.Label(parent, text="Resolution:").grid(row=2, column=0, padx=3, pady=3, sticky=tk.W)
+            self.cb_res_calib = ttk.Combobox(parent, textvariable=self.var_res, state="readonly", width=15)
+            self.cb_res_calib.grid(row=2, column=1, columnspan=2, padx=3, pady=3, sticky=tk.W)
+            self.cb_res_calib.bind("<<ComboboxSelected>>", self._on_res_change)
+            if hasattr(self, "cb_res") and self.cb_res["values"]:
+                self.cb_res_calib["values"] = self.cb_res["values"]
         
     def _build_calib_tab(self):
         # 3 columns: Preview | Controls | Map
@@ -291,6 +335,30 @@ class App:
         # Col 2: Controls
         ctrl_frame = ttk.Frame(paned)
         paned.add(ctrl_frame, weight=1)
+
+        move_group = ttk.LabelFrame(ctrl_frame, text="Movement Controls")
+        move_group.pack(fill=tk.X, pady=5)
+        self.lbl_calib_pos = ttk.Label(move_group, text="X: 0.00 Y: 0.00 Z: 0.00", font=("Arial", 10, "bold"))
+        self.lbl_calib_pos.pack(pady=5)
+        ttk.Button(move_group, text="Home All", command=self._cmd_home).pack(pady=2)
+        self._build_jog_buttons(move_group)
+
+        cam_group = ttk.LabelFrame(ctrl_frame, text="Camera Controls")
+        cam_group.pack(fill=tk.X, pady=5)
+        self._build_camera_controls(cam_group, include_resolution=True)
+
+        quick_group = ttk.LabelFrame(ctrl_frame, text="Quick Capture")
+        quick_group.pack(fill=tk.X, pady=5)
+        ttk.Label(quick_group, text="Format:").grid(row=0, column=0, sticky=tk.W, padx=3, pady=3)
+        self.var_quick_fmt = tk.StringVar(value="jpg")
+        ttk.Combobox(quick_group, textvariable=self.var_quick_fmt, values=["jpg", "png", "tif"], state="readonly", width=6).grid(row=0, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Button(quick_group, text="Capture Image", command=self._quick_capture_image).grid(row=1, column=0, columnspan=2, sticky=tk.EW, padx=3, pady=3)
+        ttk.Label(quick_group, text="Video seconds:").grid(row=2, column=0, sticky=tk.W, padx=3, pady=3)
+        self.var_quick_video_s = tk.DoubleVar(value=5.0)
+        ttk.Entry(quick_group, textvariable=self.var_quick_video_s, width=6).grid(row=2, column=1, sticky=tk.W, padx=3, pady=3)
+        ttk.Button(quick_group, text="Record Video", command=self._quick_capture_video).grid(row=3, column=0, columnspan=2, sticky=tk.EW, padx=3, pady=3)
+        self.lbl_quick_status = ttk.Label(quick_group, text="Ready", foreground="gray")
+        self.lbl_quick_status.grid(row=4, column=0, columnspan=2, sticky=tk.W, padx=3, pady=3)
         
         corners_group = ttk.LabelFrame(ctrl_frame, text="Corner Calibration")
         corners_group.pack(fill=tk.X, pady=5)
@@ -334,7 +402,15 @@ class App:
         self.var_pattern = tk.StringVar(value=WellPlate.PATTERN_RASTER)
         ttk.Combobox(size_group, textvariable=self.var_pattern, values=[WellPlate.PATTERN_RASTER, WellPlate.PATTERN_SNAKE], state="readonly").grid(row=2, column=1, sticky=tk.W, pady=2)
         
-        ttk.Button(size_group, text="Update Map & Save", command=self._save_calib).grid(row=3, column=0, columnspan=2, pady=10)
+        ttk.Label(size_group, text="Name:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.var_calib_name = tk.StringVar(value="calibration")
+        ttk.Entry(size_group, textvariable=self.var_calib_name, width=18).grid(row=3, column=1, sticky=tk.W, pady=2)
+
+        file_buttons = ttk.Frame(size_group)
+        file_buttons.grid(row=4, column=0, columnspan=2, pady=10, sticky=tk.EW)
+        ttk.Button(file_buttons, text="Update Map", command=self._update_calib_map).pack(side=tk.LEFT, padx=2)
+        ttk.Button(file_buttons, text="Save", command=self._save_calib).pack(side=tk.LEFT, padx=2)
+        ttk.Button(file_buttons, text="Load", command=self._load_calib_dialog).pack(side=tk.LEFT, padx=2)
         
         # Col 3: Map
         map_frame = ttk.LabelFrame(paned, text="Well Map (Click to Navigate)")
@@ -375,13 +451,47 @@ class App:
         self.cb_cal.bind("<<ComboboxSelected>>", self._on_cal_file_selected)
         ttk.Button(cal_sub, text="Refresh", command=self._refresh_cals).pack(side=tk.LEFT, padx=2)
         
-        ttk.Label(grp, text="Delay per well (s):").grid(row=2, column=0, sticky=tk.W, pady=5)
+        ttk.Label(grp, text="Mode:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.var_exp_mode = tk.StringVar(value="Image")
+        ttk.Combobox(grp, textvariable=self.var_exp_mode, values=["Image", "Raw .npy", "Video", "Laser Video"], state="readonly", width=12).grid(row=2, column=1, sticky=tk.W, pady=5)
+
+        ttk.Label(grp, text="Dwell per well (s):").grid(row=3, column=0, sticky=tk.W, pady=5)
         self.var_delay = tk.DoubleVar(value=1.0)
-        ttk.Entry(grp, textvariable=self.var_delay, width=5).grid(row=2, column=1, sticky=tk.W, pady=5)
-        
-        self.var_fast_raw = tk.BooleanVar(value=False)
-        ttk.Checkbutton(grp, text="Fast Raw Capture (.npy)\n(Requires Post-Processing)", variable=self.var_fast_raw).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=5)
-        
+        ttk.Entry(grp, textvariable=self.var_delay, width=7).grid(row=3, column=1, sticky=tk.W, pady=5)
+
+        ttk.Label(grp, text="Image format:").grid(row=4, column=0, sticky=tk.W, pady=5)
+        self.var_image_fmt = tk.StringVar(value="jpg")
+        ttk.Combobox(grp, textvariable=self.var_image_fmt, values=["jpg", "png", "tif"], state="readonly", width=7).grid(row=4, column=1, sticky=tk.W, pady=5)
+
+        ttk.Label(grp, text="Video duration (s):").grid(row=5, column=0, sticky=tk.W, pady=5)
+        self.var_video_duration = tk.DoubleVar(value=5.0)
+        ttk.Entry(grp, textvariable=self.var_video_duration, width=7).grid(row=5, column=1, sticky=tk.W, pady=5)
+
+        ttk.Label(grp, text="Video FPS:").grid(row=6, column=0, sticky=tk.W, pady=5)
+        self.var_video_fps = tk.DoubleVar(value=self.config.get("hardware.camera.default_fps", 30.0))
+        ttk.Entry(grp, textvariable=self.var_video_fps, width=7).grid(row=6, column=1, sticky=tk.W, pady=5)
+
+        ttk.Label(grp, text="Pre-laser (s):").grid(row=7, column=0, sticky=tk.W, pady=5)
+        self.var_laser_pre = tk.DoubleVar(value=2.0)
+        ttk.Entry(grp, textvariable=self.var_laser_pre, width=7).grid(row=7, column=1, sticky=tk.W, pady=5)
+
+        ttk.Label(grp, text="Laser ON (s):").grid(row=8, column=0, sticky=tk.W, pady=5)
+        self.var_laser_on = tk.DoubleVar(value=1.0)
+        ttk.Entry(grp, textvariable=self.var_laser_on, width=7).grid(row=8, column=1, sticky=tk.W, pady=5)
+
+        ttk.Label(grp, text="Post-laser (s):").grid(row=9, column=0, sticky=tk.W, pady=5)
+        self.var_laser_post = tk.DoubleVar(value=2.0)
+        ttk.Entry(grp, textvariable=self.var_laser_post, width=7).grid(row=9, column=1, sticky=tk.W, pady=5)
+
+        preset_group = ttk.LabelFrame(settings_frame, text="Experiment Presets")
+        preset_group.pack(fill=tk.X, pady=5)
+        self.var_preset_name = tk.StringVar(value="default")
+        self.cb_preset = ttk.Combobox(preset_group, textvariable=self.var_preset_name, width=18)
+        self.cb_preset.grid(row=0, column=0, columnspan=3, sticky=tk.EW, padx=3, pady=3)
+        ttk.Button(preset_group, text="Save", command=self._save_preset).grid(row=1, column=0, sticky=tk.EW, padx=3, pady=3)
+        ttk.Button(preset_group, text="Load", command=self._load_preset).grid(row=1, column=1, sticky=tk.EW, padx=3, pady=3)
+        ttk.Button(preset_group, text="Refresh", command=self._refresh_presets).grid(row=1, column=2, sticky=tk.EW, padx=3, pady=3)
+
         ctrl_frame = ttk.Frame(settings_frame)
         ctrl_frame.pack(fill=tk.X, pady=20)
         self.btn_start = ttk.Button(ctrl_frame, text="Start Experiment", command=self._start_exp)
@@ -410,6 +520,7 @@ class App:
         self.exp_grid.on_selection_changed = self._update_sel_count
         
         self._refresh_cals()
+        self._refresh_presets()
         self._update_sel_count()
         
     def _on_plate_dim_change(self, event=None):
@@ -448,14 +559,13 @@ class App:
         if not cal_file: return
         cal_path = os.path.join(get_config().get("paths.calibration_dir", "config/calibrations"), cal_file)
         try:
-            # We just want to know dimensions to rebuild grid
-            import json
             with open(cal_path, 'r') as f:
                 data = json.load(f)
-            w = data.get('width', 12)
-            d = data.get('depth', 8)
+            w = data.get('x_quantity', data.get('width', 12))
+            d = data.get('y_quantity', data.get('depth', 8))
             self.var_w.set(w)
             self.var_d.set(d)
+            self.var_pattern.set(data.get("pattern", WellPlate.PATTERN_RASTER))
             self._on_plate_dim_change()
         except Exception:
             pass
@@ -490,6 +600,8 @@ class App:
             res_list = self.camera.get_supported_resolutions()
             str_list = [f"{w}x{h}" for w, h in res_list]
             self.cb_res['values'] = str_list
+            if hasattr(self, "cb_res_calib"):
+                self.cb_res_calib["values"] = str_list
             current = f"{self.camera.resolution[0]}x{self.camera.resolution[1]}"
             if current in str_list:
                 self.cb_res.set(current)
@@ -522,7 +634,10 @@ class App:
                 
     def _update_pos_label(self):
         if self.motion and self.motion.X is not None:
-            self.lbl_pos.config(text=f"X: {self.motion.X:.2f} Y: {self.motion.Y:.2f} Z: {self.motion.Z:.2f}")
+            text = f"X: {self.motion.X:.2f} Y: {self.motion.Y:.2f} Z: {self.motion.Z:.2f}"
+            self.lbl_pos.config(text=text)
+            if hasattr(self, "lbl_calib_pos"):
+                self.lbl_calib_pos.config(text=text)
             
     def _cmd_home(self):
         if not self.motion: return
@@ -559,22 +674,177 @@ class App:
         elif corner == 'lr':
             self.cal_mgr.lower_right = pos
             self.lbl_lr.config(text=f"Lower Right: {pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}")
-            
+
+        self._update_calib_map(silent=True)
+
+    def _update_corner_labels(self):
+        mapping = [
+            (self.cal_mgr.upper_left, self.lbl_ul, "Upper Left"),
+            (self.cal_mgr.upper_right, self.lbl_ur, "Upper Right"),
+            (self.cal_mgr.lower_left, self.lbl_ll, "Lower Left"),
+            (self.cal_mgr.lower_right, self.lbl_lr, "Lower Right"),
+        ]
+        for pos, label, name in mapping:
+            if pos:
+                label.config(text=f"{name}: {pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}")
+            else:
+                label.config(text=f"{name}: Not Set")
+
+    def _update_calib_map(self, silent=False):
+        self.cal_mgr.width = self.var_w.get()
+        self.cal_mgr.depth = self.var_d.get()
+        self.cal_mgr.pattern = self.var_pattern.get()
+        self.calib_grid.rebuild(self.cal_mgr.depth, self.cal_mgr.width)
+        self.exp_grid.rebuild(self.cal_mgr.depth, self.cal_mgr.width)
+        self._update_sel_count()
+        if not silent:
+            messagebox.showinfo("Updated", "Well map updated.")
+
+    def _load_calib_dialog(self):
+        cal_dir = get_config().get("paths.calibration_dir", "config/calibrations")
+        path = filedialog.askopenfilename(
+            title="Load Calibration",
+            initialdir=cal_dir,
+            filetypes=[("Calibration JSON", "*.json"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        try:
+            self.cal_mgr.load(path)
+            self.var_w.set(self.cal_mgr.width)
+            self.var_d.set(self.cal_mgr.depth)
+            self.var_pattern.set(self.cal_mgr.pattern)
+            self.var_calib_name.set(os.path.splitext(os.path.basename(path))[0])
+            self._update_corner_labels()
+            self._update_calib_map(silent=True)
+            self._refresh_cals()
+            self.var_cal_file.set(os.path.basename(path))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load calibration: {e}")
+
     def _save_calib(self):
         self.cal_mgr.width = self.var_w.get()
         self.cal_mgr.depth = self.var_d.get()
         self.cal_mgr.pattern = self.var_pattern.get()
         try:
-            name = "calib_" + str(int(time.time()))
+            name = self.var_calib_name.get().strip() or "calibration"
+            name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name)
             self.cal_mgr.save(name)
             messagebox.showinfo("Success", f"Saved as {name}.json")
             self._refresh_cals()
+            self.var_cal_file.set(f"{name}.json")
         except Exception as e:
             messagebox.showerror("Error", str(e))
+
+    def _quick_capture_image(self):
+        fmt = self.var_quick_fmt.get().lower().lstrip(".") or "jpg"
+        out_dir = os.path.join(get_config().get("paths.output_dir", "outputs"), "quick_capture")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"quick_{datetime_name()}.{fmt}")
+        frame = self.camera.get_frame()
+        if frame is None:
+            messagebox.showerror("Error", "Could not read a camera frame.")
+            return
+        if self.camera.backend == "picamera2":
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(path, frame)
+        self.lbl_quick_status.config(text=os.path.basename(path))
+
+    def _quick_capture_video(self):
+        if self.exp_runner and self.exp_runner.running:
+            messagebox.showwarning("Busy", "Wait for the experiment to finish before quick recording.")
+            return
+        out_dir = os.path.join(get_config().get("paths.output_dir", "outputs"), "quick_capture")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"quick_{datetime_name()}.avi")
+        duration = max(0.1, float(self.var_quick_video_s.get()))
+        fps = float(get_config().get("hardware.camera.default_fps", 30.0))
+        self.lbl_quick_status.config(text="Recording...")
+
+        def task():
+            try:
+                runner = ExperimentRunner(self.motion, self.camera)
+                runner.running = True
+                runner._write_video(path, duration, fps)
+                runner.running = False
+                self.root.after(0, lambda: self.lbl_quick_status.config(text=os.path.basename(path)))
+            except Exception as e:
+                self.root.after(0, messagebox.showerror, "Error", str(e))
+                self.root.after(0, lambda: self.lbl_quick_status.config(text="Ready"))
+
+        threading.Thread(target=task, daemon=True).start()
             
     def _update_exp_status(self, msg):
         self.lbl_exp_status.config(text=f"Status: {msg}")
         self.root.update_idletasks()
+
+    def _preset_dir(self):
+        path = os.path.join(get_config().get("paths.config_dir", "config"), "experiment_presets")
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _preset_data(self):
+        return {
+            "experiment_name": self.var_exp_name.get(),
+            "mode": self.var_exp_mode.get(),
+            "delay": self.var_delay.get(),
+            "image_format": self.var_image_fmt.get(),
+            "video_duration": self.var_video_duration.get(),
+            "video_fps": self.var_video_fps.get(),
+            "laser_pre": self.var_laser_pre.get(),
+            "laser_on": self.var_laser_on.get(),
+            "laser_post": self.var_laser_post.get(),
+            "calibration_file": self.var_cal_file.get(),
+        }
+
+    def _apply_preset_data(self, data):
+        self.var_exp_name.set(data.get("experiment_name", self.var_exp_name.get()))
+        self.var_exp_mode.set(data.get("mode", self.var_exp_mode.get()))
+        self.var_delay.set(float(data.get("delay", self.var_delay.get())))
+        self.var_image_fmt.set(data.get("image_format", self.var_image_fmt.get()))
+        self.var_video_duration.set(float(data.get("video_duration", self.var_video_duration.get())))
+        self.var_video_fps.set(float(data.get("video_fps", self.var_video_fps.get())))
+        self.var_laser_pre.set(float(data.get("laser_pre", self.var_laser_pre.get())))
+        self.var_laser_on.set(float(data.get("laser_on", self.var_laser_on.get())))
+        self.var_laser_post.set(float(data.get("laser_post", self.var_laser_post.get())))
+        cal_file = data.get("calibration_file")
+        if cal_file:
+            self.var_cal_file.set(cal_file)
+            self._on_cal_file_selected()
+
+    def _refresh_presets(self):
+        if not hasattr(self, "cb_preset"):
+            return
+        files = [os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(self._preset_dir(), "*.json"))]
+        files.sort()
+        self.cb_preset["values"] = files
+        if files and self.var_preset_name.get() not in files:
+            self.var_preset_name.set(files[0])
+
+    def _save_preset(self):
+        name = self.var_preset_name.get().strip() or "default"
+        name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name)
+        path = os.path.join(self._preset_dir(), f"{name}.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._preset_data(), f, indent=2)
+            self.var_preset_name.set(name)
+            self._refresh_presets()
+            messagebox.showinfo("Preset Saved", f"Saved {name}.json")
+        except Exception as e:
+            messagebox.showerror("Preset Error", str(e))
+
+    def _load_preset(self):
+        name = self.var_preset_name.get().strip()
+        if not name:
+            messagebox.showerror("Preset Error", "Choose a preset to load.")
+            return
+        path = os.path.join(self._preset_dir(), f"{name}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                self._apply_preset_data(json.load(f))
+        except Exception as e:
+            messagebox.showerror("Preset Error", str(e))
 
     def _start_exp(self):
         if not self.motion or not self.exp_runner:
@@ -606,13 +876,25 @@ class App:
         self.btn_stop.config(state=tk.NORMAL)
         
         def task():
+            mode_map = {
+                "Image": "image",
+                "Raw .npy": "raw",
+                "Video": "video",
+                "Laser Video": "laser_video",
+            }
             self.exp_runner.run(
                 self.var_exp_name.get(), 
                 filtered_pos, 
                 filtered_labels, 
                 self.var_delay.get(),
                 callback=lambda msg: self.root.after(0, self._update_exp_status, msg),
-                fast_raw_mode=self.var_fast_raw.get()
+                mode=mode_map.get(self.var_exp_mode.get(), "image"),
+                image_format=self.var_image_fmt.get(),
+                video_duration=self.var_video_duration.get(),
+                video_fps=self.var_video_fps.get(),
+                laser_pre_delay=self.var_laser_pre.get(),
+                laser_on_duration=self.var_laser_on.get(),
+                laser_post_delay=self.var_laser_post.get(),
             )
             self.root.after(0, self._exp_done)
             
@@ -660,6 +942,10 @@ class App:
                         self._render_frame_to_gui(target_label, frame, add_crosshair=False)
                 except Exception:
                     pass
+            elif self.exp_runner.last_written_video_path:
+                self._display_placeholder(target_label, "Video capture running")
+            else:
+                self._display_placeholder(target_label, "Experiment running")
             self.root.after(500, self.update_camera_preview)
             return
             

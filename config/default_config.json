@@ -1,0 +1,41 @@
+{
+  "hardware": {
+    "motion_backend": "marlin",
+    "printer": {
+      "baudrate": 115200,
+      "timeout": 10.0,
+      "home_timeout": 90.0,
+      "movement_wait_timeout": 30.0,
+      "command_delay": 0.1,
+      "position_update_delay": 0.1,
+      "connection_retry_delay": 2.0,
+      "max_retries": 5
+    },
+    "klipper": {
+      "host": "127.0.0.1",
+      "port": 7125,
+      "timeout": 10.0,
+      "home_timeout": 90.0,
+      "movement_wait_timeout": 30.0
+    },
+    "camera": {
+      "preview_resolution": [
+        800,
+        600
+      ],
+      "default_fps": 30.0
+    },
+    "laser": {
+      "mode": "disabled",
+      "rpi_pin": 21,
+      "klipper_on_gcode": "SET_PIN PIN=laser VALUE=1",
+      "klipper_off_gcode": "SET_PIN PIN=laser VALUE=0"
+    }
+  },
+  "paths": {
+    "config_dir": "config",
+    "calibration_dir": "config/calibrations",
+    "experiment_dir": "experiments",
+    "output_dir": "outputs"
+  }
+}
