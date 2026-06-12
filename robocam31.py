@@ -499,9 +499,11 @@ class App:
         self.var_delay = tk.DoubleVar(value=1.0)
         ttk.Entry(grp, textvariable=self.var_delay, width=7).grid(row=3, column=1, sticky=tk.W, pady=5)
 
-        ttk.Label(grp, text="Image format:").grid(row=4, column=0, sticky=tk.W, pady=5)
+        self.lbl_image_fmt = ttk.Label(grp, text="Image format:")
+        self.lbl_image_fmt.grid(row=4, column=0, sticky=tk.W, pady=5)
         self.var_image_fmt = tk.StringVar(value="jpg")
-        ttk.Combobox(grp, textvariable=self.var_image_fmt, values=["jpg", "png", "tif"], state="readonly", width=7).grid(row=4, column=1, sticky=tk.W, pady=5)
+        self.cb_image_fmt = ttk.Combobox(grp, textvariable=self.var_image_fmt, values=["jpg", "png", "tif"], state="readonly", width=7)
+        self.cb_image_fmt.grid(row=4, column=1, sticky=tk.W, pady=5)
 
         # --- Duration: shown for Raw .npy and Video ---
         self.lbl_pre_duration = ttk.Label(grp, text="Record duration (s):")
@@ -580,6 +582,14 @@ class App:
         mode = self.var_exp_mode.get()
         is_timed = mode in ("Raw .npy", "Video")  # modes that have a duration
         use_laser = self.var_use_laser.get()
+
+        # Image format: only shown for Image mode
+        if mode == "Image":
+            self.lbl_image_fmt.grid()
+            self.cb_image_fmt.grid()
+        else:
+            self.lbl_image_fmt.grid_remove()
+            self.cb_image_fmt.grid_remove()
 
         # Duration field: shown for Raw and Video, hidden for Image
         if is_timed:
