@@ -1058,12 +1058,12 @@ class App:
             self.root.after(100, self.update_camera_preview)
             return
             
-        if is_experiment_running and self.exp_runner.is_fast_raw_mode:
+        if is_experiment_running and self.exp_runner.is_raw_mode:
             self._display_placeholder(target_label, "Preview disabled during Fast Raw Capture")
             self.root.after(500, self.update_camera_preview)
             return
             
-        if is_experiment_running and not self.exp_runner.is_fast_raw_mode:
+        if is_experiment_running and not self.exp_runner.is_raw_mode:
             last_path = self.exp_runner.last_written_image_path
             if last_path and os.path.exists(last_path):
                 try:
