@@ -174,11 +174,18 @@ class Camera:
     def _init_picam2(self):
         try:
             self.picam2 = Picamera2()
-            cfg = self.picam2.create_preview_configuration(main={"size": self.resolution})
+            # Force RGB888 so capture_array always returns 3-channel RGB
+            cfg = self.picam2.create_preview_configuration(
+                main={"size": self.resolution, "format": "RGB888"}
+            )
             self.picam2.configure(cfg)
             self.picam2.start()
+            # Cached values for get_exposure / get_gain (avoids blocking capture_metadata)
+            self._picam2_exposure_us = 20000
+            self._picam2_gain = 1.0
             self.backend = "picamera2"
             self.running = True
+            logger.info(f"Picamera2 opened at {self.resolution}")
         except Exception as e:
             logger.error(f"Picamera2 failed: {e}")
             self._init_cv2()
@@ -196,6 +203,8 @@ class Camera:
 
     def get_exposure(self) -> int:
         """Get exposure in microseconds."""
+        if self.backend == "picamera2":
+            return self._picam2_exposure_us
         if self.simulate or not self.running or self.backend != "playerone":
             return 20000
         with self._sdk_lock:
@@ -204,6 +213,10 @@ class Camera:
 
     def set_exposure(self, us: int) -> None:
         """Set exposure in microseconds."""
+        if self.backend == "picamera2":
+            self._picam2_exposure_us = int(us)
+            self.picam2.set_controls({"ExposureTime": int(us), "AeEnable": False})
+            return
         if self.simulate or not self.running or self.backend != "playerone":
             return
         with self._sdk_lock:
@@ -211,6 +224,9 @@ class Camera:
             self._poa.SetExp(self._camera_id, val, False)
 
     def get_gain(self) -> int:
+        """Get gain; for picamera2 returns analogue gain * 100 to match PlayerOne scale."""
+        if self.backend == "picamera2":
+            return int(self._picam2_gain * 100)
         if self.simulate or not self.running or self.backend != "playerone":
             return 100
         with self._sdk_lock:
@@ -218,6 +234,11 @@ class Camera:
             return int(val)
 
     def set_gain(self, gain: int) -> None:
+        """Set gain; for picamera2 interprets gain/100 as analogue gain multiplier."""
+        if self.backend == "picamera2":
+            self._picam2_gain = max(1.0, gain / 100.0)
+            self.picam2.set_controls({"AnalogueGain": self._picam2_gain, "AeEnable": False})
+            return
         if self.simulate or not self.running or self.backend != "playerone":
             return
         with self._sdk_lock:
