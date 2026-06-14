@@ -125,6 +125,8 @@ class ExperimentPanel(QWidget):
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
+        splitter.setCollapsible(0, False)
+        col1.setMinimumWidth(380)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -289,9 +291,21 @@ class ExperimentPanel(QWidget):
         tb.addWidget(self.sel_count_lbl)
         layout.addLayout(tb)
 
+        self._well_placeholder = QLabel(
+            "Generate or load calibrated well map\nin the Calibration tab."
+        )
+        self._well_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._well_placeholder.setStyleSheet("color: gray; font-size: 10px;")
+        layout.addWidget(self._well_placeholder, stretch=1)
+
         self.well_grid = WellGrid(rows=8, cols=12, mode=WellGrid.Mode.SELECT)
         self.well_grid.selection_changed.connect(self._update_sel_count)
-        layout.addWidget(self.well_grid)
+
+        self._well_scroll = QScrollArea()
+        self._well_scroll.setWidgetResizable(True)
+        self._well_scroll.setWidget(self.well_grid)
+        self._well_scroll.hide()
+        layout.addWidget(self._well_scroll, stretch=1)
 
         self._update_sel_count()
         return grp
@@ -338,10 +352,14 @@ class ExperimentPanel(QWidget):
         """Called by MainWindow when calibration corners or dimensions change."""
         if self._cal_panel is None:
             return
+        if not self._cal_panel.has_well_map():
+            return
         cols, rows = self._cal_panel.get_well_dimensions()
         if cols > 0 and rows > 0:
             self.well_grid.rebuild(rows, cols)
             self._update_sel_count()
+            self._well_placeholder.hide()
+            self._well_scroll.show()
 
     def _refresh_cals(self):
         cfg = get_config()

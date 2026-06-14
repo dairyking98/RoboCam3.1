@@ -184,7 +184,7 @@ class SetupPanel(QWidget):
         self.cam_res_combo = QComboBox()
         layout.addWidget(self.cam_res_combo, 2, 1, 1, 2)
 
-        self.cam_apply_btn = QPushButton("Apply & Reconnect Camera")
+        self.cam_apply_btn = QPushButton("Apply && Reconnect Camera")
         self.cam_apply_btn.clicked.connect(self._apply_camera)
         layout.addWidget(self.cam_apply_btn, 3, 0, 1, 3)
 
@@ -226,7 +226,7 @@ class SetupPanel(QWidget):
         self.klipper_port_spin.setValue(7125)
         layout.addWidget(self.klipper_port_spin, 4, 1)
 
-        self.printer_apply_btn = QPushButton("Apply & Reconnect Printer")
+        self.printer_apply_btn = QPushButton("Apply && Reconnect Printer")
         self.printer_apply_btn.clicked.connect(self._apply_printer)
         layout.addWidget(self.printer_apply_btn, 5, 0, 1, 3)
 

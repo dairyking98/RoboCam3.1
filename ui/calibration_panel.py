@@ -58,15 +58,15 @@ class WellMapWidget(QGroupBox):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
 
-        from PySide6.QtWidgets import QScrollArea
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        outer.addWidget(self._scroll, stretch=1)
-
         self._placeholder = QLabel("Set all four corners\nor load a calibration\nto build the map.")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.setStyleSheet("color: gray; font-size: 10px;")
-        outer.addWidget(self._placeholder)
+        outer.addWidget(self._placeholder, stretch=1)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.hide()
+        outer.addWidget(self._scroll, stretch=1)
 
         self._grid: Optional[WellGrid] = None
 
@@ -81,6 +81,7 @@ class WellMapWidget(QGroupBox):
         self._grid = WellGrid(rows=rows, cols=cols, mode=WellGrid.Mode.NAVIGATE)
         self._grid.well_clicked.connect(self._on_cell_clicked)
         self._scroll.setWidget(self._grid)
+        self._scroll.show()
 
     def clear(self):
         if self._grid is not None:
@@ -89,6 +90,7 @@ class WellMapWidget(QGroupBox):
             self._grid = None
         self._positions = []
         self._scroll.setWidget(QWidget())
+        self._scroll.hide()
         self._placeholder.show()
 
     def _on_cell_clicked(self, row: int, col: int):
@@ -154,6 +156,8 @@ class CalibrationPanel(QWidget):
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
+        splitter.setCollapsible(0, False)
+        col1.setMinimumWidth(380)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -363,7 +367,7 @@ class CalibrationPanel(QWidget):
         root = QVBoxLayout(grp)
 
         btn_row = QHBoxLayout()
-        save_btn = QPushButton("Update & Save…")
+        save_btn = QPushButton("Update && Save…")
         save_btn.clicked.connect(self._save_calibration)
         btn_row.addWidget(save_btn)
         load_btn = QPushButton("Load…")
@@ -557,6 +561,9 @@ class CalibrationPanel(QWidget):
                 cols=self.cols_spin.value(),
                 positions=positions,
             )
+
+    def has_well_map(self) -> bool:
+        return self.well_map._grid is not None
 
     def get_corners(self) -> dict:
         return {n: self.corners[n]["position"] for n in CORNER_NAMES}
