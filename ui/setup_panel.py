@@ -68,7 +68,7 @@ class _CameraEnumerator(QThread):
                             err, props = poa.GetCameraProperties(i)
                             if err == poa.POAErrors.POA_OK:
                                 model = props.cameraModelName.decode(errors="replace").strip()
-                                devices.append((f"PlayerOne — {model} (index {i})", "playerone", i))
+                                devices.append((f"PlayerOne — {model} (index {i})", "playerone", i, props.maxWidth, props.maxHeight))
                     finally:
                         sys.path[:] = prev
             except Exception:
@@ -78,7 +78,7 @@ class _CameraEnumerator(QThread):
             try:
                 import cv2
                 for idx in range(4):
-                    cap = cv2.VideoCapture(idx)
+                    cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
                     if cap.isOpened():
                         devices.append((f"USB / Webcam (index {idx})", "cv2", idx))
                     cap.release()
@@ -127,7 +127,7 @@ class SetupPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._cfg = get_config()
-        self._camera_devices: list[tuple[str, str, int]] = []
+        self._camera_devices: list[tuple] = []  # (label, backend, dev_idx[, max_w, max_h])
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -307,13 +307,13 @@ class SetupPanel(QWidget):
         self._camera_devices = devices
         current = self.cam_device_combo.currentText()
         self.cam_device_combo.clear()
-        for label, _backend, _idx in devices:
-            self.cam_device_combo.addItem(label)
+        for dev in devices:
+            self.cam_device_combo.addItem(dev[0])
         idx = self.cam_device_combo.findText(current)
         if idx >= 0:
             self.cam_device_combo.setCurrentIndex(idx)
 
-        real_count = sum(1 for lbl, _, _ in devices if "No cameras" not in lbl)
+        real_count = sum(1 for dev in devices if "No cameras" not in dev[0])
         self.cam_scan_status.setText(
             f"{real_count} device(s) found." if real_count else "No cameras detected."
         )
@@ -325,15 +325,23 @@ class SetupPanel(QWidget):
         idx = self.cam_device_combo.currentIndex()
         if idx < 0 or idx >= len(self._camera_devices):
             return
-        _label, backend, _dev_idx = self._camera_devices[idx]
+        dev = self._camera_devices[idx]
+        _label, backend, _dev_idx = dev[0], dev[1], dev[2]
+        max_w = dev[3] if len(dev) > 3 else None
+        max_h = dev[4] if len(dev) > 4 else None
 
-        # Standard resolutions; PlayerOne will expose more at runtime
         standards = [
             (640, 480), (800, 600), (1024, 768),
             (1280, 720), (1280, 960), (1600, 1200), (1920, 1080),
         ]
+        resolutions = [r for r in standards if (max_w is None or r[0] <= max_w) and (max_h is None or r[1] <= max_h)]
+        if max_w and max_h:
+            native = (max_w, max_h)
+            if native not in resolutions:
+                resolutions.append(native)
+
         self.cam_res_combo.clear()
-        for w, h in standards:
+        for w, h in resolutions:
             self.cam_res_combo.addItem(f"{w} x {h}", (w, h))
 
         # Try to match config resolution
@@ -385,7 +393,8 @@ class SetupPanel(QWidget):
         idx = self.cam_device_combo.currentIndex()
         if idx < 0 or idx >= len(self._camera_devices):
             return
-        _label, backend, dev_idx = self._camera_devices[idx]
+        dev = self._camera_devices[idx]
+        _label, backend, dev_idx = dev[0], dev[1], dev[2]
         res_data = self.cam_res_combo.currentData()
         w, h = res_data if res_data else (1920, 1080)
 
