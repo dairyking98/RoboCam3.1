@@ -459,7 +459,7 @@ class CalibrationPanel(QWidget):
             return
         step = self._get_step()
         def task():
-            mc.move_relative(**{axis: direction * step})
+            mc.move_relative(**{axis.upper(): direction * step})
             mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
