@@ -4,66 +4,171 @@ This document describes the exact architecture, UI layout, and feature set of th
 
 ## 1. Core Architecture
 
-RoboCam 3.1 is a pure Python desktop application built with `tkinter` and `ttk`. It has no web server or browser dependencies.
+RoboCam 3.1 is a Python desktop application built with **PySide6** (Qt 6). It has no web server or browser dependencies.
 
 ### Key Modules (`robocam/`)
-- `robocam31.py`: The main entry point and UI definition.
-- `camera.py`: The camera abstraction layer. Prioritizes the Player One SDK (patched for Linux via `pyPOACamera.py`), falls back to `Picamera2`, then `cv2`. Handles exposure, gain, and dynamic resolution polling. Includes a thread lock to prevent SDK crashes during simultaneous preview/capture.
-- `motion.py`: Abstract motion controller supporting `MarlinBackend` (serial USB, robust M400 checking), `KlipperBackend` (Moonraker HTTP API), and `SimulationBackend`. Includes raw G-code sending.
-- `calibration.py`: Handles 4-corner bilinear interpolation for well plates (`WellPlate` class) and JSON save/load. Supports Raster and Snake scan patterns.
-- `experiment.py`: The experiment engine. Supports three capture modes (Image, Raw .npy burst, MJPG Video) and handles well-by-well movement, stabilization delays, and sidecar metadata logging.
-- `peripherals.py`: Defines `LaserController`. Supports 3 modes: `disabled`, `rpi_gpio` (direct `RPi.GPIO` pin control, default BCM 21), and `klipper` (sends `SET_PIN` G-code via Moonraker).
-- `config.py`: JSON-backed configuration system (`config/default_config.json`).
 
-## 2. User Interface (4-Tab Layout)
+| Module | Purpose |
+|---|---|
+| `robocam31.py` | Main GUI entry point. |
+| `robocam/__main__.py` | Headless CLI (`python -m robocam`). |
+| `robocam/camera.py` | Camera abstraction layer. Priority: Player One SDK (`pyPOACamera`) → Picamera2 → OpenCV. Handles exposure, gain, dynamic resolution, thread lock. |
+| `robocam/motion.py` | Motion backends: `MarlinBackend` (serial/USB with M400 checking), `KlipperBackend` (Moonraker HTTP), `SimulationBackend`. |
+| `robocam/calibration.py` | `WellPlate` bilinear interpolation from 4 corners. `CalibrationManager` save/load JSON. Raster and Snake scan patterns. |
+| `robocam/experiment.py` | `ExperimentRunner`: well-by-well movement, three capture modes, per-frame timestamps, laser timing, CSV + JSON sidecar. |
+| `robocam/peripherals.py` | `LaserController`: `disabled`, `rpi_gpio` (BCM 21), `klipper` (SET_PIN G-code). |
+| `robocam/session.py` | Session persistence to `~/.local/share/RoboCam3/session.json`. |
+| `robocam/hw_state.py` | Global hardware singleton (camera, motion, runner). |
+| `robocam/config.py` | JSON-backed configuration (`config/default_config.json`). `Config.set()` auto-saves. |
 
-The UI has been split into four distinct tabs to separate configuration from operation.
+### Key UI Modules (`ui/`)
+
+| Module | Purpose |
+|---|---|
+| `ui/main_window.py` | QMainWindow with four tabs; shared `FrameGrabber` thread. |
+| `ui/setup_panel.py` | Hardware connection, camera settings, laser config. |
+| `ui/manual_control_panel.py` | Jog, go-to, laser toggle, raw G-code sender. |
+| `ui/calibration_panel.py` | Corner capture, well map, calibration save/load. |
+| `ui/experiment_panel.py` | Experiment configuration, output folder picker, run/stop control. |
+| `ui/camera_widget.py` | Shared `FrameGrabber` (QThread) + `_LivePreview` (QPainter). |
+| `ui/well_grid.py` | Drag-selectable well grid widget. |
+
+### Scripts (`scripts/`)
+
+| Script | Purpose |
+|---|---|
+| `scripts/install_playerone_sdk.py` | Downloads and patches Player One SDK for Linux/ARM. |
+| `scripts/reconstruct_vfr.py` | Unified post-processing pipeline: `.npy` → images + VFR MKV + display MP4. |
+
+---
+
+## 2. User Interface (4-Tab PySide6 Layout)
 
 ### Tab 1: Setup
-- **Printer Connection**: Backend dropdown (`marlin` / `klipper`), Klipper host IP, and Apply & Reconnect button.
-- **Camera Settings**: Exposure slider + ms entry, Gain slider + entry, Resolution dropdown (dynamically populated from SDK).
-- **Laser / GPIO Configuration**: Laser Mode dropdown (`disabled`, `rpi_gpio`, `klipper`), RPi GPIO Pin, Klipper ON/OFF G-code entry fields, and Apply button.
-- **Camera Preview**: Live feed with crosshair overlay.
+- Printer backend dropdown (`marlin` / `klipper`), Klipper host, Apply & Reconnect.
+- Exposure slider + ms entry, Gain slider + entry, Resolution dropdown (populated from SDK max native resolution).
+- Laser Mode (`disabled`, `rpi_gpio`, `klipper`), GPIO pin, Klipper G-code fields, Apply.
+- Live camera preview with crosshair overlay.
 
 ### Tab 2: Manual Control
-- **Camera Preview**: Live feed.
-- **Machine Controls**: Home All Axes, Disable Steppers (`M18`).
-- **Jog Controls**: XY/Z jog grid. Step size selection (0.1, 1.0, 10.0, or Custom text entry).
-- **Go To Position**: Manual X, Y, Z entry fields and a Go button.
-- **Laser Control**: Manual Laser ON / Laser OFF buttons and state label.
-- **Manual G-code Sender**: Text entry and log window.
+- Home All Axes, Disable Steppers (M18).
+- XY/Z jog grid. Step size 0.1 / 1.0 / 10.0 mm or custom.
+- Go-to by absolute X, Y, Z.
+- Manual Laser ON / OFF + state label.
+- Raw G-code sender with log window.
 
 ### Tab 3: Calibration
-- **Preview**: Live feed with crosshair.
-- **Corner Setup**: Set UL, UR, LL, LR buttons. Plate dimensions (Rows/Cols). Pattern dropdown (Raster/Snake).
-- **Well Map**: A custom `WellGrid` canvas. Clicking any well calculates its interpolated XYZ position and jogs the printer there immediately.
+- Set UL / LL / UR / LR corner positions by jogging to each and clicking Set.
+- Grid dimensions (Rows × Cols), scan pattern (Raster / Snake).
+- Well map: click any well to jog to its bilinearly interpolated position immediately.
+- Save Calibration — writes `config/calibrations/<name>.json` with both `corners`/`cols`/`rows` and pre-computed `interpolated_positions`/`labels`.
 
 ### Tab 4: Experiment
-- **Preview**: Displays the last captured frame during recording (disabled during Fast Raw capture to preserve bandwidth).
-- **Settings**: Mode dropdown (`Image`, `Raw .npy`, `Video`).
-  - *Image*: Dwell per well, Image format.
-  - *Raw / Video*: Dwell per well, Record duration (s).
-  - *Use Laser Checkbox*: When checked on Raw/Video, replaces "Record duration" with "Pre-laser", "Laser ON", and "Post-laser" timing fields.
-- **Presets**: Save/Load dropdown for experiment parameters.
-- **Well Selection**: A `WellGrid` canvas where the user drags to select/deselect specific wells to be included in the run.
+- Experiment name, calibration file selector.
+- **Output folder**: label + Browse button. Changes saved to `config/default_config.json` and applied to the live runner immediately.
+- Capture mode: Image / Raw .npy / Video.
+  - *Image*: format (JPG/PNG/TIF), dwell per well.
+  - *Raw / Video*: record duration. With "Use Laser": Pre-laser / Laser ON / Post-laser timing.
+- Well selection grid.
+- Start / Stop buttons. Status label updated on each state change.
+- **Experiment in progress overlay**: amber `"EXPERIMENT IN PROGRESS / Preview Paused"` shown on the camera preview for all capture modes during a run. Red `"● RECORDING (Preview Paused)"` shown in raw/video modes at idle.
+
+---
 
 ## 3. Capture Modes
 
-1. **Image**: Captures a single still image (`.jpg`, `.png`, etc.) per well.
-2. **Raw .npy**: Dumps raw Bayer sensor data directly to disk as binary numpy arrays for a specified duration. Captures at maximum possible speed (no debayering overhead). Requires `scripts/post_process_raw.py` to convert to viewable images later.
-3. **Video**: Records an MJPG `.avi` file for a specified duration at maximum possible speed.
+### Image
+Single still per well (JPG/PNG/TIF). Written to `<exp_dir>/`.
 
-**Laser Integration**: In Raw or Video mode, checking "Use Laser" splits the capture into three phases: Pre-laser (laser off), Laser ON (laser fires), Post-laser (laser off). The camera records continuously through all three phases to capture the sample's response to stimulation.
+### Raw .npy (primary scientific mode)
+Max-rate raw Bayer sensor data saved as `.npy` files. No encoding overhead. Per-frame timestamps via `time.perf_counter()`. Sidecar `*_metadata.json` written alongside frames in `raw/` subdir.
 
-## 4. Setup Scripts
+Output layout:
+```
+<exp_dir>/
+  raw/
+    A1_<ts>_f00000.npy
+    A1_<ts>_f00001.npy
+    ...
+    A1_<ts>_metadata.json    ← frames[], laser_events[], fps_average, duration_actual_s
+  points.csv
+```
 
-- `setup.sh`: Creates a virtual environment with `--system-site-packages` (to inherit `libcamera` on the Pi), installs pip dependencies, and runs `install_playerone_sdk.py`.
-- `install_playerone_sdk.py`: Downloads the Player One Linux SDK, extracts the correct `.so` for the architecture (aarch64/arm32), and patches the Python wrapper.
-- `start_robocam.sh`: Activates the venv and launches `robocam31.py`.
+Metadata `frames[]` entry: `{frame_index, file, time_offset_s}` — individual per-frame timestamp, not averaged.
 
-## 5. Current Status & Known Issues
+### Video (AVI)
+MJPG AVI for a set duration. Sidecar `*_metadata.json` includes `frame_timestamps_s[]` (per-frame, not averaged) and `fps_average`.
 
-- **Hardware Control**: Full Marlin and Klipper motion support is implemented. RPi GPIO laser control is fully implemented and wired into the UI and experiment runner.
-- **Preview Framerate**: Idle preview runs at max speed. During recording, preview drops to 2 FPS (polling the last written frame) to prevent SDK thread contention. During Raw mode, preview is intentionally disabled.
-- **Z-Hop**: Z-hop during travel moves between wells is not currently implemented but may be needed if the lens clearance is too tight against plate walls.
-- **Klipper Peripherals**: The `LaserController` supports Klipper `SET_PIN` commands, but further peripheral integration (heaters, fans, extruder-as-pump) remains on the roadmap.
+### Laser Integration
+In Raw or Video mode, "Use Laser" splits capture into three continuous-recording phases: Pre → Laser ON → Post. `laser_events[]` in the metadata records each state transition with `{time_offset_s, state, frame_index}`.
+
+---
+
+## 4. Post-Processing Pipeline (`scripts/reconstruct_vfr.py`)
+
+Single-pass pipeline over `.npy` frames per well:
+
+1. **Load** raw `.npy` array.
+2. **Debayer** Bayer RGGB → BGR via `cv2.COLOR_BAYER_RG2BGR` (or pass-through for mono sensors).
+3. **Save clean PNG** to `images/<well>/` — no overlay, suitable for object tracking.
+   - Filename: `<well>_<idx>_<µs>us_laser-[on|off].png`
+4. **Add laser asterisk** overlay (top-right, white fill + black outline) on a copy for the video frames.
+5. **Encode VFR MKV** — per-frame PTS from `time_offset_s × 90_000` ticks (90 kHz time base, `bframes=0`).
+6. **Encode constant-fps MP4** — H.264 baseline, `bframes=0`, sequential PTS; compatible with Pi hardware decode.
+
+Output:
+```
+<exp_dir>/
+  images/
+    A1/
+      A1_f00000_000006203us_laser-off.png
+      A1_f00152_005003994us_laser-on.png
+    A2/
+      ...
+  videos/
+    A1_<exp_ts>_vfr.mkv    ← VFR archival, accurate timing
+    A1_<exp_ts>.mp4         ← constant fps, Pi-friendly display
+```
+
+CLI: `python scripts/reconstruct_vfr.py <exp_dir/> [--codec ffv1] [--crf 18] [--mono] [--no-video] [--no-images]`
+
+---
+
+## 5. Output Directory Configuration
+
+Default: `outputs/` (relative to project root). User can set any path in the Experiment tab via **Browse…**. The path is saved to `config/default_config.json` under `paths.output_dir` and applied to the live runner without restart.
+
+Can also be set via CLI: `python -m robocam config set paths.output_dir /mnt/ssd/outputs`
+
+---
+
+## 6. Calibration File Format
+
+Saved to `config/calibrations/<name>.json`. Contains both raw input and pre-computed well positions:
+```json
+{
+  "corners": {"ul": [x,y,z], "ll": [...], "ur": [...], "lr": [...]},
+  "cols": 12, "rows": 8, "pattern": "raster", "name": "...",
+  "interpolated_positions": [[x,y,z], ...],
+  "labels": ["A1", "A2", ...]
+}
+```
+The experiment panel loads `interpolated_positions`/`labels` directly or falls back to computing them from `corners`/`cols`/`rows` for legacy files.
+
+---
+
+## 7. Setup Scripts
+
+- `setup.sh`: Creates `.venv` with `--system-site-packages` (Pi inherits `libcamera`), installs pip deps including `av` (PyAV), runs `install_playerone_sdk.py`.
+- `install_playerone_sdk.py`: Downloads Player One Linux SDK, extracts `.so` for aarch64/arm32, patches Python wrapper.
+- `start_robocam.sh`: Activates venv and launches `robocam31.py`.
+
+---
+
+## 8. Known Issues / Roadmap
+
+| Status | Item |
+|---|---|
+| Pending | Z-hop during experiment travel — single `G0` command moves X/Y/Z simultaneously; collision risk if lens is close to plate walls |
+| Planned | Temperature control widgets |
+| Planned | Extruder as pump/dispenser |

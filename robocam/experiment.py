@@ -78,7 +78,9 @@ class ExperimentRunner:
             first_frame = cv2.cvtColor(first_frame, cv2.COLOR_RGB2BGR)
 
         h, w = first_frame.shape[:2]
-        container_fps = 30.0  # placeholder; real FPS is in metadata
+        # Container FPS is a nominal placeholder; per-frame timestamps in the
+        # sidecar JSON are the authoritative source for reconstruction.
+        container_fps = 30.0
         writer = cv2.VideoWriter(
             output_path,
             cv2.VideoWriter_fourcc(*"MJPG"),
@@ -89,14 +91,15 @@ class ExperimentRunner:
             raise RuntimeError(f"Could not open video writer for {output_path}")
 
         frames = 0
+        frame_timestamps: list = []   # seconds from recording start, per frame
         laser_events = []
         last_laser_state = False
         laser_end_s = laser_start_s + laser_on_s
-        start = time.time()
+        start = time.perf_counter()
 
         try:
             while self.running:
-                elapsed = time.time() - start
+                elapsed = time.perf_counter() - start
                 if elapsed >= total_duration_s:
                     break
 
@@ -108,7 +111,7 @@ class ExperimentRunner:
                 if should_laser != last_laser_state and laser_controller:
                     laser_controller.set_laser(should_laser)
                     laser_events.append({
-                        "time_offset_s": round(elapsed, 4),
+                        "time_offset_s": round(elapsed, 6),
                         "state": "ON" if should_laser else "OFF",
                         "frame_index": frames,
                     })
@@ -116,9 +119,11 @@ class ExperimentRunner:
 
                 frame = first_frame if frames == 0 else self.camera.get_frame()
                 if frame is not None:
+                    t_capture = time.perf_counter() - start
                     if self.camera.backend == "picamera2":
                         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                     writer.write(frame)
+                    frame_timestamps.append(round(t_capture, 6))
                     frames += 1
                 # No sleep — capture as fast as the camera allows
 
@@ -126,11 +131,11 @@ class ExperimentRunner:
             if laser_controller and last_laser_state:
                 laser_controller.set_laser(False)
                 laser_events.append({
-                    "time_offset_s": round(time.time() - start, 4),
+                    "time_offset_s": round(time.perf_counter() - start, 6),
                     "state": "OFF",
                     "frame_index": frames,
                 })
-            duration_actual = time.time() - start
+            duration_actual = time.perf_counter() - start
             writer.release()
 
         meta_path = os.path.splitext(output_path)[0] + "_metadata.json"
@@ -138,10 +143,11 @@ class ExperimentRunner:
             "video_file": os.path.basename(output_path),
             "frames_captured": frames,
             "duration_requested_s": round(total_duration_s, 3),
-            "duration_actual_s": round(duration_actual, 3),
-            "fps_actual": round(frames / duration_actual, 2) if duration_actual > 0 else 0.0,
+            "duration_actual_s": round(duration_actual, 6),
+            "fps_average": round(frames / duration_actual, 4) if duration_actual > 0 else 0.0,
             "fps_container": container_fps,
             "resolution": [w, h],
+            "frame_timestamps_s": frame_timestamps,
             "laser_events": laser_events,
             "timestamp": datetime.now().isoformat(),
         }
@@ -173,11 +179,11 @@ class ExperimentRunner:
         last_laser_state = False
         laser_end_s = laser_start_s + laser_on_s
         frame_idx = 0
-        start = time.time()
+        start = time.perf_counter()
 
         try:
             while self.running:
-                elapsed = time.time() - start
+                elapsed = time.perf_counter() - start
                 if elapsed >= total_duration_s:
                     break
 
@@ -189,7 +195,7 @@ class ExperimentRunner:
                 if should_laser != last_laser_state and laser_controller:
                     laser_controller.set_laser(should_laser)
                     laser_events.append({
-                        "time_offset_s": round(elapsed, 4),
+                        "time_offset_s": round(elapsed, 6),
                         "state": "ON" if should_laser else "OFF",
                         "frame_index": frame_idx,
                     })
@@ -197,10 +203,15 @@ class ExperimentRunner:
 
                 raw = self.camera.get_raw_frame()
                 if raw is not None:
+                    # Timestamp after get_raw_frame() returns — when frame is in hand
+                    t_capture = time.perf_counter() - start
                     fname = f"{label}_{timestamp}_f{frame_idx:05d}.npy"
                     np.save(os.path.join(output_dir, fname), raw)
-                    frames_saved.append({"frame_index": frame_idx, "file": fname,
-                                         "time_offset_s": round(elapsed, 4)})
+                    frames_saved.append({
+                        "frame_index": frame_idx,
+                        "file": fname,
+                        "time_offset_s": round(t_capture, 6),
+                    })
                     frame_idx += 1
                 # No sleep — capture as fast as possible
 
@@ -208,17 +219,17 @@ class ExperimentRunner:
             if laser_controller and last_laser_state:
                 laser_controller.set_laser(False)
                 laser_events.append({
-                    "time_offset_s": round(time.time() - start, 4),
+                    "time_offset_s": round(time.perf_counter() - start, 6),
                     "state": "OFF",
                     "frame_index": frame_idx,
                 })
 
-        duration_actual = time.time() - start
+        duration_actual = time.perf_counter() - start
         return {
             "frames_captured": frame_idx,
             "duration_requested_s": round(total_duration_s, 3),
-            "duration_actual_s": round(duration_actual, 3),
-            "fps_actual": round(frame_idx / duration_actual, 2) if duration_actual > 0 else 0.0,
+            "duration_actual_s": round(duration_actual, 6),
+            "fps_average": round(frame_idx / duration_actual, 4) if duration_actual > 0 else 0.0,
             "laser_events": laser_events,
             "frames": frames_saved,
         }
@@ -252,7 +263,8 @@ class ExperimentRunner:
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         exp_dir = os.path.join(self.out_dir, f"{timestamp}_{name}")
-        os.makedirs(exp_dir, exist_ok=True)
+        raw_dir = os.path.join(exp_dir, "raw")
+        os.makedirs(raw_dir, exist_ok=True)
 
         csv_path = os.path.join(exp_dir, f"{timestamp}_{name}_points.csv")
 
@@ -317,16 +329,16 @@ class ExperimentRunner:
                     capture_name = ""
 
                     if mode == "raw":
-                        # Burst of raw .npy frames for total_duration seconds
+                        # Burst of raw .npy frames saved to raw/ subdir
                         burst_meta = self._write_raw_burst(
-                            exp_dir, label, timestamp, total_duration,
+                            raw_dir, label, timestamp, total_duration,
                             laser_controller=laser_controller,
                             laser_on_s=float(laser_on_duration),
                             laser_start_s=laser_start,
                         )
-                        capture_name = f"{label}_{timestamp}_f*.npy ({burst_meta['frames_captured']} frames)"
-                        # Write sidecar metadata
-                        meta_path = os.path.join(exp_dir, f"{label}_{timestamp}_metadata.json")
+                        capture_name = f"raw/{label}_{timestamp}_f*.npy ({burst_meta['frames_captured']} frames)"
+                        # Sidecar metadata lives alongside the .npy files in raw/
+                        meta_path = os.path.join(raw_dir, f"{label}_{timestamp}_metadata.json")
                         burst_meta["well"] = label
                         burst_meta["timestamp"] = capture_time
                         with open(meta_path, "w", encoding="utf-8") as mf:

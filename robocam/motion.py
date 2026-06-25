@@ -317,12 +317,13 @@ class MotionController:
         self.config = get_config()
         self.simulate = simulate
         self.backend = None
+        self._homed = False
         self.connect()
-        
+
     def connect(self):
         if self.backend and self.backend.is_connected:
             self.backend.disconnect()
-            
+
         if self.simulate:
             self.backend = SimulationBackend()
         else:
@@ -331,9 +332,19 @@ class MotionController:
                 self.backend = KlipperBackend()
             else:
                 self.backend = MarlinBackend()
-                
+
         self.backend.connect()
-        
+
+        # Infer homed state from position reported at connect.
+        # Marlin's power-on default is (0,0,0) before any G28 — treat that as
+        # "not homed". A non-zero position means the stage was moved after a
+        # previous home, so it is safe to continue without re-homing.
+        if self.simulate:
+            self._homed = True
+        else:
+            x, y, z = self.backend.X, self.backend.Y, self.backend.Z
+            self._homed = not (x == 0.0 and y == 0.0 and z == 0.0)
+
     def disconnect(self):
         if self.backend:
             self.backend.disconnect()
@@ -343,14 +354,19 @@ class MotionController:
         return self.backend is not None and self.backend.is_connected
 
     @property
+    def is_homed(self) -> bool:
+        return self._homed
+
+    @property
     def X(self): return self.backend.X
     @property
     def Y(self): return self.backend.Y
     @property
     def Z(self): return self.backend.Z
-    
+
     def home(self):
         self.backend.home()
+        self._homed = True
         
     def update_position(self):
         return self.backend.update_position()

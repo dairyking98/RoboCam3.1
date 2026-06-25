@@ -127,9 +127,6 @@ class ManualControlPanel(QWidget):
         self.step_input = QLineEdit("1.0")
         self.step_input.setFixedWidth(55)
         step_row.addWidget(self.step_input)
-        self._step_group.buttonClicked.connect(
-            lambda btn: self.step_input.setText(btn.text()) if btn != self._custom_rb else None
-        )
         self.step_input.textEdited.connect(lambda _: self._custom_rb.setChecked(True))
         layout.addLayout(step_row)
 

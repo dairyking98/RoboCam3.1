@@ -6,105 +6,113 @@
 # Run once after cloning:
 #   bash setup.sh
 #
-# To activate the environment afterwards:
-#   source .venv/bin/activate
+# To launch afterwards:
+#   source .venv/bin/activate && python robocam31.py
+#   -- or --
+#   bash start_robocam.sh
 # =============================================================================
 
-set -e  # Exit immediately on any error
+set -e
 
 VENV_DIR=".venv"
-PYTHON="${PYTHON:-python3}"  # Override with: PYTHON=python3.11 bash setup.sh
+PYTHON="${PYTHON:-python3}"
 
 echo "==> Checking Python version..."
 $PYTHON --version
 
-# Check if we should skip venv (only on Pi)
-SKIP_VENV=false
-if [[ "$OSTYPE" == "linux-gnueabihf"* ]] || [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    if [ -f /etc/rpi-issue ] || [ -f /etc/os-release ] && grep -q "Raspberry Pi" /etc/os-release; then
-        echo "==> Raspberry Pi detected. Would you like to use a virtual environment? (y/n)"
-        # Default to yes for safety
-        read -r use_venv
-        if [[ "$use_venv" == "n" ]]; then
-            SKIP_VENV=true
-        fi
+# ---------------------------------------------------------------------------
+# Raspberry Pi detection — checks /proc/device-tree/model (most reliable),
+# then /etc/os-release, then /etc/rpi-issue as fallbacks.
+# ---------------------------------------------------------------------------
+is_raspberry_pi() {
+    if [ -f /proc/device-tree/model ] && grep -qi "raspberry pi" /proc/device-tree/model; then
+        return 0
     fi
+    if [ -f /etc/os-release ] && grep -qi "raspberry pi" /etc/os-release; then
+        return 0
+    fi
+    if [ -f /etc/rpi-issue ]; then
+        return 0
+    fi
+    return 1
+}
+
+ON_PI=false
+if is_raspberry_pi; then
+    ON_PI=true
+    PI_MODEL=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0' || echo "Raspberry Pi")
+    echo "==> Raspberry Pi detected: $PI_MODEL"
 fi
 
-if [ "$SKIP_VENV" = false ]; then
-    echo "==> Creating virtual environment in '$VENV_DIR'..."
-    # On Raspberry Pi, we often need access to system packages for libcamera.
-    # Using --system-site-packages allows the venv to use the system libcamera-python.
-    if [[ "$OSTYPE" == "linux-gnueabihf"* ]] || [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        if [ -f /etc/rpi-issue ] || [ -f /etc/os-release ] && grep -q "Raspberry Pi" /etc/os-release; then
-            echo "    Using --system-site-packages for Raspberry Pi compatibility."
-            $PYTHON -m venv --system-site-packages "$VENV_DIR"
-        else
-            $PYTHON -m venv "$VENV_DIR"
-        fi
-    else
-        $PYTHON -m venv "$VENV_DIR"
-    fi
-    
-    echo "==> Activating virtual environment..."
-    source "$VENV_DIR/bin/activate"
-    
-    echo "==> Upgrading pip..."
-    pip install --upgrade pip
+# ---------------------------------------------------------------------------
+# Virtual environment
+# ---------------------------------------------------------------------------
+echo "==> Creating virtual environment in '$VENV_DIR'..."
+if [ "$ON_PI" = true ]; then
+    # --system-site-packages lets the venv reach libcamera / picamera2
+    # which can only be installed system-wide via apt on Pi OS.
+    echo "    Using --system-site-packages for Raspberry Pi compatibility."
+    $PYTHON -m venv --system-site-packages "$VENV_DIR"
 else
-    echo "==> Skipping virtual environment. Installing dependencies globally..."
-    echo "    (You may need to run this script with sudo if you hit permission errors)"
+    $PYTHON -m venv "$VENV_DIR"
 fi
 
-echo "==> Installing dependencies..."
-if [ "$SKIP_VENV" = true ]; then
-    pip3 install -r requirements.txt
-else
-    pip install -r requirements.txt
-fi
+echo "==> Activating virtual environment..."
+source "$VENV_DIR/bin/activate"
 
-# --- Raspberry Pi HQ Camera (picamera2 / libcamera) ---
-if [[ "$OSTYPE" == "linux-gnueabihf"* ]] || [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    if [ -f /etc/rpi-issue ] || [ -f /etc/os-release ] && grep -q "Raspberry Pi" /etc/os-release; then
-        echo "==> Raspberry Pi detected. Installing picamera2 and libcamera dependencies..."
-        
-        if ! dpkg -l | grep -q "python3-libcamera"; then
-            echo "WARNING: python3-libcamera not found. You may need to run:"
-            echo "         sudo apt update && sudo apt install -y python3-libcamera python3-kms++ libcap-dev"
-        fi
+echo "==> Upgrading pip..."
+pip install --upgrade pip
 
-        echo "    Installing picamera2 Python wrapper..."
-        if [ "$SKIP_VENV" = true ]; then
-            pip3 install picamera2 || echo "WARNING: picamera2 pip install failed. Ensure libcamera-python is installed."
-        else
-            pip install picamera2 || echo "WARNING: picamera2 pip install failed. Ensure libcamera-python is installed."
-        fi
+# ---------------------------------------------------------------------------
+# Core dependencies
+# ---------------------------------------------------------------------------
+echo "==> Installing core dependencies..."
+pip install -r requirements.txt
+
+# ---------------------------------------------------------------------------
+# Raspberry Pi extras
+# ---------------------------------------------------------------------------
+if [ "$ON_PI" = true ]; then
+    echo "==> Installing Raspberry Pi extras..."
+
+    # RPi.GPIO — GPIO control for laser/stimulus output
+    echo "    Installing RPi.GPIO..."
+    pip install RPi.GPIO || echo "WARNING: RPi.GPIO install failed."
+
+    # picamera2 — Raspberry Pi HQ camera support
+    echo "    Checking libcamera system packages..."
+    if ! dpkg -l 2>/dev/null | grep -q "python3-libcamera"; then
+        echo "WARNING: python3-libcamera not found. Run:"
+        echo "         sudo apt update && sudo apt install -y python3-libcamera python3-kms++ libcap-dev"
     fi
+    echo "    Installing picamera2 Python wrapper..."
+    pip install picamera2 || echo "WARNING: picamera2 install failed. Ensure libcamera-python is installed via apt."
 fi
 
-echo "==> Installing Player One Camera SDK (pyPOACamera + native library)..."
-echo "    Downloads SDK from player-one-astronomy.com into PlayerOne_Camera_SDK_Linux_V3.10.0/"
+# ---------------------------------------------------------------------------
+# Player One Camera SDK
+# ---------------------------------------------------------------------------
+echo "==> Installing Player One Camera SDK..."
+echo "    Downloads into PlayerOne_Camera_SDK_Linux_V3.10.0/"
 echo "    Safe to skip if you don't have a Player One camera."
-if [ "$SKIP_VENV" = true ]; then
-    python3 scripts/install_playerone_sdk.py || {
-        echo "WARNING: Player One SDK install failed or was skipped."
-    }
-else
-    python scripts/install_playerone_sdk.py || {
-        echo "WARNING: Player One SDK install failed or was skipped."
-    }
-fi
+python scripts/install_playerone_sdk.py || {
+    echo "WARNING: Player One SDK install failed or was skipped."
+}
 
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
 echo ""
 echo "============================================================"
 echo " Setup complete!"
-echo ""
-if [ "$SKIP_VENV" = false ]; then
-    echo " To launch the application using the virtual environment:"
-    echo "   source .venv/bin/activate"
-    echo "   python robocam31.py"
-else
-    echo " To launch the application directly:"
-    echo "   python3 robocam31.py"
+if [ "$ON_PI" = true ]; then
+    echo " Platform : $PI_MODEL"
 fi
+echo ""
+echo " To launch:"
+echo "   source .venv/bin/activate"
+echo "   python robocam31.py"
+echo ""
+echo " Or use the shortcut:"
+echo "   bash start_robocam.sh"
 echo "============================================================"

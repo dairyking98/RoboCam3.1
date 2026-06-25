@@ -4,3 +4,5 @@ opencv-python
 requests
 pillow
 PySide6
+av
+# RPi.GPIO is installed by setup.sh on Raspberry Pi only

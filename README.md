@@ -1,6 +1,6 @@
 # RoboCam 3.1
 
-RoboCam 3.1 is a Python-only desktop application for automated well-plate imaging using 3D printer mechanics. It combines the simplicity of the original RoboCam Tkinter GUI with the robust hardware drivers, bilinear interpolation math, and Klipper communication architecture from RoboCam-Suite 2.0 — with no web server, no browser, and no external framework required.
+RoboCam 3.1 is a Python desktop application for automated well-plate imaging using a 3D printer motion system and a Player One astronomy camera. It is designed for scientific use on a Raspberry Pi 4, with a PySide6 GUI, headless CLI, and a post-processing pipeline for per-frame image export and variable-frame-rate video reconstruction.
 
 ---
 
@@ -8,15 +8,17 @@ RoboCam 3.1 is a Python-only desktop application for automated well-plate imagin
 
 | Feature | Description |
 |---|---|
-| **Unified Desktop GUI** | Single Tkinter application with four tabs: Setup, Manual Control, Calibration, Experiment. No web server required. |
-| **Dual Motion Backends** | Switch between **Marlin** (USB/Serial) and **Klipper** (Moonraker HTTP API over network/Tailscale) without restarting. |
-| **Player One Camera** | First-class support for Player One Astronomy cameras (Mars 662M, etc.) via the `pyPOACamera` SDK. Auto-detects and falls back to Picamera2 or OpenCV. |
-| **Live Camera Controls** | Adjust **Exposure**, **Gain**, and **Resolution** live from the GUI. Resolution list is polled directly from the SDK sensor properties. |
-| **4-Corner Calibration** | Bilinear interpolation from four physical corner coordinates accounts for plate rotation and skew. Saves/loads JSON profiles. |
-| **Raster & Snake Patterns** | Choose between row-by-row raster scan or alternating snake scan for efficient well-plate traversal. |
-| **Three Capture Modes** | **Image** (single still), **Raw .npy** (timed raw sensor burst), and **Video** (MJPG AVI). Raw and Video capture at max framerate with real FPS metadata. |
-| **Hardware Stimulation** | Integrated Laser/GPIO controller. Trigger a laser via direct Raspberry Pi GPIO or Klipper G-code, perfectly timed with timed captures. |
-| **Smart Preview Modes** | Live preview when idle; last-frame polling during standard recording; preview disabled during fast raw capture to prevent SDK lock contention. |
+| **PySide6 GUI** | Four-tab desktop application: Setup, Manual Control, Calibration, Experiment. |
+| **Dual Motion Backends** | **Marlin** (USB/Serial) and **Klipper** (Moonraker HTTP API). Simulation backend for testing without hardware. |
+| **Player One Camera** | First-class support for Player One astronomy cameras via the `pyPOACamera` SDK. Auto-detects and falls back to Picamera2 or OpenCV. |
+| **4-Corner Calibration** | Bilinear interpolation from four physical corner coordinates. Saves/loads JSON profiles. Well map syncs to the Experiment tab. |
+| **Three Capture Modes** | **Image** (single still per well), **Raw .npy** (timed max-rate sensor burst), **Video** (AVI). |
+| **Laser Stimulation** | GPIO or Klipper-gcode laser trigger, perfectly timed with timed captures. Pre/ON/Post phases recorded continuously. |
+| **Per-Frame Timestamps** | Every raw burst frame is timestamped with µs precision. Actual inter-frame intervals are preserved — not averaged. |
+| **VFR Reconstruction** | `scripts/reconstruct_vfr.py` converts `.npy` bursts to per-frame PNGs and two video formats (VFR MKV + constant-fps MP4) in one pass. |
+| **Session Persistence** | All experiment parameters, calibration, camera settings restore automatically on next launch. |
+| **Homing Safety** | On motion connect, position is checked. If (0, 0, 0), the printer is flagged as not-homed and experiments are blocked until homed. |
+| **Headless CLI** | `python -m robocam <command>` for hardware testing without the GUI. |
 
 ---
 
@@ -24,23 +26,33 @@ RoboCam 3.1 is a Python-only desktop application for automated well-plate imagin
 
 ```
 RoboCam3.1/
-├── robocam31.py                  # Main application entry point and Tkinter GUI
+├── robocam31.py                    # Main GUI entry point
 ├── robocam/
-│   ├── camera.py                 # Player One / Picamera2 / OpenCV camera handler
-│   ├── motion.py                 # Abstract motion backend: Marlin, Klipper, Simulation
-│   ├── calibration.py            # WellPlate bilinear interpolation and CalibrationManager
-│   ├── experiment.py             # ExperimentRunner: motion, capture, CSV logging
-│   ├── peripherals.py            # LaserController for RPi GPIO and Klipper outputs
-│   └── config.py                 # JSON-based configuration management
+│   ├── __main__.py                 # Headless CLI (python -m robocam)
+│   ├── camera.py                   # Player One / Picamera2 / OpenCV camera handler
+│   ├── motion.py                   # Motion backends: Marlin, Klipper, Simulation
+│   ├── calibration.py              # WellPlate bilinear interpolation, CalibrationManager
+│   ├── experiment.py               # ExperimentRunner: motion, capture, CSV logging
+│   ├── peripherals.py              # LaserController: RPi GPIO and Klipper outputs
+│   ├── session.py                  # Session persistence (~/.local/share/RoboCam3/session.json)
+│   ├── hw_state.py                 # Global hardware singleton (camera, motion, runner)
+│   └── config.py                   # JSON-backed config (config/default_config.json)
+├── ui/
+│   ├── main_window.py              # QMainWindow with four tabs
+│   ├── setup_panel.py              # Hardware connection and camera controls
+│   ├── manual_control_panel.py     # Jog, go-to, laser, raw G-code
+│   ├── calibration_panel.py        # Corner capture, well map, calibration save/load
+│   ├── experiment_panel.py         # Experiment configuration and run control
+│   ├── camera_widget.py            # Shared live preview (FrameGrabber + LivePreview)
+│   └── well_grid.py                # Interactive well selection grid widget
 ├── scripts/
-│   ├── install_playerone_sdk.py  # Downloads and patches Player One SDK for Linux/ARM
-│   └── post_process_raw.py       # Converts fast raw .npy files to .jpg after experiment
+│   ├── install_playerone_sdk.py    # Downloads and patches Player One SDK for Linux/ARM
+│   └── reconstruct_vfr.py          # Post-processing: .npy → images + VFR MKV + display MP4
 ├── config/
-│   └── default_config.json       # Base configuration file
-├── outputs/                      # Timestamped experiment output folders
-├── setup.sh                      # Linux/macOS/Raspberry Pi setup script
-├── setup.bat                     # Windows setup script
-└── start_robocam.sh              # One-click launcher script
+│   └── default_config.json         # Hardware and path configuration
+├── outputs/                        # Experiment output folders (configurable in GUI)
+├── setup.sh                        # Linux / Raspberry Pi setup script
+└── start_robocam.sh                # One-click launcher
 ```
 
 ---
@@ -49,37 +61,26 @@ RoboCam3.1/
 
 ### Prerequisites
 
-- Python 3.10 or newer
-- Raspberry Pi OS Bookworm (recommended) or any Linux/Windows system
+- Python 3.10+
+- Raspberry Pi OS Bookworm (recommended) or any Linux system
 - Player One Camera SDK (downloaded automatically by `setup.sh`)
 
-### 1. Clone the Repository
+### 1. Clone
 
 ```bash
 git clone https://github.com/dairyking98/RoboCam3.1.git
 cd RoboCam3.1
 ```
 
-### 2. Run the Setup Script
+### 2. Setup
 
-**Linux / Raspberry Pi:**
 ```bash
 bash setup.sh
 ```
 
-**Windows:**
-```bat
-setup.bat
-```
+This creates `.venv`, installs all pip dependencies (including `PyAV` for video encoding), installs `RPi.GPIO` and `picamera2` on Raspberry Pi, and downloads/patches the Player One SDK.
 
-The setup script performs the following steps:
-
-1. Creates a Python virtual environment (`.venv`). On Raspberry Pi, it uses `--system-site-packages` so that `libcamera` (which cannot be installed via `pip`) remains accessible inside the venv.
-2. Installs all pip dependencies from `requirements.txt`.
-3. Installs `picamera2` if running on a Raspberry Pi.
-4. Runs `scripts/install_playerone_sdk.py`, which downloads the Player One Camera SDK, extracts the correct `.so` library for the detected CPU architecture (aarch64, arm64, or arm32), and patches `pyPOACamera.py` for Linux compatibility.
-
-### 3. Launch the Application
+### 3. Launch
 
 ```bash
 bash start_robocam.sh
@@ -91,107 +92,132 @@ bash start_robocam.sh
 
 ### Step 1 — Setup Tab
 
-Configure hardware connections before operating the machine.
-
-- **Printer Connection**: Select your backend (`marlin` or `klipper`), enter the Klipper IP if applicable, and click **Apply & Reconnect**.
-- **Camera Settings**: Adjust Exposure (ms) and Gain using sliders or precise numeric entry. Select the camera resolution.
-- **Laser / GPIO Configuration**: Choose how your laser is connected (`disabled`, `rpi_gpio`, or `klipper`). Set the Raspberry Pi BCM pin (default `21`) or the Klipper G-code commands (`SET_PIN PIN=laser VALUE=1`). Click **Apply Laser Settings**.
+- **Printer**: Select backend (`marlin` or `klipper`), connect, and home all axes.
+- **Camera**: Adjust exposure, gain, and resolution live.
+- **Laser**: Choose mode (`disabled`, `rpi_gpio`, `klipper`), set pin or G-code, and apply.
 
 ### Step 2 — Manual Control Tab
 
-Directly control the hardware outside of an experiment.
-
-- **Machine Controls**: Click **Home All Axes** to home the printer. Click **Disable Steppers** to move the stage by hand.
-- **Jog Controls**: Move X, Y, and Z by preset amounts (0.1, 1.0, 10.0) or type a custom step size.
-- **Go To Position**: Type exact X, Y, Z coordinates to move the stage immediately.
-- **Laser Control**: Manually toggle the laser ON or OFF for testing.
-- **Manual G-code**: Send raw G-code commands directly to the printer and view the log.
+- Jog X/Y/Z with preset or custom step sizes.
+- Go-to by absolute coordinate.
+- Manual laser toggle and raw G-code sender.
 
 ### Step 3 — Calibration Tab
 
-1. Jog the camera to each of the four physical corners of the well plate using the jog controls.
-2. Click the corresponding **Set** button for each corner: **UL** (upper-left), **UR** (upper-right), **LL** (lower-left), **LR** (lower-right).
-3. Enter the grid dimensions (e.g., `12` columns × `8` rows for a standard 96-well plate).
-4. Select the scan **Pattern**: **Raster** (left-to-right, top-to-bottom) or **Snake** (alternating direction each row).
-5. Click **Update Map & Save** to write the bilinear-interpolated positions to a JSON file in `config/calibrations/`.
-6. You can now click any well on the visual map to immediately jog the printer to that well.
+1. Jog to each of the four physical corners of the well plate.
+2. Click **Set** for Upper-Left, Lower-Left, Upper-Right, Lower-Right.
+3. Set grid dimensions (e.g., 12 × 8) and scan pattern (Raster or Snake).
+4. Click **Save Calibration** — positions are bilinearly interpolated and saved to `config/calibrations/`.
+5. Click any well on the visual map to jog there immediately.
 
 ### Step 4 — Experiment Tab
 
 1. Enter an experiment name.
-2. Select a saved calibration file from the dropdown.
-3. Set the **Delay per well** in seconds (stabilization time after each move before capture).
-4. Choose the capture mode:
-   - **Image**: Captures a single still image per well.
-   - **Raw .npy**: Dumps raw binary sensor data for a specified duration at max framerate.
-   - **Video**: Records an MJPG `.avi` for a specified duration at max framerate.
-5. If using Raw or Video, check **Use Laser** to enable stimulation. This replaces the "Record duration" field with three phases: **Pre-laser**, **Laser ON**, and **Post-laser**. The camera records continuously through all three phases.
-6. Drag on the well grid to select which wells to include in the run.
+2. Select a calibration file.
+3. Set the output folder (defaults to `outputs/`; click **Browse…** to save to an SSD or other location).
+4. Choose capture mode:
+   - **Image**: Single still per well (JPG/PNG/TIF).
+   - **Raw .npy**: Max-rate raw sensor burst for a set duration. Produces per-frame timestamped `.npy` files + sidecar metadata JSON.
+   - **Video**: MJPG AVI for a set duration.
+5. Optionally enable **Use Laser** (Raw and Video modes) to split capture into Pre-laser / Laser ON / Post-laser phases.
+6. Select wells on the grid.
 7. Click **Start Experiment**.
 
 ---
 
-## Post-Processing Fast Raw Capture
+## Output Structure (Raw .npy Mode)
 
-If you run an experiment in **Raw .npy** mode, the camera dumps raw binary sensor data to disk to achieve maximum framerates. These files cannot be viewed directly.
+```
+outputs/20260625_133324_my_experiment/
+  raw/
+    A1_20260625_133324_f00000.npy    ← raw sensor frames
+    A1_20260625_133324_f00001.npy
+    ...
+    A1_20260625_133324_metadata.json ← per-frame timestamps, laser events, fps
+    A2_20260625_133324_metadata.json
+  points.csv                         ← well positions and capture log
+```
 
-After the experiment finishes, run the post-processing script to debayer the `.npy` files into standard `.jpg` images:
+After running the pipeline script, `images/` and `videos/` are added:
+
+```
+  images/
+    A1/
+      A1_f00000_000006203us_laser-off.png   ← debayered, clean (no overlay)
+      A1_f00152_005003994us_laser-on.png
+      ...
+    A2/
+      ...
+  videos/
+    A1_20260625_133324_vfr.mkv   ← VFR archival (accurate per-frame PTS)
+    A1_20260625_133324.mp4       ← constant-fps display (H.264 baseline, Pi-friendly)
+    A2_20260625_133324_vfr.mkv
+    A2_20260625_133324.mp4
+```
+
+---
+
+## Post-Processing Pipeline
+
+Run after an experiment to produce per-frame images and video:
 
 ```bash
-python3 scripts/post_process_raw.py outputs/<experiment_folder>
+# All wells in an experiment directory
+python scripts/reconstruct_vfr.py outputs/20260625_133324_my_experiment/
+
+# Single well
+python scripts/reconstruct_vfr.py outputs/exp/raw/A1_20260625_133324_metadata.json
+
+# Images only
+python scripts/reconstruct_vfr.py outputs/exp/ --no-video
+
+# Video only
+python scripts/reconstruct_vfr.py outputs/exp/ --no-images
+
+# Lossless video
+python scripts/reconstruct_vfr.py outputs/exp/ --codec ffv1
+
+# Monochrome sensor (skip Bayer debayer)
+python scripts/reconstruct_vfr.py outputs/exp/ --mono
+```
+
+**Image filenames** encode frame index, timestamp, and laser state for direct use in tracking pipelines:
+```
+A1_f00152_005003994us_laser-on.png
+```
+
+**Videos**: The MKV uses per-frame PTS from the sidecar metadata so timing is accurate to 1 ms. The MP4 uses the actual average FPS for smooth playback with an asterisk overlay marking laser-ON frames.
+
+---
+
+## Headless CLI
+
+Test hardware without launching the GUI:
+
+```bash
+source .venv/bin/activate
+
+python -m robocam status
+python -m robocam motion pos
+python -m robocam motion home
+python -m robocam motion move --x 50 --y 50
+python -m robocam motion gcode G28
+python -m robocam camera info
+python -m robocam camera capture --output frame.jpg
+python -m robocam config show
+python -m robocam config set paths.output_dir /mnt/ssd/outputs
+
+# Simulation mode (no hardware required)
+python -m robocam --simulate status
 ```
 
 ---
 
 ## Camera Backend Priority
 
-The `Camera` class in `robocam/camera.py` selects a backend in the following order on startup:
-
-1. **Player One** — if `pyPOACamera` SDK is found and at least one camera is detected via `GetCameraCount()`.
-2. **Picamera2** — if `picamera2` is installed (Raspberry Pi HQ camera).
-3. **OpenCV (`cv2`)** — generic USB webcam fallback.
-
----
-
-## Motion Backend Details
-
-### Marlin (Serial)
-
-The `MarlinBackend` in `robocam/motion.py` features:
-- **Auto-port detection**: Scans serial ports for USB/CH340/FTDI/Arduino descriptors.
-- **M400 capability check**: On the first move, it sends `M400` (wait for moves to finish). If unsupported, it falls back to a sleep delay.
-- **`in_waiting` read loop**: Reads serial data only when bytes are available, avoiding busy-wait CPU spin.
-
-### Klipper (Moonraker HTTP API)
-
-The `KlipperBackend` communicates with Klipper over the network via the Moonraker REST API:
-- Send G-code: `POST /printer/gcode/script`
-- Query position: `GET /printer/objects/query?toolhead`
-
----
-
-## Klipper Peripheral Roadmap (Lab Automation)
-
-RoboCam 3.1's architecture is designed to repurpose unused 3D printer hardware (heaters, fans, extruders) for lab automation tasks via Klipper.
-
-| Printer Hardware | Repurposed Function | G-code / Klipper Command | Status |
-|---|---|---|---|
-| **Output Pin (GPIO)** | Laser gate, shutter, or TTL trigger | `SET_PIN PIN=<name> VALUE=<0/1>` | **Implemented** |
-| **Part Cooling Fan** | Laser enable/disable or illumination control | `M106 S255` (on) / `M107` (off) | Planned |
-| **Extruder Heater** | Incubation chamber heater or sample warmer | `M104 S<temp>` / `M109 S<temp>` (wait) | Planned |
-| **Heated Bed** | Slide warmer or culture plate temperature control | `M140 S<temp>` / `M190 S<temp>` (wait) | Planned |
-| **Extruder Motor** | Peristaltic pump, syringe pump, or media dispenser | `G1 E<mm> F<speed>` | Planned |
-
-### Setting up a Klipper Laser Pin
-To use the `klipper` laser mode today, add this to your `printer.cfg`:
-
-```ini
-[output_pin laser]
-pin: PA0  # Replace with your actual controller board pin
-pwm: False
-value: 0
-```
-Then in the RoboCam Setup tab, set the Klipper ON G-code to `SET_PIN PIN=laser VALUE=1`.
+1. **Player One** — `pyPOACamera` SDK, detected via `GetCameraCount()`.
+2. **Picamera2** — Raspberry Pi HQ camera.
+3. **OpenCV** — generic USB webcam fallback.
 
 ---
 
@@ -199,10 +225,13 @@ Then in the RoboCam Setup tab, set the Klipper ON G-code to `SET_PIN PIN=laser V
 
 | Package | Purpose |
 |---|---|
+| `PySide6` | Desktop GUI |
 | `pyserial` | Marlin serial communication |
-| `numpy` | Frame buffer handling and fast raw `.npy` capture |
-| `opencv-python` | Frame processing, image saving, and OpenCV camera fallback |
-| `requests` | Klipper Moonraker HTTP API communication |
-| `pillow` | Tkinter image display |
-| `picamera2` *(optional, Pi only)* | Raspberry Pi HQ camera support |
-| Player One SDK *(auto-installed)* | Mars 662M and other Player One cameras |
+| `numpy` | Frame buffer handling and raw `.npy` capture |
+| `opencv-python` | Frame debayering, image saving, OpenCV fallback |
+| `av` | PyAV — VFR video encoding with per-frame PTS |
+| `requests` | Klipper Moonraker HTTP API |
+| `pillow` | Image utilities |
+| `RPi.GPIO` *(Pi only, via setup.sh)* | GPIO laser control |
+| `picamera2` *(Pi only, via setup.sh)* | Raspberry Pi HQ camera |
+| Player One SDK *(via setup.sh)* | Mars 662M and other Player One cameras |

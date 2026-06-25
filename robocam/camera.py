@@ -111,7 +111,10 @@ class Camera:
         # Lock to protect SDK calls from simultaneous UI preview and experiment thread access
         self._sdk_lock = threading.Lock()
         
-        if not self.simulate:
+        if self.simulate:
+            self.backend = "simulate"
+            self.running = True
+        else:
             # Try PlayerOne first
             if get_playerone_camera_count() > 0:
                 self._init_playerone()

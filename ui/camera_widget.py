@@ -75,8 +75,9 @@ class _FrameGrabber(QThread):
 class _LivePreview(QWidget):
     """
     Displays live camera frames.  Shows a dark 'Camera Offline' screen
-    when no frames are arriving, and a red 'RECORDING' overlay when
-    the grabber is paused mid-capture.
+    when no frames are arriving, a red 'RECORDING' overlay when the
+    grabber is paused mid-capture, and an amber 'EXPERIMENT IN PROGRESS'
+    overlay when an experiment is running.
     """
 
     def __init__(self, grabber: _FrameGrabber, parent=None):
@@ -84,6 +85,7 @@ class _LivePreview(QWidget):
         self._grabber = grabber
         self._pixmap: Optional[QPixmap] = None
         self._offline = True
+        self._experiment_running = False
         self.setMinimumSize(320, 240)
 
     def update_frame(self, qimg: QImage):
@@ -94,6 +96,10 @@ class _LivePreview(QWidget):
     def show_disconnected(self):
         self._offline = True
         self._pixmap = None
+        self.update()
+
+    def set_experiment_running(self, running: bool):
+        self._experiment_running = running
         self.update()
 
     def paintEvent(self, event):
@@ -114,7 +120,19 @@ class _LivePreview(QWidget):
             y_off = (h - scaled.height()) // 2
             painter.drawPixmap(x_off, y_off, scaled)
 
-        if self._grabber._paused:
+        if self._experiment_running:
+            painter.fillRect(0, 0, w, h, QColor(0, 0, 0, 170))
+            painter.setPen(QColor(255, 180, 0))
+            font = QFont()
+            font.setBold(True)
+            font.setPointSize(22)
+            painter.setFont(font)
+            painter.drawText(
+                0, 0, w, h,
+                Qt.AlignmentFlag.AlignCenter,
+                "EXPERIMENT IN PROGRESS\nPreview Paused",
+            )
+        elif self._grabber._paused:
             painter.fillRect(0, 0, w, h, QColor(0, 0, 0, 160))
             painter.setPen(QColor(255, 50, 50))
             font = QFont()

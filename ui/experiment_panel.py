@@ -21,12 +21,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QPushButton, QComboBox, QLineEdit,
     QDoubleSpinBox, QCheckBox, QSplitter, QScrollArea,
-    QMessageBox,
+    QMessageBox, QFileDialog,
 )
 
 from robocam.calibration import WellPlate
 from robocam.config import get_config
 import robocam.hw_state as hw_state
+from robocam.session import session_manager
 from ui.camera_widget import _FrameGrabber, _LivePreview
 from ui.well_grid import WellGrid
 
@@ -138,7 +139,19 @@ class ExperimentPanel(QWidget):
 
         self._refresh_cals()
         self._refresh_presets()
+        self._load_session()
         self._update_mode_visibility()
+
+        # Auto-save on every field change so a crash doesn't lose the session
+        self.name_edit.textChanged.connect(self._autosave)
+        self.mode_combo.currentIndexChanged.connect(self._autosave)
+        self.cal_combo.currentIndexChanged.connect(self._autosave)
+        self.img_fmt_combo.currentIndexChanged.connect(self._autosave)
+        self.use_laser_chk.toggled.connect(self._autosave)
+        self.dwell_spin.valueChanged.connect(self._autosave)
+        self.duration_spin.valueChanged.connect(self._autosave)
+        self.laser_on_spin.valueChanged.connect(self._autosave)
+        self.post_spin.valueChanged.connect(self._autosave)
 
     def closeEvent(self, event):
         self._grabber.stop()
@@ -219,7 +232,20 @@ class ExperimentPanel(QWidget):
         self.post_spin.setRange(0.0, 300.0)
         self.post_spin.setValue(2.0)
         self.post_spin.setSingleStep(0.5)
-        layout.addWidget(self.post_spin, row, 1)
+        layout.addWidget(self.post_spin, row, 1); row += 1
+
+        # Output directory
+        layout.addWidget(QLabel("Output folder:"), row, 0)
+        out_row = QHBoxLayout()
+        self.out_dir_lbl = QLabel(get_config().get("paths.output_dir", "outputs"))
+        self.out_dir_lbl.setStyleSheet("font-size: 10px; color: #444;")
+        self.out_dir_lbl.setWordWrap(True)
+        out_row.addWidget(self.out_dir_lbl, stretch=1)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setFixedWidth(70)
+        browse_btn.clicked.connect(self._browse_output_dir)
+        out_row.addWidget(browse_btn)
+        layout.addLayout(out_row, row, 1)
 
         return grp
 
@@ -450,6 +476,101 @@ class ExperimentPanel(QWidget):
             QMessageBox.critical(self, "Preset Error", str(e))
 
     # ------------------------------------------------------------------
+    # Session persistence
+    # ------------------------------------------------------------------
+
+    def _load_session(self):
+        s = session_manager.get("experiment")
+        self.name_edit.setText(s.get("name", "my_experiment"))
+        idx = self.mode_combo.findText(s.get("mode", "Image"))
+        if idx >= 0:
+            self.mode_combo.setCurrentIndex(idx)
+        self.dwell_spin.setValue(float(s.get("dwell", 1.0)))
+        fmt_idx = self.img_fmt_combo.findText(s.get("image_format", "jpg"))
+        if fmt_idx >= 0:
+            self.img_fmt_combo.setCurrentIndex(fmt_idx)
+        self.duration_spin.setValue(float(s.get("duration", 5.0)))
+        self.use_laser_chk.setChecked(bool(s.get("use_laser", False)))
+        self.laser_on_spin.setValue(float(s.get("laser_on", 1.0)))
+        self.post_spin.setValue(float(s.get("post", 2.0)))
+        cal = s.get("cal_file", "")
+        if cal:
+            cal_idx = self.cal_combo.findText(cal)
+            if cal_idx >= 0:
+                self.cal_combo.setCurrentIndex(cal_idx)
+
+    def _autosave(self, *_):
+        self._save_session()
+        session_manager.save()
+
+    def _save_session(self):
+        session_manager.update("experiment", {
+            "name": self.name_edit.text(),
+            "mode": self.mode_combo.currentText(),
+            "dwell": self.dwell_spin.value(),
+            "image_format": self.img_fmt_combo.currentText(),
+            "duration": self.duration_spin.value(),
+            "use_laser": self.use_laser_chk.isChecked(),
+            "laser_on": self.laser_on_spin.value(),
+            "post": self.post_spin.value(),
+            "cal_file": self.cal_combo.currentText(),
+        })
+
+    # ------------------------------------------------------------------
+    # Output directory picker
+    # ------------------------------------------------------------------
+
+    def _browse_output_dir(self):
+        current = get_config().get("paths.output_dir", "outputs")
+        chosen = QFileDialog.getExistingDirectory(self, "Select Output Folder", current)
+        if not chosen:
+            return
+        get_config().set("paths.output_dir", chosen)
+        self.out_dir_lbl.setText(chosen)
+        os.makedirs(chosen, exist_ok=True)
+        runner = hw_state.get_runner()
+        if runner:
+            runner.out_dir = chosen
+
+    # ------------------------------------------------------------------
+    # Calibration loader (format-agnostic)
+    # ------------------------------------------------------------------
+
+    def _load_cal_positions(self, path: str):
+        """Load well positions and labels from a calibration JSON.
+
+        Handles two on-disk formats:
+          1. CalibrationManager format — has ``interpolated_positions`` and ``labels``
+          2. CalibrationPanel format  — has ``corners`` dict + ``cols``/``rows``
+        """
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # Format 1: already computed
+        if data.get("interpolated_positions") and data.get("labels"):
+            return data["interpolated_positions"], data["labels"]
+
+        # Format 2: derive from corners
+        corners_dict = data.get("corners", {})
+        ul = corners_dict.get("Upper-Left") or data.get("upper_left")
+        ll = corners_dict.get("Lower-Left") or data.get("lower_left")
+        ur = corners_dict.get("Upper-Right") or data.get("upper_right")
+        lr = corners_dict.get("Lower-Right") or data.get("lower_right")
+
+        if not all([ul, ll, ur, lr]):
+            return [], []
+
+        cols    = int(data.get("cols",       data.get("x_quantity", 12)))
+        rows    = int(data.get("rows",       data.get("y_quantity",  8)))
+        pattern = data.get("pattern", WellPlate.PATTERN_RASTER)
+
+        plate   = WellPlate(cols, rows, [ul, ll, ur, lr], pattern)
+        labeled = plate.get_path_with_labels()
+        labels    = [item[0] for item in labeled]
+        positions = [item[1] for item in labeled]
+        return positions, labels
+
+    # ------------------------------------------------------------------
     # Experiment control
     # ------------------------------------------------------------------
 
@@ -457,6 +578,15 @@ class ExperimentPanel(QWidget):
         runner = hw_state.get_runner()
         if runner is None:
             QMessageBox.critical(self, "Error", "Motion controller not connected.")
+            return
+
+        motion = hw_state.get_motion()
+        if motion is not None and not motion.is_homed:
+            QMessageBox.warning(
+                self, "Home Required",
+                "The printer has not been homed this session.\n\n"
+                "Please go to the Setup tab and click 'Home All Axes' before running an experiment."
+            )
             return
 
         cal_file = self.cal_combo.currentText()
@@ -469,11 +599,15 @@ class ExperimentPanel(QWidget):
             cfg.get("paths.calibration_dir", "config/calibrations"), cal_file
         )
         try:
-            from robocam.calibration import CalibrationManager
-            cm = CalibrationManager()
-            positions, labels = cm.load(cal_path)
+            positions, labels = self._load_cal_positions(cal_path)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load calibration: {e}")
+            return
+
+        if not positions:
+            QMessageBox.critical(self, "Error",
+                "Calibration file has no well positions.\n"
+                "Re-save it from the Calibration tab.")
             return
 
         selected = self.well_grid.get_selected_indices()
@@ -487,9 +621,10 @@ class ExperimentPanel(QWidget):
         mode_map = {"Image": "image", "Raw .npy": "raw", "Video": "video"}
         mode = mode_map.get(self.mode_combo.currentText(), "image")
 
-        # Pause preview during raw/video so we don't fight the SDK lock
-        if mode in ("raw", "video"):
-            self._grabber.set_paused(True)
+        # Always pause the grabber during experiments to avoid frame-capture
+        # contention and show the experiment overlay on the preview widget.
+        self._grabber.set_paused(True)
+        self._preview.set_experiment_running(True)
 
         self._exp_thread = _ExperimentThread(
             runner=runner,
@@ -532,6 +667,7 @@ class ExperimentPanel(QWidget):
 
     def _on_experiment_finished(self):
         self._grabber.set_paused(False)
+        self._preview.set_experiment_running(False)
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.pause_btn.setEnabled(False)

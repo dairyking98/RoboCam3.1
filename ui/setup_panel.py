@@ -19,13 +19,32 @@ from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QPushButton, QComboBox,
-    QSpinBox, QLineEdit, QScrollArea, QCheckBox,
+    QSpinBox, QLineEdit, QScrollArea, QCheckBox, QFrame,
 )
 
 from robocam.config import get_config
 import robocam.hw_state as hw_state
 
 PRINTER_BAUDRATES = [115200, 250000, 57600, 38400, 19200, 9600]
+
+
+# ---------------------------------------------------------------------------
+# Background home thread
+# ---------------------------------------------------------------------------
+
+class _HomeThread(QThread):
+    finished = Signal(bool, str)  # success, message
+
+    def __init__(self, motion, parent=None):
+        super().__init__(parent)
+        self._motion = motion
+
+    def run(self):
+        try:
+            self._motion.home()
+            self.finished.emit(True, "Homed successfully.")
+        except Exception as e:
+            self.finished.emit(False, str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +291,33 @@ class SetupPanel(QWidget):
         self.printer_status_lbl = _status_label()
         layout.addWidget(self.printer_status_lbl, 0, 1)
 
-        layout.addWidget(QLabel("Camera:"), 1, 0)
+        layout.addWidget(QLabel("Homing:"), 1, 0)
+        self.homed_status_lbl = _status_label("Unknown")
+        layout.addWidget(self.homed_status_lbl, 1, 1)
+
+        self.home_now_btn = QPushButton("Home All Axes")
+        self.home_now_btn.setEnabled(False)
+        self.home_now_btn.clicked.connect(self._home_now)
+        layout.addWidget(self.home_now_btn, 1, 2)
+
+        layout.addWidget(QLabel("Camera:"), 2, 0)
         self.camera_status_lbl = _status_label()
-        layout.addWidget(self.camera_status_lbl, 1, 1)
+        layout.addWidget(self.camera_status_lbl, 2, 1)
+
+        # Warning banner — shown when printer is connected but not homed
+        self._home_warning = QFrame()
+        self._home_warning.setFrameShape(QFrame.Shape.StyledPanel)
+        self._home_warning.setStyleSheet(
+            "QFrame { background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 4px; }"
+        )
+        warn_layout = QHBoxLayout(self._home_warning)
+        warn_layout.setContentsMargins(6, 4, 6, 4)
+        warn_lbl = QLabel("Printer position unknown — home required before running experiments.")
+        warn_lbl.setStyleSheet("color: #856404; font-weight: bold;")
+        warn_lbl.setWordWrap(True)
+        warn_layout.addWidget(warn_lbl)
+        self._home_warning.hide()
+        layout.addWidget(self._home_warning, 3, 0, 1, 3)
 
         return grp
 
@@ -469,6 +512,20 @@ class SetupPanel(QWidget):
         self._cfg.set("hardware.laser.klipper_on_gcode", self.laser_on_edit.text())
         self._cfg.set("hardware.laser.klipper_off_gcode", self.laser_off_edit.text())
 
+    def _home_now(self):
+        motion = hw_state.get_motion()
+        if motion is None or not motion.is_connected:
+            return
+        self.home_now_btn.setEnabled(False)
+        self.home_now_btn.setText("Homing…")
+        self._home_thread = _HomeThread(motion, self)
+        self._home_thread.finished.connect(self._on_home_finished)
+        self._home_thread.start()
+
+    def _on_home_finished(self, success: bool, message: str):
+        self.home_now_btn.setText("Home All Axes")
+        self._refresh_status()
+
     def _connect_all(self):
         self._apply_camera()
         self._apply_printer()
@@ -504,6 +561,23 @@ class SetupPanel(QWidget):
         motion = hw_state.get_motion()
         mc_ok = motion is not None and getattr(motion, "is_connected", False)
         _set_status(self.printer_status_lbl, mc_ok)
+
+        # Homing state
+        if not mc_ok:
+            self.homed_status_lbl.setText("Unknown")
+            self.homed_status_lbl.setStyleSheet("color: gray; font-weight: bold;")
+            self.home_now_btn.setEnabled(False)
+            self._home_warning.hide()
+        elif motion.is_homed:
+            self.homed_status_lbl.setText("Homed")
+            self.homed_status_lbl.setStyleSheet("color: green; font-weight: bold;")
+            self.home_now_btn.setEnabled(True)
+            self._home_warning.hide()
+        else:
+            self.homed_status_lbl.setText("Not homed")
+            self.homed_status_lbl.setStyleSheet("color: red; font-weight: bold;")
+            self.home_now_btn.setEnabled(True)
+            self._home_warning.show()
 
     # ------------------------------------------------------------------
     # Load from config

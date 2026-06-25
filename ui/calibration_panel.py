@@ -30,7 +30,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
 
 from robocam.calibration import WellPlate
+from robocam.config import get_config
 import robocam.hw_state as hw_state
+from robocam.session import session_manager
 from ui.camera_widget import _FrameGrabber, _LivePreview
 from ui.well_grid import WellGrid
 
@@ -38,8 +40,11 @@ STEP_PRESETS = ["0.1", "0.5", "1.0", "5.0", "10.0"]
 CORNER_NAMES = ["Upper-Left", "Lower-Left", "Upper-Right", "Lower-Right"]
 
 
-def _default_cal_dir() -> Path:
-    return Path.home() / "Documents" / "RoboCam" / "calibrations"
+def _cal_dir_from_config() -> Path:
+    cfg = get_config()
+    p = Path(cfg.get("paths.calibration_dir", "config/calibrations"))
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +178,63 @@ class CalibrationPanel(QWidget):
         self._pos_timer.timeout.connect(self._update_position_display)
         self._pos_timer.start(500)
 
+        self._load_session()
+
     def closeEvent(self, event):
         self._grabber.stop()
         self._grabber.wait(1000)
         super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Session persistence
+    # ------------------------------------------------------------------
+
+    def _load_session(self):
+        s = session_manager.get("calibration")
+        self.cols_spin.setValue(int(s.get("cols", 12)))
+        self.rows_spin.setValue(int(s.get("rows", 8)))
+        pattern_idx = self.pattern_combo.findText(s.get("pattern", "Raster"))
+        if pattern_idx >= 0:
+            self.pattern_combo.setCurrentIndex(pattern_idx)
+        self.cal_name_edit.setText(s.get("cal_name", "calibration"))
+        self.exp_spin.setValue(int(s.get("exp_ms", 20)))
+        self.gain_spin.setValue(int(s.get("gain", 100)))
+        # Step size — match preset button or fall back to custom
+        step = s.get("step", "1.0")
+        matched = False
+        for btn in self._step_group.buttons():
+            if btn is not self._custom_rb and btn.text() == step:
+                btn.setChecked(True)
+                self.step_input.setText(step)
+                matched = True
+                break
+        if not matched:
+            self._custom_rb.setChecked(True)
+            self.step_input.setText(step)
+        # Quick capture
+        qc_fmt_idx = self.qc_fmt_combo.findText(s.get("qc_format", "jpg"))
+        if qc_fmt_idx >= 0:
+            self.qc_fmt_combo.setCurrentIndex(qc_fmt_idx)
+        self.qc_video_spin.setValue(float(s.get("qc_duration", 5.0)))
+        # Auto-restore last loaded calibration file
+        last_cal = s.get("last_cal_path", "")
+        if last_cal and os.path.isfile(last_cal):
+            self._load_calibration(last_cal)
+
+    def _save_session(self):
+        session_manager.update("calibration", {
+            "cols": self.cols_spin.value(),
+            "rows": self.rows_spin.value(),
+            "pattern": self.pattern_combo.currentText(),
+            "cal_name": self.cal_name_edit.text(),
+            "exp_ms": self.exp_spin.value(),
+            "gain": self.gain_spin.value(),
+            "step": self.step_input.text(),
+            "qc_format": self.qc_fmt_combo.currentText(),
+            "qc_duration": self.qc_video_spin.value(),
+            # last_cal_path is saved immediately in _load_calibration; preserve it here
+            "last_cal_path": session_manager.get("calibration").get("last_cal_path", ""),
+        })
 
     # ------------------------------------------------------------------
     # Group builders
@@ -237,9 +295,6 @@ class CalibrationPanel(QWidget):
         self.step_input = QLineEdit("1.0")
         self.step_input.setFixedWidth(55)
         step_layout.addWidget(self.step_input)
-        self._step_group.buttonClicked.connect(
-            lambda btn: self.step_input.setText(btn.text()) if btn != self._custom_rb else None
-        )
         self.step_input.textEdited.connect(lambda _: self._custom_rb.setChecked(True))
         layout.addWidget(step_grp, 4, 0, 1, 5)
 
@@ -375,7 +430,7 @@ class CalibrationPanel(QWidget):
         btn_row.addWidget(load_btn)
         root.addLayout(btn_row)
 
-        self._cal_dir_lbl = QLabel(str(_default_cal_dir()))
+        self._cal_dir_lbl = QLabel(str(_cal_dir_from_config()))
         self._cal_dir_lbl.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
         root.addWidget(self._cal_dir_lbl)
 
@@ -420,13 +475,19 @@ class CalibrationPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _refresh_camera_controls(self):
+        """Push last-used exposure/gain from session into the camera and update UI."""
         cam = hw_state.get_camera()
         if cam and cam.running:
+            s = session_manager.get("calibration")
+            exp_ms = int(s.get("exp_ms", 20))
+            gain = int(s.get("gain", 100))
             try:
-                self.exp_spin.setValue(int(cam.get_exposure() / 1000))
-                self.gain_spin.setValue(int(cam.get_gain()))
+                cam.set_exposure(exp_ms * 1000)
+                cam.set_gain(gain)
             except Exception:
                 pass
+            self.exp_spin.setValue(exp_ms)
+            self.gain_spin.setValue(gain)
 
     def _apply_camera_controls(self):
         cam = hw_state.get_camera()
@@ -436,6 +497,8 @@ class CalibrationPanel(QWidget):
                 cam.set_gain(self.gain_spin.value())
             except Exception:
                 pass
+        self._save_session()
+        session_manager.save()
 
     # ------------------------------------------------------------------
     # Movement actions
@@ -576,9 +639,7 @@ class CalibrationPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _get_cal_dir(self) -> Path:
-        d = getattr(self, "_cal_dir", _default_cal_dir())
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return _cal_dir_from_config()
 
     def _save_calibration(self):
         corners = {n: self.corners[n]["position"] for n in CORNER_NAMES}
@@ -592,12 +653,25 @@ class CalibrationPanel(QWidget):
         )
         if not path:
             return
+        cols    = self.cols_spin.value()
+        rows    = self.rows_spin.value()
+        pattern = self.pattern_combo.currentText()
+        ul = corners["Upper-Left"]
+        ll = corners["Lower-Left"]
+        ur = corners["Upper-Right"]
+        lr = corners["Lower-Right"]
+        plate   = WellPlate(cols, rows, [ul, ll, ur, lr], pattern)
+        labeled = plate.get_path_with_labels()
+        labels    = [item[0] for item in labeled]
+        positions = [item[1] for item in labeled]
         data = {
             "corners": corners,
-            "cols": self.cols_spin.value(),
-            "rows": self.rows_spin.value(),
-            "pattern": self.pattern_combo.currentText(),
+            "cols": cols,
+            "rows": rows,
+            "pattern": pattern,
             "name": self.cal_name_edit.text(),
+            "interpolated_positions": positions,
+            "labels": labels,
         }
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -646,6 +720,9 @@ class CalibrationPanel(QWidget):
         self._cal_status_lbl.setText(f"Loaded: {Path(path).name}")
         self._cal_status_lbl.setStyleSheet("font-size: 10px; color: green;")
         self.corners_changed.emit()
+        # Persist the loaded path so it can be auto-restored next session
+        session_manager.update("calibration", {"last_cal_path": str(path)})
+        session_manager.save()
 
     # ------------------------------------------------------------------
     # Quick capture

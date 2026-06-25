@@ -12,6 +12,7 @@ from ui.calibration_panel import CalibrationPanel
 from ui.experiment_panel import ExperimentPanel
 from ui.manual_control_panel import ManualControlPanel
 import robocam.hw_state as hw_state
+from robocam.session import session_manager
 
 
 class MainWindow(QMainWindow):
@@ -90,6 +91,11 @@ class MainWindow(QMainWindow):
             if grabber and grabber.isRunning():
                 grabber.stop()
                 grabber.wait(2000)
+
+        # Save session state from each panel before quitting
+        self.calibration_panel._save_session()
+        self.experiment_panel._save_session()
+        session_manager.save()
 
         # Disconnect hardware
         cam = hw_state.get_camera()

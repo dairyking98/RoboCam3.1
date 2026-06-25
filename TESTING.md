@@ -1,104 +1,140 @@
 # RoboCam 3.1 — Live Testing Checklist
 
-This document is the live testing checklist for the physical Raspberry Pi session. Check off items as they are verified. Issues that have already been fixed in code are marked as such. Open items are tracked in the To-Do Summary at the bottom.
+This document is the live testing checklist for the physical Raspberry Pi session. Check off items as they are verified.
 
 ---
 
 ## Pre-Session Checklist
 
-Before testing on the Pi, confirm the following:
-
 - [ ] Pull the latest code on the Pi: `git pull origin master`
-- [ ] Run `bash setup.sh` if this is a fresh clone or if dependencies have changed
-- [ ] Confirm the Player One SDK was installed: `PlayerOne_Camera_SDK_Linux_V3.10.0/python/pyPOACamera.py` should exist in the project root
-- [ ] Confirm `pyPOACamera.py` has been patched for Linux (check for `libPlayerOneCamera.so` in the file)
+- [ ] Run `bash setup.sh` if this is a fresh clone or if dependencies have changed (includes `av` / PyAV)
+- [ ] Confirm the Player One SDK is installed: `PlayerOne_Camera_SDK_Linux_V3.10.0/python/pyPOACamera.py` should exist
+- [ ] Confirm `pyPOACamera.py` has been patched for Linux (should reference `libPlayerOneCamera.so`)
 - [ ] Confirm the Mars 662M is plugged in via USB
-- [ ] Confirm the printer is powered on and connected (USB for Marlin, or network/Tailscale for Klipper)
+- [ ] Confirm the printer is powered on and connected (USB for Marlin, network/Tailscale for Klipper)
 - [ ] Launch the app: `bash start_robocam.sh`
 
 ---
 
 ## 1. Setup Tab Tests
 
-- [ ] **Motion Connection**: Select `marlin` and click Apply & Reconnect. Status should read `Connected: MARLIN` (green).
-- [ ] **Camera Detection**: Status bar should read `Camera: playerone`.
-- [ ] **Preview**: Crosshair overlay should be visible and correctly centered without green artifacts.
-- [ ] **Exposure Slider**: Dragging the slider should visually change preview brightness instantly.
-- [ ] **Gain Slider**: Dragging the slider should change sensor gain instantly.
-- [ ] **Resolution**: Dropdown should be populated. Selecting a lower resolution should cleanly restart the feed.
-- [ ] **Laser Config**: Set to `rpi_gpio` and pin `21`. Click Apply.
+- [ ] **Motion Connection**: Select `marlin`, click Apply & Reconnect. Status reads `Connected: MARLIN` (green).
+- [ ] **Homing Check**: If position is (0,0,0) after connect, app flags printer as not-homed. Home All Axes to clear.
+- [ ] **Camera Detection**: Status bar reads `Camera: playerone`.
+- [ ] **Preview**: Crosshair overlay visible and correctly centered.
+- [ ] **Exposure Slider**: Dragging changes preview brightness instantly.
+- [ ] **Gain Slider**: Dragging changes sensor gain instantly.
+- [ ] **Resolution Dropdown**: Populated from SDK native max. Selecting lower resolution cleanly restarts feed.
+- [ ] **Laser Config**: Set to `rpi_gpio`, pin `21`. Click Apply.
 
 ---
 
 ## 2. Manual Control Tab Tests
 
-- [ ] **Home All Axes**: Printer should home X, Y, and Z.
-- [ ] **Disable Steppers**: Click the button, then physically verify the carriage can be moved by hand.
+- [ ] **Home All Axes**: Printer homes X, Y, Z.
+- [ ] **Disable Steppers**: Click, verify carriage can be moved by hand.
 - [ ] **Jog Controls**: Test X, Y, Z moves at 0.1, 1.0, and 10.0 mm steps.
 - [ ] **Custom Step**: Type `5.5` into the custom box and verify it moves exactly that amount.
-- [ ] **Go To Position**: Enter X: 50, Y: 50 and click Go. Verify movement.
-- [ ] **Manual Laser**: Click Laser ON. Verify the physical laser turns on. Click Laser OFF.
-- [ ] **Raw G-code**: Send `M114` and verify the printer responds in the terminal log.
+- [ ] **Go To Position**: Enter X: 50, Y: 50, click Go. Verify movement.
+- [ ] **Manual Laser**: Click Laser ON — physical laser fires. Click Laser OFF.
+- [ ] **Raw G-code**: Send `M114`, verify the printer responds in the log.
 
 ---
 
 ## 3. Calibration Tab Tests
 
-- [ ] Jog to all 4 corners of a well plate and click **Set UL**, **Set UR**, **Set LL**, **Set LR**
-- [ ] Enter grid dimensions (e.g., 12 × 8) and click **Update Map & Save**
-- [ ] **Navigation**: Click well A1 on the visual map. The printer should move exactly to the upper-left corner.
-- [ ] **Pattern Selection**: Switch between Raster and Snake and verify the generated path array updates internally.
+- [ ] Jog to all 4 corners and click **Set UL**, **Set LL**, **Set UR**, **Set LR**.
+- [ ] Enter grid dimensions (e.g., 12 × 8) and pattern (Raster or Snake).
+- [ ] Click **Save Calibration** — file appears in `config/calibrations/`. Open the JSON and verify it contains both `corners` and `interpolated_positions` arrays.
+- [ ] **Navigation**: Click well A1 on the visual map — printer moves to upper-left corner.
+- [ ] **Navigation**: Click well H12 — printer moves to lower-right corner.
+- [ ] Switch between Raster and Snake — well order updates (verify via CLI or log if needed).
 
 ---
 
 ## 4. Experiment Tab Tests
 
-### Image Mode
-- [ ] Select Image mode, select a calibration, set a 1-second delay.
-- [ ] Select 3 wells on the grid and click **Start Experiment**.
-- [ ] Status label reads `Moving to A1 (1/3)...` → `Waiting for stabilization...` → `Recording well A1...`.
-- [ ] Check `outputs/` for the timestamped folder. Verify 3 `.jpg` images and 1 `.csv` file are created.
+### Output Folder Picker
+- [ ] Click **Browse…** next to the output folder label.
+- [ ] Select a different directory (e.g., `/tmp/robocam_test`).
+- [ ] Verify the label updates to the new path and `config/default_config.json` is updated.
 
-### Video Mode (No Laser)
-- [ ] Select Video mode. Do NOT check "Use Laser".
-- [ ] Set Record duration to 3 seconds. Run 1 well.
-- [ ] Verify an `.avi` video file and a `.json` sidecar (containing real FPS metadata) are created.
+### Image Mode
+- [ ] Select Image mode, select a calibration file, set 1-second dwell.
+- [ ] Select 3 wells on the grid, click **Start Experiment**.
+- [ ] Verify amber `"EXPERIMENT IN PROGRESS"` overlay appears on the camera preview.
+- [ ] Status label cycles through: Moving → Stabilising → Capturing → finished.
+- [ ] In `outputs/`, verify timestamped folder contains 3 image files and 1 `.csv`.
+- [ ] Overlay disappears when experiment finishes.
 
 ### Raw .npy Mode (With Laser)
-- [ ] Select Raw .npy mode. Check "Use Laser".
-- [ ] Set Pre-laser: 1s, Laser ON: 1s, Post-laser: 1s. Run 1 well.
-- [ ] Verify the laser fires exactly 1 second after capture starts, stays on for 1 second, then turns off while capture continues for 1 more second.
-- [ ] Verify a burst of `.npy` files are saved in the output folder.
-- [ ] Run `python3 scripts/post_process_raw.py outputs/<folder>` and verify `.npy` files are successfully converted to `.jpg`.
+- [ ] Select Raw .npy mode, check **Use Laser**.
+- [ ] Set Pre-laser: 2s, Laser ON: 2s, Post-laser: 2s. Select 1 well.
+- [ ] Click **Start Experiment**. Verify amber overlay on preview.
+- [ ] Verify laser fires ~2s after capture starts and turns off ~2s later.
+- [ ] In `outputs/<exp_dir>/raw/`, verify `.npy` files and `*_metadata.json`.
+- [ ] Open the metadata JSON — confirm `frames[]` has individual `time_offset_s` per entry (not just avg fps), and `laser_events[]` has two entries (ON + OFF) with accurate timestamps.
 
-### Preview Mode Behavior
-- [ ] **Idle (not recording)**: Live preview runs at high framerate with green crosshairs.
-- [ ] **Standard Recording**: Preview updates at ~0.5 fps by reading the last saved `.jpg` from disk. Crosshairs are hidden.
-- [ ] **Fast Raw Recording**: Preview is replaced by a black frame with the text `"Preview disabled during Fast Raw Capture"`.
+### Post-Processing Pipeline
+- [ ] Activate venv: `source .venv/bin/activate`
+- [ ] Run: `python scripts/reconstruct_vfr.py outputs/<exp_dir>/`
+- [ ] In `outputs/<exp_dir>/images/A1/`, verify PNG files named with frame index, µs timestamp, and laser state (e.g., `A1_f00000_000006203us_laser-off.png`).
+- [ ] In `outputs/<exp_dir>/videos/`, verify `A1_<ts>_vfr.mkv` and `A1_<ts>.mp4` are created.
+- [ ] Play the MP4 on the Pi — verify smooth playback and asterisk (*) overlay visible during laser-ON frames.
+- [ ] Verify MKV timing: `ffprobe -show_entries frame=best_effort_timestamp_time -select_streams v:0 outputs/<exp_dir>/videos/A1_*_vfr.mkv | head -20` — timestamps should match `metadata.json` `frames[].time_offset_s`.
+
+### Video Mode (No Laser)
+- [ ] Select Video mode, no laser. Record duration 3s. Run 1 well.
+- [ ] Verify `.avi` and `*_metadata.json` sidecar. Open JSON — confirm `frame_timestamps_s[]` array present (individual per-frame timestamps).
+
+### Preview Behavior During Experiment
+- [ ] **All modes**: Amber `"EXPERIMENT IN PROGRESS / Preview Paused"` overlay during run. Disappears on finish/stop.
+- [ ] **Idle in raw/video mode** (between wells): Red `"● RECORDING (Preview Paused)"` shown.
+- [ ] **Not running**: Live preview at full framerate.
 
 ---
 
-## 5. Known Issues
+## 5. Headless CLI Tests
 
-The following issues have been identified. Fixed items are marked; open items are tracked in the To-Do Summary.
+```bash
+source .venv/bin/activate
+python -m robocam status
+python -m robocam motion pos
+python -m robocam camera info
+python -m robocam config show
+python -m robocam --simulate status
+```
 
-~~**Exposure & Gain Controls** — Hardcoded in `camera.py`.~~ *(Fixed: Live sliders in GUI)*
-
-~~**Player One SDK Thread Safety** — No mutex around `GetImageData`.~~ *(Fixed: `threading.Lock` wraps all SDK calls)*
-
-~~**Resolution Configuration** — Hardcoded to `1920×1080`.~~ *(Fixed: Dynamic SDK polling and GUI dropdown)*
-
-**Z-Hop During Travel** — The experiment runner moves X, Y, and Z simultaneously in a single `G0` command. If the lens is positioned very close to the well plate walls, this could cause a collision during lateral travel. A configurable Z-hop (raise Z before XY move, lower Z at destination) needs to be added to `ExperimentRunner.run()`.
+- [ ] `status` shows connected hardware.
+- [ ] `motion pos` returns current X/Y/Z.
+- [ ] `camera info` shows backend and resolution.
+- [ ] `config show` displays current config.
+- [ ] `--simulate` runs without hardware.
 
 ---
 
-## 6. To-Do Summary
+## 6. Known Issues
 
-| Priority | Item | Status |
-|---|---|---|
-| High | Setup and Manual Control tab split | **Done** |
-| High | Laser/GPIO implementation and config | **Done** |
-| High | Timed Raw and Video capture modes | **Done** |
-| High | Z-hop during experiment travel | Pending |
-| Medium | Temperature control widgets | Planned |
-| Low | Extruder as pump/dispenser | Planned |
+**Z-Hop During Travel** — The experiment runner issues a single `G0 X Y Z` command per well. If the lens is very close to plate walls, lateral travel could cause a collision. A configurable Z-hop is needed in `ExperimentRunner.run()`.
+
+---
+
+## 7. Status Summary
+
+| Item | Status |
+|---|---|
+| PySide6 GUI (4 tabs) | Done |
+| Setup + Manual Control tabs | Done |
+| Calibration tab (4-corner bilinear) | Done |
+| Experiment tab (Image / Raw / Video) | Done |
+| Per-frame timestamps (not averaged) | Done |
+| Laser GPIO + Klipper integration | Done |
+| `scripts/reconstruct_vfr.py` pipeline | Done |
+| VFR MKV + constant-fps MP4 dual output | Done |
+| Per-frame PNG export with timestamp in filename | Done |
+| Output folder picker in Experiment tab | Done |
+| Session persistence | Done |
+| Headless CLI | Done |
+| Z-hop during experiment travel | Pending |
+| Temperature control widgets | Planned |
+| Extruder as pump/dispenser | Planned |

@@ -25,13 +25,13 @@
       ],
       "default_fps": 30.0,
       "resolution": [
-        1920,
-        1080
+        1024,
+        768
       ]
     },
     "laser": {
       "mode": "rpi_gpio",
-      "rpi_pin": 21,
+      "rpi_pin": 20,
       "klipper_on_gcode": "SET_PIN PIN=laser VALUE=1",
       "klipper_off_gcode": "SET_PIN PIN=laser VALUE=0"
     }
