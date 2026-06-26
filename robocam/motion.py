@@ -337,13 +337,16 @@ class MotionController:
 
         # Infer homed state from position reported at connect.
         # Marlin's power-on default is (0,0,0) before any G28 — treat that as
-        # "not homed". A non-zero position means the stage was moved after a
+        # "not homed". Also treat X==Y (e.g. 220,220) as not homed: that is the
+        # firmware's default park position, not a real post-home coordinate.
+        # A position where X != Y means the stage was actually moved after a
         # previous home, so it is safe to continue without re-homing.
         if self.simulate:
             self._homed = True
         else:
             x, y, z = self.backend.X, self.backend.Y, self.backend.Z
-            self._homed = not (x == 0.0 and y == 0.0 and z == 0.0)
+            not_homed = (x == 0.0 and y == 0.0 and z == 0.0) or (x == y)
+            self._homed = not not_homed
 
     def disconnect(self):
         if self.backend:
