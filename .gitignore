@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# LaTeX build artifacts
+*.tex
+*.pdf
+*.aux
+*.log
+*.out
+*.toc
+*.png
+
+# Keep the markdown source
+!LICENSES.md
+
+# Outputs and calibration data
+outputs/
+config/calibrations/
+
+# PlayerOne SDK (proprietary, obtain from manufacturer)
+PlayerOne_Camera_SDK_Linux_V3.10.0/
