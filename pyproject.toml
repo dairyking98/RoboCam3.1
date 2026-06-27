@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "robocam"
+version = "0.1.0"
+description = "Automated well-plate imaging with 3D-printer motion and astronomy cameras"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Leonard Chau", email = "leonard.chau@yahoo.com" }]
+requires-python = ">=3.10"
+keywords = ["microscopy", "imaging", "well-plate", "3d-printer", "automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "pyserial",
+    "numpy",
+    "opencv-python",
+    "requests",
+    "pillow",
+    "PySide6",
+    "av",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+robocam-gui = "robocam31:main"
+robocam = "robocam.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/dairyking98/RoboCam3.1"
+"Bug Tracker" = "https://github.com/dairyking98/RoboCam3.1/issues"
+Changelog = "https://github.com/dairyking98/RoboCam3.1/blob/master/CHANGELOG.md"
+
+[tool.setuptools]
+py-modules = ["robocam31"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["robocam*", "ui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
