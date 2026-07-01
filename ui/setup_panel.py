@@ -11,7 +11,10 @@ Connection   : Connect All / Disconnect All
 """
 from __future__ import annotations
 
+import os
 import platform
+import subprocess
+from pathlib import Path
 
 import serial.tools.list_ports
 
@@ -26,6 +29,10 @@ from robocam.config import get_config
 import robocam.hw_state as hw_state
 
 PRINTER_BAUDRATES = [115200, 250000, 57600, 38400, 19200, 9600]
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_UDEV_RULES_SRC = _PROJECT_ROOT / "PlayerOne_Camera_SDK_Linux_V3.10.0" / "99-player_one_astronomy.rules"
+_UDEV_RULES_DEST = Path("/etc/udev/rules.d/99-player_one_astronomy.rules")
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +55,45 @@ class _HomeThread(QThread):
 
 
 # ---------------------------------------------------------------------------
+# Udev rule installer (background thread)
+# ---------------------------------------------------------------------------
+
+class _UdevInstaller(QThread):
+    """Installs the PlayerOne udev rule and reloads udev — no replug needed."""
+
+    finished = Signal(bool, str)  # success, message
+
+    def run(self):
+        if not _UDEV_RULES_SRC.exists():
+            self.finished.emit(False, f"Rules file not found:\n{_UDEV_RULES_SRC}")
+            return
+        try:
+            subprocess.run(
+                ["sudo", "-n", "cp", str(_UDEV_RULES_SRC), str(_UDEV_RULES_DEST)],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["sudo", "-n", "udevadm", "control", "--reload-rules"],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["sudo", "-n", "udevadm", "trigger"],
+                check=True, capture_output=True,
+            )
+            self.finished.emit(True, "USB rules installed. Rescanning cameras…")
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode(errors="replace").strip() if e.stderr else ""
+            self.finished.emit(
+                False,
+                f"Could not install automatically (sudo returned {e.returncode}).\n"
+                f"Run manually:\n"
+                f"  sudo cp {_UDEV_RULES_SRC} {_UDEV_RULES_DEST}\n"
+                f"  sudo udevadm control --reload-rules && sudo udevadm trigger\n"
+                + (f"\n{stderr}" if stderr else ""),
+            )
+
+
+# ---------------------------------------------------------------------------
 # Camera enumerator (background thread)
 # ---------------------------------------------------------------------------
 
@@ -61,12 +107,22 @@ class _CameraEnumerator(QThread):
         try:
             os_name = platform.system()
 
-            # Raspberry Pi / picamera2
+            # Raspberry Pi / picamera2 — only add if libcamera actually sees a sensor
             if os_name == "Linux":
                 try:
                     from robocam.camera import PICAM2_AVAILABLE
                     if PICAM2_AVAILABLE:
-                        devices.append(("Raspberry Pi Camera (picamera2)", "picamera2", 0))
+                        from picamera2 import Picamera2
+                        found = Picamera2.global_camera_info()
+                        if found:
+                            for i, info in enumerate(found):
+                                model = info.get("Model", "Pi Camera")
+                                devices.append((f"Raspberry Pi Camera — {model} (index {i})", "picamera2", i))
+                        else:
+                            devices.append((
+                                "Raspberry Pi Camera — not detected (check CSI cable/adapter)",
+                                "picamera2", 0,
+                            ))
                 except Exception:
                     pass
 
@@ -88,6 +144,9 @@ class _CameraEnumerator(QThread):
                             if err == poa.POAErrors.POA_OK:
                                 model = props.cameraModelName.decode(errors="replace").strip()
                                 devices.append((f"PlayerOne — {model} (index {i})", "playerone", i, props.maxWidth, props.maxHeight))
+                            else:
+                                # Detected but can't open — usually a USB permission problem.
+                                devices.append((f"PlayerOne #{i} — USB permission denied (install udev rules)", "playerone", i))
                     finally:
                         sys.path[:] = prev
             except Exception:
@@ -207,6 +266,29 @@ class SetupPanel(QWidget):
         self.cam_apply_btn.clicked.connect(self._apply_camera)
         layout.addWidget(self.cam_apply_btn, 3, 0, 1, 3)
 
+        # Udev permission warning — hidden until a USB-denied device is detected
+        self._udev_warning = QFrame()
+        self._udev_warning.setFrameShape(QFrame.Shape.StyledPanel)
+        self._udev_warning.setStyleSheet(
+            "QFrame { background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; }"
+        )
+        _uw_layout = QHBoxLayout(self._udev_warning)
+        _uw_layout.setContentsMargins(8, 6, 8, 6)
+        _uw_layout.setSpacing(8)
+        self._udev_warn_lbl = QLabel()
+        self._udev_warn_lbl.setWordWrap(True)
+        self._udev_warn_lbl.setStyleSheet("color: #856404;")
+        _uw_layout.addWidget(self._udev_warn_lbl, stretch=1)
+        self._udev_install_btn = QPushButton("Install USB Rules")
+        self._udev_install_btn.clicked.connect(self._install_udev_rules)
+        _uw_layout.addWidget(self._udev_install_btn)
+        self._udev_warning.hide()
+        layout.addWidget(self._udev_warning, 4, 0, 1, 3)
+
+        self.cam_device_combo.currentIndexChanged.connect(
+            lambda _: self._populate_resolution_combo()
+        )
+
         return grp
 
     def _build_printer_group(self) -> QGroupBox:
@@ -219,27 +301,31 @@ class SetupPanel(QWidget):
         self.backend_combo.currentTextChanged.connect(self._on_backend_changed)
         layout.addWidget(self.backend_combo, 0, 1)
 
-        layout.addWidget(QLabel("Serial port:"), 1, 0)
+        self._serial_port_label = QLabel("Serial port:")
+        layout.addWidget(self._serial_port_label, 1, 0)
         self.printer_port_combo = QComboBox()
         self.printer_port_combo.setEditable(True)
         layout.addWidget(self.printer_port_combo, 1, 1)
-        refresh_btn = QPushButton("↺")
-        refresh_btn.setFixedWidth(30)
-        refresh_btn.clicked.connect(self._refresh_printer_ports)
-        layout.addWidget(refresh_btn, 1, 2)
+        self._serial_refresh_btn = QPushButton("↺")
+        self._serial_refresh_btn.setFixedWidth(30)
+        self._serial_refresh_btn.clicked.connect(self._refresh_printer_ports)
+        layout.addWidget(self._serial_refresh_btn, 1, 2)
 
-        layout.addWidget(QLabel("Baud rate:"), 2, 0)
+        self._baud_label = QLabel("Baud rate:")
+        layout.addWidget(self._baud_label, 2, 0)
         self.printer_baud_combo = QComboBox()
         for b in PRINTER_BAUDRATES:
             self.printer_baud_combo.addItem(str(b), b)
         layout.addWidget(self.printer_baud_combo, 2, 1)
 
-        layout.addWidget(QLabel("Klipper host:"), 3, 0)
+        self._klipper_host_label = QLabel("Klipper host:")
+        layout.addWidget(self._klipper_host_label, 3, 0)
         self.klipper_host_edit = QLineEdit()
         self.klipper_host_edit.setPlaceholderText("127.0.0.1")
         layout.addWidget(self.klipper_host_edit, 3, 1)
 
-        layout.addWidget(QLabel("Klipper port:"), 4, 0)
+        self._klipper_port_label = QLabel("Klipper port:")
+        layout.addWidget(self._klipper_port_label, 4, 0)
         self.klipper_port_spin = QSpinBox()
         self.klipper_port_spin.setRange(1, 65535)
         self.klipper_port_spin.setValue(7125)
@@ -363,6 +449,28 @@ class SetupPanel(QWidget):
         self.cam_scan_btn.setEnabled(True)
         self._populate_resolution_combo()
 
+        # Show udev warning if any PlayerOne camera was detected but access was denied
+        perm_denied = any("permission denied" in dev[0].lower() for dev in devices)
+        if perm_denied:
+            already_installed = _UDEV_RULES_DEST.exists()
+            if already_installed:
+                self._udev_warn_lbl.setText(
+                    "<b>PlayerOne camera found — USB access still blocked.</b><br>"
+                    "The udev rule is installed but hasn't taken effect yet. "
+                    "Try clicking Install USB Rules again, or unplug and replug the camera."
+                )
+            else:
+                self._udev_warn_lbl.setText(
+                    "<b>PlayerOne camera detected but USB access is denied.</b><br>"
+                    "A one-time permission rule must be installed. "
+                    "Click <b>Install USB Rules</b> — no cable disconnect needed."
+                )
+            self._udev_install_btn.setEnabled(True)
+            self._udev_install_btn.setText("Install USB Rules")
+            self._udev_warning.show()
+        else:
+            self._udev_warning.hide()
+
     def _populate_resolution_combo(self):
         """Fill resolution list based on selected camera."""
         idx = self.cam_device_combo.currentIndex()
@@ -397,6 +505,37 @@ class SetupPanel(QWidget):
         self.cam_res_combo.setCurrentIndex(self.cam_res_combo.count() - 1)
 
     # ------------------------------------------------------------------
+    # Udev rule installer
+    # ------------------------------------------------------------------
+
+    def _install_udev_rules(self):
+        self._udev_install_btn.setEnabled(False)
+        self._udev_install_btn.setText("Installing…")
+        self._udev_warn_lbl.setText(
+            "<b>Installing USB permission rule…</b><br>"
+            "This takes a moment — camera list will refresh automatically."
+        )
+        self._udev_thread = _UdevInstaller(self)
+        self._udev_thread.finished.connect(self._on_udev_install_finished)
+        self._udev_thread.start()
+
+    def _on_udev_install_finished(self, success: bool, message: str):
+        if success:
+            self._udev_warn_lbl.setText(
+                f"<span style='color:green;'><b>Done.</b></span> {message}"
+            )
+            self._udev_install_btn.hide()
+            QTimer.singleShot(800, self._enumerate_cameras)
+        else:
+            self._udev_warn_lbl.setText(
+                f"<b>Auto-install failed.</b> Run these commands in a terminal:<br>"
+                f"<code>sudo cp {_UDEV_RULES_SRC} {_UDEV_RULES_DEST}</code><br>"
+                f"<code>sudo udevadm control --reload-rules &amp;&amp; sudo udevadm trigger</code>"
+            )
+            self._udev_install_btn.setEnabled(True)
+            self._udev_install_btn.setText("Retry")
+
+    # ------------------------------------------------------------------
     # Port helpers
     # ------------------------------------------------------------------
 
@@ -417,11 +556,12 @@ class SetupPanel(QWidget):
 
     def _on_backend_changed(self, backend: str):
         is_klipper = backend == "klipper"
-        self.klipper_host_edit.setVisible(is_klipper)
-        self.klipper_port_spin.setVisible(is_klipper)
-        # Also hide serial port / baud for klipper (uses HTTP)
-        self.printer_port_combo.setVisible(not is_klipper)
-        self.printer_baud_combo.setVisible(not is_klipper)
+        for w in (self._klipper_host_label, self.klipper_host_edit,
+                  self._klipper_port_label, self.klipper_port_spin):
+            w.setVisible(is_klipper)
+        for w in (self._serial_port_label, self.printer_port_combo,
+                  self._serial_refresh_btn, self._baud_label, self.printer_baud_combo):
+            w.setVisible(not is_klipper)
 
     def _on_laser_mode_changed(self, mode: str):
         self.laser_pin_spin.setEnabled(mode == "rpi_gpio")
@@ -465,6 +605,8 @@ class SetupPanel(QWidget):
             cam = Camera(
                 resolution=self._pending_cam_res,
                 simulate=False,
+                backend=self._pending_cam_backend,
+                device_index=self._pending_cam_idx,
             )
             hw_state.set_camera(cam)
             hw_state.rebuild_runner()

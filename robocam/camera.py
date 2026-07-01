@@ -98,7 +98,7 @@ def get_playerone_camera_count() -> int:
         return 0
 
 class Camera:
-    def __init__(self, resolution=(1920, 1080), simulate=False):
+    def __init__(self, resolution=(1920, 1080), simulate=False, backend=None, device_index=0):
         self.resolution = resolution
         self.simulate = simulate
         self.backend = None
@@ -107,37 +107,42 @@ class Camera:
         self._poa = None
         self._camera_id = None
         self.running = False
-        
+        self._device_index = device_index
+
         # Lock to protect SDK calls from simultaneous UI preview and experiment thread access
         self._sdk_lock = threading.Lock()
-        
+
         if self.simulate:
             self.backend = "simulate"
             self.running = True
+        elif backend == "picamera2":
+            self._init_picam2(device_index)
+        elif backend == "playerone":
+            self._init_playerone(device_index)
+        elif backend == "cv2":
+            self._init_cv2(device_index)
         else:
-            # Try PlayerOne first
+            # Auto-detect: PlayerOne → picamera2 → cv2
             if get_playerone_camera_count() > 0:
-                self._init_playerone()
-            # Fallback to Picamera2
-            elif PICAM2_AVAILABLE:
-                self._init_picam2()
-            # Fallback to generic OpenCV
+                self._init_playerone(0)
+            elif PICAM2_AVAILABLE and Picamera2.global_camera_info():
+                self._init_picam2(0)
             else:
-                self._init_cv2()
-                
-    def _init_playerone(self):
+                self._init_cv2(0)
+
+    def _init_playerone(self, device_index: int = 0):
         sdk_path = get_playerone_sdk_python_path()
         if not sdk_path:
             raise RuntimeError("Player One SDK Python not found.")
         _ensure_pypoa_patched_for_linux(sdk_path)
-        
+
         prev = list(sys.path)
         if sdk_path not in sys.path:
             sys.path.insert(0, sdk_path)
         try:
             import pyPOACamera as poa
             self._poa = poa
-            err, props = poa.GetCameraProperties(0)
+            err, props = poa.GetCameraProperties(device_index)
             if err != poa.POAErrors.POA_OK:
                 raise RuntimeError(f"GetCameraProperties failed: {err}")
                 
@@ -174,9 +179,19 @@ class Camera:
         finally:
             sys.path[:] = prev
 
-    def _init_picam2(self):
+    def _init_picam2(self, device_index: int = 0):
+        available = Picamera2.global_camera_info()
+        if not available:
+            raise RuntimeError(
+                "Picamera2 is installed but libcamera detected no camera sensor. "
+                "Check that the ribbon cable is seated correctly and that you are "
+                "using the right cable for your Pi model (Pi 5 needs a 22-pin FFC; "
+                "Camera Module 2/v1 ship with 15-pin and need an adapter)."
+            )
+        if device_index >= len(available):
+            device_index = 0
         try:
-            self.picam2 = Picamera2()
+            self.picam2 = Picamera2(device_index)
             # Force RGB888 so capture_array always returns 3-channel RGB
             cfg = self.picam2.create_preview_configuration(
                 main={"size": self.resolution, "format": "RGB888"}
@@ -188,20 +203,19 @@ class Camera:
             self._picam2_gain = 1.0
             self.backend = "picamera2"
             self.running = True
-            logger.info(f"Picamera2 opened at {self.resolution}")
+            logger.info(f"Picamera2 index {device_index} opened at {self.resolution}")
         except Exception as e:
-            logger.error(f"Picamera2 failed: {e}")
-            self._init_cv2()
+            raise RuntimeError(f"Picamera2 init failed: {e}") from e
 
-    def _init_cv2(self):
-        self.cv2_cap = cv2.VideoCapture(0)
+    def _init_cv2(self, device_index: int = 0):
+        self.cv2_cap = cv2.VideoCapture(device_index, cv2.CAP_V4L2)
         if self.cv2_cap.isOpened():
             self.cv2_cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
             self.cv2_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
             self.backend = "cv2"
             self.running = True
         else:
-            logger.error("Failed to open cv2 camera")
+            logger.error(f"Failed to open cv2 camera index {device_index}")
             self.running = False
 
     def get_exposure(self) -> int:

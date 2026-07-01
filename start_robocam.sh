@@ -17,6 +17,10 @@ else
     echo "Warning: .venv directory not found. Running with system python."
 fi
 
+# Remove qt5ct platform theme override — it has no config on this system and
+# causes QComboBox popup text to render white-on-white under Qt 6.
+unset QT_QPA_PLATFORMTHEME
+
 # Run the application
 echo "Launching main application..."
 python3 robocam31.py
