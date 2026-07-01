@@ -51,8 +51,9 @@ class LaserController:
                     self._connected = True
                 except Exception as exc:
                     raise RuntimeError(
-                        f"GPIO init failed on pin {self.rpi_pin}. "
-                        "Install lgpio (pip install lgpio) or RPi.GPIO."
+                        f"GPIO init failed on pin {self.rpi_pin}: {exc}. "
+                        "Check the pin number is correct and not already in use. "
+                        "If neither lgpio nor RPi.GPIO is installed, run: pip install lgpio"
                     ) from exc
         elif self.mode == self.MODE_KLIPPER:
             if not self.motion:
