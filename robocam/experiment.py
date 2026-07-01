@@ -1,12 +1,11 @@
 import os
 import time
-import cv2
 import csv
 import json
 import logging
 import numpy as np
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from .config import get_config
 from .peripherals import LaserController
 
@@ -19,22 +18,19 @@ class ExperimentRunner:
 
     Capture modes
     -------------
-    image   : Single still image per well (JPG/PNG/TIF).
-    raw     : Burst of raw .npy frames for `pre_duration` seconds at maximum
-              camera rate. No encoding overhead — fastest possible capture.
-    video   : Records an AVI for `pre_duration` [+ laser_on + post_duration]
-              seconds at maximum camera framerate. Actual FPS written to metadata.
+    image : Single still image per well (JPG/PNG/TIF).
+    raw   : Burst of raw .npy frames for `pre_duration` seconds at maximum
+            camera rate. No encoding overhead — fastest possible capture.
+            A camera_meta.json sidecar is written once per experiment so the
+            post-processing pipeline can debayer and reconstruct video correctly.
 
-    Laser flag (applies to raw and video modes)
-    -------------------------------------------
+    Laser flag (applies to raw mode)
+    ---------------------------------
     When use_laser=True the laser fires during the middle window:
         pre_duration  → camera records, laser OFF
         laser_on      → camera records, laser ON
         post_duration → camera records, laser OFF
     When use_laser=False only pre_duration is used (total record time).
-
-    Video is always captured at the maximum rate the camera can deliver.
-    The actual achieved FPS is written into the metadata JSON sidecar.
     """
 
     def __init__(self, motion_controller, camera):
@@ -52,110 +48,7 @@ class ExperimentRunner:
         self.is_raw_mode = False
         self.last_written_image_path = None
         self.last_written_video_path = None
-
-    # ------------------------------------------------------------------
-    # Internal: max-rate video writer
-    # ------------------------------------------------------------------
-    def _write_video(
-        self,
-        output_path: str,
-        total_duration_s: float,
-        laser_controller=None,
-        laser_on_s: float = 0.0,
-        laser_start_s: float = 0.0,
-    ) -> str:
-        first_frame = None
-        for _ in range(30):
-            first_frame = self.camera.get_frame()
-            if first_frame is not None:
-                break
-            time.sleep(0.033)
-
-        if first_frame is None:
-            raise RuntimeError("Could not read a frame to start video recording.")
-
-        if self.camera.backend == "picamera2":
-            first_frame = cv2.cvtColor(first_frame, cv2.COLOR_RGB2BGR)
-
-        h, w = first_frame.shape[:2]
-        # Container FPS is a nominal placeholder; per-frame timestamps in the
-        # sidecar JSON are the authoritative source for reconstruction.
-        container_fps = 30.0
-        writer = cv2.VideoWriter(
-            output_path,
-            cv2.VideoWriter_fourcc(*"MJPG"),
-            container_fps,
-            (w, h),
-        )
-        if not writer.isOpened():
-            raise RuntimeError(f"Could not open video writer for {output_path}")
-
-        frames = 0
-        frame_timestamps: list = []   # seconds from recording start, per frame
-        laser_events = []
-        last_laser_state = False
-        laser_end_s = laser_start_s + laser_on_s
-        start = time.perf_counter()
-
-        try:
-            while self.running:
-                elapsed = time.perf_counter() - start
-                if elapsed >= total_duration_s:
-                    break
-
-                should_laser = bool(
-                    laser_controller
-                    and laser_on_s > 0
-                    and laser_start_s <= elapsed < laser_end_s
-                )
-                if should_laser != last_laser_state and laser_controller:
-                    laser_controller.set_laser(should_laser)
-                    laser_events.append({
-                        "time_offset_s": round(elapsed, 6),
-                        "state": "ON" if should_laser else "OFF",
-                        "frame_index": frames,
-                    })
-                    last_laser_state = should_laser
-
-                frame = first_frame if frames == 0 else self.camera.get_frame()
-                if frame is not None:
-                    t_capture = time.perf_counter() - start
-                    if self.camera.backend == "picamera2":
-                        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                    writer.write(frame)
-                    frame_timestamps.append(round(t_capture, 6))
-                    frames += 1
-                # No sleep — capture as fast as the camera allows
-
-        finally:
-            if laser_controller and last_laser_state:
-                laser_controller.set_laser(False)
-                laser_events.append({
-                    "time_offset_s": round(time.perf_counter() - start, 6),
-                    "state": "OFF",
-                    "frame_index": frames,
-                })
-            duration_actual = time.perf_counter() - start
-            writer.release()
-
-        meta_path = os.path.splitext(output_path)[0] + "_metadata.json"
-        metadata = {
-            "video_file": os.path.basename(output_path),
-            "frames_captured": frames,
-            "duration_requested_s": round(total_duration_s, 3),
-            "duration_actual_s": round(duration_actual, 6),
-            "fps_average": round(frames / duration_actual, 4) if duration_actual > 0 else 0.0,
-            "fps_container": container_fps,
-            "resolution": [w, h],
-            "frame_timestamps_s": frame_timestamps,
-            "laser_events": laser_events,
-            "timestamp": datetime.now().isoformat(),
-        }
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2)
-
-        self.last_written_video_path = output_path
-        return output_path
+        self.last_exp_dir: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Internal: max-rate raw burst writer
@@ -265,10 +158,11 @@ class ExperimentRunner:
         exp_dir = os.path.join(self.out_dir, f"{timestamp}_{name}")
         raw_dir = os.path.join(exp_dir, "raw")
         os.makedirs(raw_dir, exist_ok=True)
+        self.last_exp_dir = exp_dir
 
         csv_path = os.path.join(exp_dir, f"{timestamp}_{name}_points.csv")
 
-        # Pre-calculate total duration for video/raw
+        # Pre-calculate total duration for raw mode
         if use_laser:
             total_duration = float(pre_duration) + float(laser_on_duration) + float(post_duration)
             laser_start = float(pre_duration)
@@ -278,12 +172,19 @@ class ExperimentRunner:
             laser_on_duration = 0.0
 
         try:
+            # Write camera metadata once for the whole experiment so the
+            # post-processing pipeline knows how to debayer the .npy frames.
+            if mode == "raw":
+                cam_meta = self.camera.get_camera_meta()
+                with open(os.path.join(raw_dir, "camera_meta.json"), "w", encoding="utf-8") as mf:
+                    json.dump(cam_meta, mf, indent=2)
+
             with open(csv_path, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["Well", "X", "Y", "Z", "Capture_File", "Capture_Mode", "Laser", "Timestamp"])
 
                 laser_controller = None
-                if use_laser and mode in ("raw", "video"):
+                if use_laser and mode == "raw":
                     laser_controller = LaserController(self.motion)
                     laser_controller.connect()
 
@@ -337,22 +238,11 @@ class ExperimentRunner:
                             laser_start_s=laser_start,
                         )
                         capture_name = f"raw/{label}_{timestamp}_f*.npy ({burst_meta['frames_captured']} frames)"
-                        # Sidecar metadata lives alongside the .npy files in raw/
                         meta_path = os.path.join(raw_dir, f"{label}_{timestamp}_metadata.json")
                         burst_meta["well"] = label
                         burst_meta["timestamp"] = capture_time
                         with open(meta_path, "w", encoding="utf-8") as mf:
                             json.dump(burst_meta, mf, indent=2)
-
-                    elif mode == "video":
-                        capture_name = f"{label}_{timestamp}.avi"
-                        video_path = os.path.join(exp_dir, capture_name)
-                        self._write_video(
-                            video_path, total_duration,
-                            laser_controller=laser_controller,
-                            laser_on_s=float(laser_on_duration),
-                            laser_start_s=laser_start,
-                        )
 
                     else:
                         # Standard still image

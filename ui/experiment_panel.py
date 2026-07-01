@@ -3,9 +3,9 @@ Experiment Panel — configure and run well-plate experiments.
 
 Three-column QSplitter
 ----------------------
-Col 1 : Live camera preview (paused during raw/video capture)
+Col 1 : Live camera preview (paused during raw burst capture)
 Col 2 : Settings — name, calibration, mode, timing, laser, presets,
-        start/stop/pause
+        start/stop/pause, auto-process checkbox
 Col 3 : Well selection grid
 """
 from __future__ import annotations
@@ -32,6 +32,12 @@ from ui.camera_widget import _FrameGrabber, _LivePreview
 from ui.well_grid import WellGrid
 
 CORNER_NAMES = ["Upper-Left", "Lower-Left", "Upper-Right", "Lower-Right"]
+
+# Map legacy / renamed mode strings to current UI values
+_MODE_ALIASES = {"Raw .npy": "Raw Burst", "Video": "Raw Burst"}
+
+def _normalise_mode(mode: str) -> str:
+    return _MODE_ALIASES.get(mode, mode)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +85,7 @@ class _ExperimentThread(QThread):
 class ExperimentPanel(QWidget):
     experiment_started  = Signal()
     experiment_finished = Signal()
+    experiment_data_ready = Signal(str)  # emitted with exp_dir when auto-process is on
 
     def __init__(self, calibration_panel=None, parent=None):
         super().__init__(parent)
@@ -184,7 +191,7 @@ class ExperimentPanel(QWidget):
 
         layout.addWidget(QLabel("Mode:"), row, 0)
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Image", "Raw .npy", "Video"])
+        self.mode_combo.addItems(["Image", "Raw Burst"])
         self.mode_combo.currentTextChanged.connect(self._update_mode_visibility)
         layout.addWidget(self.mode_combo, row, 1); row += 1
 
@@ -296,6 +303,13 @@ class ExperimentPanel(QWidget):
         self.status_lbl.setStyleSheet("font-style: italic; color: #555;")
         layout.addWidget(self.status_lbl)
 
+        self.auto_process_chk = QCheckBox("Auto-process after experiment")
+        self.auto_process_chk.setToolTip(
+            "When checked, the Processing tab will automatically convert\n"
+            ".npy frames to PNG images and video after each experiment."
+        )
+        layout.addWidget(self.auto_process_chk)
+
         return grp
 
     def _build_well_selection_group(self) -> QGroupBox:
@@ -342,7 +356,7 @@ class ExperimentPanel(QWidget):
 
     def _update_mode_visibility(self):
         mode = self.mode_combo.currentText()
-        is_timed = mode in ("Raw .npy", "Video")
+        is_timed = mode == "Raw Burst"
         use_laser = self.use_laser_chk.isChecked() and is_timed
 
         self.lbl_img_fmt.setVisible(mode == "Image")
@@ -422,7 +436,7 @@ class ExperimentPanel(QWidget):
 
     def _apply_preset_data(self, data: dict):
         self.name_edit.setText(data.get("name", self.name_edit.text()))
-        idx = self.mode_combo.findText(data.get("mode", ""))
+        idx = self.mode_combo.findText(_normalise_mode(data.get("mode", "")))
         if idx >= 0:
             self.mode_combo.setCurrentIndex(idx)
         self.dwell_spin.setValue(float(data.get("dwell", 1.0)))
@@ -482,7 +496,8 @@ class ExperimentPanel(QWidget):
     def _load_session(self):
         s = session_manager.get("experiment")
         self.name_edit.setText(s.get("name", "my_experiment"))
-        idx = self.mode_combo.findText(s.get("mode", "Image"))
+        _mode = _normalise_mode(s.get("mode", "Image"))
+        idx = self.mode_combo.findText(_mode)
         if idx >= 0:
             self.mode_combo.setCurrentIndex(idx)
         self.dwell_spin.setValue(float(s.get("dwell", 1.0)))
@@ -618,7 +633,7 @@ class ExperimentPanel(QWidget):
         filtered_pos    = [positions[i] for i in selected if i < len(positions)]
         filtered_labels = [labels[i]    for i in selected if i < len(labels)]
 
-        mode_map = {"Image": "image", "Raw .npy": "raw", "Video": "video"}
+        mode_map = {"Image": "image", "Raw Burst": "raw"}
         mode = mode_map.get(self.mode_combo.currentText(), "image")
 
         # Always pause the grabber during experiments to avoid frame-capture
@@ -675,3 +690,9 @@ class ExperimentPanel(QWidget):
         self.status_lbl.setText("Status: Finished")
         self.experiment_finished.emit()
         self._exp_thread = None
+
+        if self.auto_process_chk.isChecked():
+            import robocam.hw_state as _hw
+            runner = _hw.get_runner()
+            if runner and runner.last_exp_dir:
+                self.experiment_data_ready.emit(runner.last_exp_dir)

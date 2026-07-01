@@ -145,36 +145,37 @@ class Camera:
             err, props = poa.GetCameraProperties(device_index)
             if err != poa.POAErrors.POA_OK:
                 raise RuntimeError(f"GetCameraProperties failed: {err}")
-                
+
             self._camera_id = props.cameraID
             err = poa.OpenCamera(self._camera_id)
             if err != poa.POAErrors.POA_OK:
                 raise RuntimeError(f"OpenCamera failed: {err}")
-                
+
             err = poa.InitCamera(self._camera_id)
             if err != poa.POAErrors.POA_OK:
                 raise RuntimeError(f"InitCamera failed: {err}")
-                
+
             w, h = self.resolution
             poa.SetImageStartPos(self._camera_id, 0, 0)
             poa.SetImageSize(self._camera_id, w, h)
             poa.SetImageBin(self._camera_id, 1)
             poa.SetImageFormat(self._camera_id, poa.POAImgFormat.POA_RAW8)
-            
+
             # Set default exposure and gain
             poa.SetExp(self._camera_id, 20000, False)
             poa.SetGain(self._camera_id, 100, False)
-            
+
             # Video mode continuous capture
             poa.StartExposure(self._camera_id, False)
-            
+
             self.backend = "playerone"
             self.running = True
-            
+
             # Fetch max resolution from properties to populate supported list later
             self._max_width = props.maxWidth
             self._max_height = props.maxHeight
-            
+            self._playerone_model = props.cameraModelName.decode(errors="replace").strip()
+
             logger.info(f"Player One camera opened: {w}x{h}")
         finally:
             sys.path[:] = prev
@@ -192,18 +193,41 @@ class Camera:
             device_index = 0
         try:
             self.picam2 = Picamera2(device_index)
-            # Force RGB888 so capture_array always returns 3-channel RGB
-            cfg = self.picam2.create_preview_configuration(
-                main={"size": self.resolution, "format": "RGB888"}
+            # Video config with raw stream: gives burst-rate true Bayer capture
+            # alongside the RGB preview stream. create_video_configuration is
+            # required — still configs add inter-frame latency that kills burst FPS.
+            cfg = self.picam2.create_video_configuration(
+                main={"size": self.resolution, "format": "RGB888"},
+                raw={},
             )
             self.picam2.configure(cfg)
             self.picam2.start()
-            # Cached values for get_exposure / get_gain (avoids blocking capture_metadata)
+
+            # Cached values for get_exposure / get_gain
             self._picam2_exposure_us = 20000
             self._picam2_gain = 1.0
+
+            # Cache raw stream metadata for camera_meta.json sidecar
+            raw_fmt = (self.picam2.camera_config.get("raw") or {}).get("format", "")
+            self._picam2_raw_format = raw_fmt
+            # Extract bit depth from format string e.g. "SRGGB10_CSI2P" → 10
+            self._picam2_bit_depth = 10
+            for bd in (16, 14, 12, 10, 8):
+                if str(bd) in raw_fmt:
+                    self._picam2_bit_depth = bd
+                    break
+
+            # Bayer pattern from libcamera ColorFilterArrangement property
+            _CFA = {0: "RGGB", 1: "GRBG", 2: "BGGR", 3: "GBRG", 4: "mono"}
+            cfa = self.picam2.camera_properties.get("ColorFilterArrangement", 0)
+            self._picam2_bayer_pattern = _CFA.get(cfa, "RGGB")
+
             self.backend = "picamera2"
             self.running = True
-            logger.info(f"Picamera2 index {device_index} opened at {self.resolution}")
+            logger.info(
+                f"Picamera2 index {device_index} opened at {self.resolution}, "
+                f"raw={raw_fmt or 'none'}, bayer={self._picam2_bayer_pattern}"
+            )
         except Exception as e:
             raise RuntimeError(f"Picamera2 init failed: {e}") from e
 
@@ -375,9 +399,9 @@ class Camera:
                 self._sdk_lock.release()
                 
         elif self.backend == "picamera2":
-            # Picamera2 array is usually RGB, return grayscale equivalent for "raw" fast-write
-            frame = self.picam2.capture_array("main")
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            # True Bayer raw from the raw stream configured in _init_picam2.
+            # Returns uint16 array at native sensor resolution.
+            return self.picam2.capture_array("raw")
             
         elif self.backend == "cv2":
             ret, frame = self.cv2_cap.read()
@@ -385,6 +409,37 @@ class Camera:
                 return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 
         return np.zeros((self.resolution[1], self.resolution[0]), dtype=np.uint8)
+
+    def get_camera_meta(self) -> dict:
+        """Return a metadata dict to write as camera_meta.json alongside .npy frames."""
+        if self.backend == "picamera2":
+            info = Picamera2.global_camera_info()
+            model = (info[self._device_index].get("Model", "unknown")
+                     if info and self._device_index < len(info) else "unknown")
+            return {
+                "backend": "picamera2",
+                "model": model,
+                "resolution": list(self.resolution),
+                "raw_format": getattr(self, "_picam2_raw_format", ""),
+                "bit_depth": getattr(self, "_picam2_bit_depth", 10),
+                "bayer_pattern": getattr(self, "_picam2_bayer_pattern", "RGGB"),
+                "analogue_gain": getattr(self, "_picam2_gain", 1.0),
+                "exposure_us": getattr(self, "_picam2_exposure_us", 20000),
+            }
+        if self.backend == "playerone":
+            return {
+                "backend": "playerone",
+                "model": getattr(self, "_playerone_model", ""),
+                "resolution": list(self.resolution),
+                "bit_depth": 8,
+                "bayer_pattern": "RGGB",
+                "gain": self.get_gain(),
+                "exposure_us": self.get_exposure(),
+            }
+        return {
+            "backend": self.backend or "unknown",
+            "resolution": list(self.resolution),
+        }
 
     def stop(self):
         self.running = False

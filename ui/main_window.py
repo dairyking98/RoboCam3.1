@@ -11,6 +11,7 @@ from ui.motion_profiles_panel import MotionProfilesPanel
 from ui.calibration_panel import CalibrationPanel
 from ui.experiment_panel import ExperimentPanel
 from ui.manual_control_panel import ManualControlPanel
+from ui.processing_panel import ProcessingPanel
 import robocam.hw_state as hw_state
 from robocam.session import session_manager
 
@@ -39,12 +40,14 @@ class MainWindow(QMainWindow):
             calibration_panel=self.calibration_panel
         )
         self.manual_panel         = ManualControlPanel()
+        self.processing_panel     = ProcessingPanel()
 
         self.tabs.addTab(self.setup_panel,           "Setup")
         self.tabs.addTab(self.motion_profiles_panel, "Motion Profiles")
         self.tabs.addTab(self.calibration_panel,     "Calibration")
         self.tabs.addTab(self.experiment_panel,      "Experiment")
         self.tabs.addTab(self.manual_panel,          "Manual Control")
+        self.tabs.addTab(self.processing_panel,      "Processing")
 
         # Tab locking during experiment
         self.experiment_panel.experiment_started.connect(
@@ -72,6 +75,13 @@ class MainWindow(QMainWindow):
         self.setup_panel.camera_connected.connect(
             self.experiment_panel._update_resolution_label
         )
+
+        # Auto-process: switch to Processing tab and queue the experiment folder
+        def _auto_process(exp_dir: str):
+            self.processing_panel.queue_folder(exp_dir)
+            self.tabs.setCurrentWidget(self.processing_panel)
+
+        self.experiment_panel.experiment_data_ready.connect(_auto_process)
 
         # Auto initial sync after panels have loaded
         QTimer.singleShot(500, self.experiment_panel.sync_from_calibration)
