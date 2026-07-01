@@ -75,9 +75,16 @@ pip install -r requirements.txt
 if [ "$ON_PI" = true ]; then
     echo "==> Installing Raspberry Pi extras..."
 
-    # RPi.GPIO — GPIO control for laser/stimulus output
-    echo "    Installing RPi.GPIO..."
-    pip install RPi.GPIO || echo "WARNING: RPi.GPIO install failed."
+    # lgpio — preferred GPIO library, works on Pi 4 and Pi 5.
+    # On Pi OS it is usually already installed as a system package and
+    # inherited by the venv via --system-site-packages; pip install is a
+    # safety net for environments where it isn't.
+    echo "    Installing lgpio (Pi 4 + Pi 5 GPIO)..."
+    pip install lgpio || echo "    lgpio pip install failed — may already be available via system packages."
+
+    # RPi.GPIO — fallback for Pi 4 / older Pi OS installs that lack lgpio.
+    echo "    Installing RPi.GPIO (Pi 4 fallback)..."
+    pip install RPi.GPIO || echo "    WARNING: RPi.GPIO install failed (non-critical if lgpio is present)."
 
     # picamera2 — Raspberry Pi HQ camera support
     echo "    Checking libcamera system packages..."

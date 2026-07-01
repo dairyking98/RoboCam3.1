@@ -7,6 +7,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Processing tab** — batch-convert `.npy` burst captures to PNG image
+  sequences and video (MP4 + VFR MKV) with per-well progress. Auto-process
+  checkbox in the Experiment tab triggers it automatically after each run.
+- **Pi camera true raw burst** — Picamera2 now opens with a video+raw stream
+  config so `get_raw_frame()` returns genuine 10/12-bit Bayer data at burst
+  rate instead of ISP-processed greyscale. A `camera_meta.json` sidecar is
+  written once per experiment for correct debayering during post-processing.
+- **Multi-camera selection** — Setup panel enumerates all connected Pi cameras
+  by model/index; PlayerOne cameras blocked by USB permissions show an
+  in-app udev rule installer.
+
+### Changed
+- **Raw Burst replaces both "Raw .npy" and "Video" modes** — real-time AVI
+  encoding is removed; video is produced in post-processing with accurate
+  per-frame timing from timestamp metadata.
+- **GPIO: lgpio preferred over RPi.GPIO** — `lgpio` is tried first (works on
+  Pi 4 and Pi 5); `RPi.GPIO` is kept as a fallback for older Pi OS installs.
+  `setup.sh` now installs both.
+
+### Fixed
+- Experiment would silently jump to "finished" if `cv2` import was missing
+  from `experiment.py` after the video mode cleanup.
+
 ---
 
 ## [0.1.0] — 2026-06-26
