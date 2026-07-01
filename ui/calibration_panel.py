@@ -753,10 +753,11 @@ class CalibrationPanel(QWidget):
             QMessageBox.warning(self, "No Camera", "Camera not connected.")
             return
         duration = self.qc_video_spin.value()
-        out_dir = Path("outputs") / "quick_capture"
-        out_dir.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
-        path = out_dir / f"quick_{ts}.avi"
+        label = "quick"
+        exp_dir = Path("outputs") / "quick_capture" / f"{ts}_{label}"
+        raw_dir = exp_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
 
         self.qc_status_lbl.setText("Recording…")
 
@@ -768,14 +769,26 @@ class CalibrationPanel(QWidget):
                 runner = ExperimentRunner(mc, cam)
             runner.running = True
             try:
-                runner._write_video(str(path), duration)
+                cam_meta = cam.get_camera_meta()
+                with open(raw_dir / "camera_meta.json", "w", encoding="utf-8") as mf:
+                    json.dump(cam_meta, mf, indent=2)
+
+                meta = runner._write_raw_burst(str(raw_dir), label, ts, duration)
+                meta["well"] = label
+                meta["timestamp"] = ts
+                meta_path = raw_dir / f"{label}_{ts}_metadata.json"
+                with open(meta_path, "w", encoding="utf-8") as mf:
+                    json.dump(meta, mf, indent=2)
+                status = f"{meta['frames_captured']} frames @ {meta['fps_average']:.1f} fps -> {exp_dir.name}"
+            except Exception as e:
+                status = f"Error: {e}"
             finally:
                 runner.running = False
             from PySide6.QtCore import QMetaObject, Qt
             QMetaObject.invokeMethod(
                 self.qc_status_lbl, "setText",
                 Qt.ConnectionType.QueuedConnection,
-                path.name,
+                status,
             )
 
         threading.Thread(target=task, daemon=True).start()

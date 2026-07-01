@@ -24,6 +24,7 @@
         600
       ],
       "default_fps": 30.0,
+      "fps_limit": 0,
       "resolution": [
         1920,
         1080
@@ -31,7 +32,7 @@
     },
     "laser": {
       "mode": "rpi_gpio",
-      "rpi_pin": 20,
+      "rpi_pin": 21,
       "klipper_on_gcode": "SET_PIN PIN=laser VALUE=1",
       "klipper_off_gcode": "SET_PIN PIN=laser VALUE=0"
     }
@@ -40,6 +41,6 @@
     "config_dir": "config",
     "calibration_dir": "config/calibrations",
     "experiment_dir": "experiments",
-    "output_dir": "outputs"
+    "output_dir": "/mnt/nvme/RoboCam3.1/output"
   }
 }

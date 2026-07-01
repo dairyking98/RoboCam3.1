@@ -262,9 +262,21 @@ class SetupPanel(QWidget):
         self.cam_res_combo = QComboBox()
         layout.addWidget(self.cam_res_combo, 2, 1, 1, 2)
 
+        layout.addWidget(QLabel("Frame rate cap:"), 3, 0)
+        self.cam_fps_spin = QSpinBox()
+        self.cam_fps_spin.setRange(0, 2000)
+        self.cam_fps_spin.setValue(0)
+        self.cam_fps_spin.setSuffix(" fps")
+        self.cam_fps_spin.setSpecialValueText("Uncapped (max rate)")
+        self.cam_fps_spin.setToolTip(
+            "Caps raw burst capture rate. 0 = uncapped — camera runs at its max "
+            "sustainable rate (e.g. ~90 fps at 1920x1080 on PlayerOne)."
+        )
+        layout.addWidget(self.cam_fps_spin, 3, 1, 1, 2)
+
         self.cam_apply_btn = QPushButton("Apply && Reconnect Camera")
         self.cam_apply_btn.clicked.connect(self._apply_camera)
-        layout.addWidget(self.cam_apply_btn, 3, 0, 1, 3)
+        layout.addWidget(self.cam_apply_btn, 4, 0, 1, 3)
 
         # Udev permission warning — hidden until a USB-denied device is detected
         self._udev_warning = QFrame()
@@ -283,7 +295,7 @@ class SetupPanel(QWidget):
         self._udev_install_btn.clicked.connect(self._install_udev_rules)
         _uw_layout.addWidget(self._udev_install_btn)
         self._udev_warning.hide()
-        layout.addWidget(self._udev_warning, 4, 0, 1, 3)
+        layout.addWidget(self._udev_warning, 5, 0, 1, 3)
 
         self.cam_device_combo.currentIndexChanged.connect(
             lambda _: self._populate_resolution_combo()
@@ -580,6 +592,7 @@ class SetupPanel(QWidget):
         _label, backend, dev_idx = dev[0], dev[1], dev[2]
         res_data = self.cam_res_combo.currentData()
         w, h = res_data if res_data else (1920, 1080)
+        fps = self.cam_fps_spin.value()
 
         # Disconnect existing camera
         cam = hw_state.get_camera()
@@ -592,11 +605,13 @@ class SetupPanel(QWidget):
 
         # Update config
         self._cfg.set("hardware.camera.resolution", [w, h])
+        self._cfg.set("hardware.camera.fps_limit", fps)
 
         # Reconnect after short delay to let OS release the device
         self._pending_cam_backend = backend
         self._pending_cam_idx = dev_idx
         self._pending_cam_res = (w, h)
+        self._pending_cam_fps = fps
         QTimer.singleShot(800, self._reconnect_camera)
 
     def _reconnect_camera(self):
@@ -607,6 +622,7 @@ class SetupPanel(QWidget):
                 simulate=False,
                 backend=self._pending_cam_backend,
                 device_index=self._pending_cam_idx,
+                fps=self._pending_cam_fps,
             )
             hw_state.set_camera(cam)
             hw_state.rebuild_runner()
@@ -726,6 +742,9 @@ class SetupPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _load_from_config(self):
+        # Camera fps cap
+        self.cam_fps_spin.setValue(int(self._cfg.get("hardware.camera.fps_limit", 0)))
+
         # Backend
         backend = self._cfg.get("hardware.motion_backend", "marlin")
         idx = self.backend_combo.findText(backend)
