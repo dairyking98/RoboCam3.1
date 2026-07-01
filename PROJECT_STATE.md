@@ -169,6 +169,7 @@ The experiment panel loads `interpolated_positions`/`labels` directly or falls b
 
 | Status | Item |
 |---|---|
+| Bug | Raw burst capture on the Pi camera (picamera2 backend) is not producing correct output — something between `Camera.get_raw_frame()` and the `.npy` → BGR debayer conversion in `postprocess.npy_to_bgr()` is wrong. Needs investigation: check `raw` stream format/bit-depth actually returned by `capture_array("raw")` vs. what `camera_meta.json` (`bit_depth`, `bayer_pattern`) claims, and whether the >8-bit scaling in `npy_to_bgr()` matches the real packed/unpacked pixel format. PlayerOne backend path is unaffected. |
 | Pending | Z-hop during experiment travel — single `G0` command moves X/Y/Z simultaneously; collision risk if lens is close to plate walls |
 | Planned | Temperature control widgets |
 | Planned | Extruder as pump/dispenser |
