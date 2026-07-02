@@ -22,17 +22,19 @@ Real-time encoded video (the former `Video (AVI)` mode) has been removed. Post-p
 - Per-frame timestamps via `time.perf_counter()`
 - Max achievable FPS depends on camera model, resolution, and USB bandwidth
 
-**Output folder layout:**
+**Output folder layout (actual, as written by `ExperimentRunner`):**
 ```
 <exp_dir>/
-  <well>_<timestamp>/
-    frame_000000.npy
-    frame_000001.npy
+  raw/
+    camera_meta.json                 ← written once per experiment: backend, model, bit depth, resolution, gain, exposure, fps
+    <well>_<ts>_f00000.npy
+    <well>_<ts>_f00001.npy
     ...
-    camera_meta.json     ← written once: model, bit depth, resolution, gain, exposure
-    timestamps.json      ← per-frame: {frame_index, time_offset_s}
-    laser_events.json    ← if laser used: [{time_offset_s, state, frame_index}, ...]
+    <well>_<ts>_metadata.json        ← frames[] (frame_index, file, time_offset_s), laser_events[], fps_average, duration_actual_s
+  <ts>_<name>_points.csv
 ```
+
+Note: timestamps and laser events live inside the per-well `*_metadata.json`, not in separate `timestamps.json`/`laser_events.json` files as an earlier draft of this document assumed.
 
 ---
 
@@ -91,46 +93,36 @@ The post-processing step produces video with **accurate per-frame timing** from 
 
 ## Post-Processing
 
-### Existing CLI (`scripts/reconstruct_vfr.py`)
+### Core pipeline (`robocam/postprocess.py`)
 
-Handles PlayerOne `.npy` → PNG images + VFR MKV + display MP4. Needs to be extended for Pi camera (different debayer path).
+Shared by both the CLI (`scripts/reconstruct_vfr.py`) and the GUI (Processing tab). Reads `backend`/`bayer_pattern`/`bit_depth` from `camera_meta.json` and picks the matching OpenCV debayer code (RGGB/BGGR/GRBG/GBRG), scaling >8-bit sensor data down to `uint8` first. Both PlayerOne and Picamera2 metadata paths are implemented — see the known issue below for the current correctness caveat on the Picamera2 side.
 
-**Planned extension:**
-- Detect `backend` in `camera_meta.json`
-- If `picamera2`: unpack Bayer, apply black-level subtraction, debayer with OpenCV using the pattern from metadata
-- If `playerone`: existing path (mono or RGB debayer depending on sensor)
+### Processing Tab (GUI) — implemented and verified working on hardware
 
-### Planned Processing Tab (GUI)
-
-A new tab in the main window for post-processing experiment output folders.
-
-**Layout:**
+`ui/processing_panel.py` provides:
 - Folder list: add/remove one or more experiment output folders
-- Per-folder: show well count, frame count, camera backend, estimated output size
-- Output options:
-  - [ ] PNG image sequence (one folder per well)
-  - [ ] MP4 video (constant FPS, for presentation)
-  - [ ] VFR MKV (variable frame rate, accurate timing, for archival)
-- **Auto-process after experiment** checkbox (also available in the Experiment tab)
-- Progress bar per folder, overall progress
-- Log/status output
+- Output options: PNG image sequence, MP4 (constant fps, presentation), VFR MKV (accurate timing, archival) — independently toggleable
+- **Auto-process after experiment** checkbox in the Experiment tab, which queues and starts processing automatically the moment a run finishes
+- Per-well and overall progress bars, scrolling log
 
-**Processing steps per well folder:**
-1. Load `camera_meta.json` and `timestamps.json`
+**Processing steps per well folder** (`robocam.postprocess.process_well`):
+1. Load `camera_meta.json` and the well's `*_metadata.json`
 2. Load each `.npy` frame
-3. If Pi camera: subtract black level, debayer (OpenCV `cvtColor`), scale to 8-bit for output
-4. If PlayerOne: existing debayer path
-5. Write PNG files to `images/<well>/`
-6. Encode MP4 and/or VFR MKV using per-frame timestamps
+3. Debayer using the pattern/bit-depth from `camera_meta.json` (same code path for both backends; correctness for Picamera2 raw data is under investigation — see Known Issues)
+4. Write PNG files to `images/<well>/`
+5. Encode MP4 and/or VFR MKV using per-frame timestamps
 
 ---
 
+## Known Issues
+
+- **Pi camera (Picamera2) raw burst → color output is currently wrong.** Something between `Camera.get_raw_frame()`'s `capture_array("raw")` and `postprocess.npy_to_bgr()`'s debayer/scaling is mismatched — likely the actual bit depth/packing of the raw stream vs. what `camera_meta.json` claims. The PlayerOne backend path is unaffected and has been verified end-to-end (including laser-timed bursts) on real hardware. See `PROJECT_STATE.md` § 8 for the investigation notes.
+- **Klipper motion backend is implemented but not yet exercised on real Klipper hardware** — only Marlin has been run end-to-end so far.
+
 ## Open Items
 
+- [ ] Root-cause and fix the Pi camera raw-burst debayer/bit-depth bug above
 - [ ] Benchmark Pi camera max FPS at 1920×1080 with video+raw config
-- [ ] Confirm PlayerOne `camera_meta.json` already captures all fields needed by `reconstruct_vfr.py`
-- [ ] Implement Pi camera raw stream config in `camera.py`
-- [ ] Extend `reconstruct_vfr.py` with Pi camera debayer path
-- [ ] Build Processing tab UI
-- [ ] Add auto-process checkbox to Experiment tab
-- [ ] Update `PROJECT_STATE.md` capture modes section once implementation is done
+- [ ] Verify the Klipper backend against a real Moonraker/Klipper setup
+- [x] Build Processing tab UI — done, verified working
+- [x] Add auto-process checkbox to Experiment tab — done, verified working
