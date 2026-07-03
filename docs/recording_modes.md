@@ -17,10 +17,10 @@ Real-time encoded video (the former `Video (AVI)` mode) has been removed. Post-p
 **Mode name in UI:** `Raw Burst`
 
 - Reads directly from the sensor SDK buffer — no ISP, no debayering
-- Bit depth: 16-bit (sensor-native)
+- Bit depth: 8-bit — `camera.py` explicitly requests `POA_RAW8` at init (`_init_playerone()`), not the sensor's native depth. (An earlier version of this doc said "16-bit (sensor-native)"; that was aspirational, not what the code does. `POA_RAW16` is available in the SDK but unused.)
 - Each frame saved as a `.npy` file (NumPy binary array)
 - Per-frame timestamps via `time.perf_counter()`
-- Max achievable FPS depends on camera model, resolution, and USB bandwidth
+- **Max achievable FPS is currently ~30fps in practice, well under the Mars 662M's advertised 90-120fps** (measured consistently across the 2026-07-01 test dataset). Root cause is not yet confirmed on hardware; see `PROJECT_STATE.md` § 9 Known Issues for the full investigation and knobs to check next session (exposure time, `POA_HQI`, `POA_USB_BANDWIDTH_LIMIT`, sensor-mode selection, and the synchronous-write capture loop in `experiment.py`).
 
 **Output folder layout (actual, as written by `ExperimentRunner`):**
 ```
@@ -116,12 +116,14 @@ Shared by both the CLI (`scripts/reconstruct_vfr.py`) and the GUI (Processing ta
 
 ## Known Issues
 
-- **Pi camera (Picamera2) raw burst → color output is currently wrong.** Something between `Camera.get_raw_frame()`'s `capture_array("raw")` and `postprocess.npy_to_bgr()`'s debayer/scaling is mismatched — likely the actual bit depth/packing of the raw stream vs. what `camera_meta.json` claims. The PlayerOne backend path is unaffected and has been verified end-to-end (including laser-timed bursts) on real hardware. See `PROJECT_STATE.md` § 8 for the investigation notes.
+- **Pi camera (Picamera2) raw burst → color output is currently wrong.** Something between `Camera.get_raw_frame()`'s `capture_array("raw")` and `postprocess.npy_to_bgr()`'s debayer/scaling is mismatched — likely the actual bit depth/packing of the raw stream vs. what `camera_meta.json` claims. The PlayerOne backend path is unaffected and has been verified end-to-end (including laser-timed bursts) on real hardware. See `PROJECT_STATE.md` § 9 for the investigation notes.
+- **PlayerOne effective capture rate is ~30fps, well under the Mars 662M's advertised 90-120fps.** Not yet root-caused on hardware. See `PROJECT_STATE.md` § 9 for the five candidate causes and the test plan.
 - **Klipper motion backend is implemented but not yet exercised on real Klipper hardware** — only Marlin has been run end-to-end so far.
 
 ## Open Items
 
 - [ ] Root-cause and fix the Pi camera raw-burst debayer/bit-depth bug above
+- [ ] Root-cause the PlayerOne ~30fps ceiling (see `PROJECT_STATE.md` § 9 test plan) — camera unavailable until 2026-07-06
 - [ ] Benchmark Pi camera max FPS at 1920×1080 with video+raw config
 - [ ] Verify the Klipper backend against a real Moonraker/Klipper setup
 - [x] Build Processing tab UI — done, verified working
