@@ -177,12 +177,26 @@ def process_well(
     for ev in laser_events:
         print(f"    laser {ev['state']:3s}  t={ev['time_offset_s']:.3f}s  frame {ev['frame_index']}")
 
-    first_arr = np.load(meta_dir / frames_info[0]["file"])
-    # Raw arrays from Pi camera are at sensor resolution; use their actual shape
-    if first_arr.ndim == 3:
-        h, w = first_arr.shape[:2]
+    # New format: all of a well's frames are stacked into one memory-mapped
+    # (n_frames, H, W) array named by the "frames_file" metadata key, and
+    # per-frame entries no longer carry a "file" key — index by frame_index
+    # instead of opening a separate file per frame. Old format (pre-2026-07,
+    # e.g. the 2026-07-01 test dataset): each frame is its own .npy file
+    # named in fi["file"]; kept working unchanged below.
+    frames_file = meta.get("frames_file")
+    if frames_file:
+        stack = np.load(meta_dir / frames_file, mmap_mode="r")
+        # stack.shape[0] is the preallocated ceiling, not the real count —
+        # frames_info (from frames_captured) is the only authoritative count.
+        _, h, w = stack.shape
     else:
-        h, w = first_arr.shape
+        stack = None
+        first_arr = np.load(meta_dir / frames_info[0]["file"])
+        # Raw arrays from Pi camera are at sensor resolution; use their actual shape
+        if first_arr.ndim == 3:
+            h, w = first_arr.shape[:2]
+        else:
+            h, w = first_arr.shape
 
     # After debayering, pixel dimensions are the same (cv2 Bayer → BGR preserves h×w)
 
@@ -220,7 +234,7 @@ def process_well(
 
     try:
         for i, fi in enumerate(frames_info):
-            arr    = np.load(meta_dir / fi["file"])
+            arr    = stack[fi["frame_index"]] if stack is not None else np.load(meta_dir / fi["file"])
             bgr    = npy_to_bgr(arr, mono, camera_meta)
             is_on  = laser_on_at(fi["time_offset_s"], laser_events)
 

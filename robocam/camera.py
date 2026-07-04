@@ -186,6 +186,17 @@ class Camera:
             self._max_height = props.maxHeight
             self._playerone_model = props.cameraModelName.decode(errors="replace").strip()
 
+            # isColorCamera/bayerPattern_ come straight from the SDK rather
+            # than being assumed — a mono sensor (e.g. the Mars 662M) run
+            # through a Bayer demosaic (cv2.COLOR_BAYER_*2BGR) produces
+            # color-interpolation artifacts, not clean grayscale, since
+            # there's no real color filter array to interpolate from.
+            _POA_BAYER_NAMES = {0: "RGGB", 1: "BGGR", 2: "GRBG", 3: "GBRG"}
+            if bool(props.isColorCamera):
+                self._playerone_bayer_pattern = _POA_BAYER_NAMES.get(props.bayerPattern_, "RGGB")
+            else:
+                self._playerone_bayer_pattern = "mono"
+
             logger.info(f"Player One camera opened: {w}x{h}")
         finally:
             sys.path[:] = prev
@@ -584,7 +595,7 @@ class Camera:
                 "model": getattr(self, "_playerone_model", ""),
                 "resolution": list(self.resolution),
                 "bit_depth": 8,
-                "bayer_pattern": "RGGB",
+                "bayer_pattern": getattr(self, "_playerone_bayer_pattern", "RGGB"),
                 "gain": self.get_gain(),
                 "exposure_us": self.get_exposure(),
                 "fps_limit": self.get_fps(),

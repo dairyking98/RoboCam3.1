@@ -836,7 +836,10 @@ class CalibrationPanel(QWidget):
                 with open(raw_dir / "camera_meta.json", "w", encoding="utf-8") as mf:
                     json.dump(cam_meta, mf, indent=2)
 
-                meta = runner._write_raw_burst(str(raw_dir), label, ts, duration)
+                meta = runner._write_raw_burst(
+                    str(raw_dir), label, ts, duration,
+                    bit_depth=int(cam_meta.get("bit_depth", 8)),
+                )
                 meta["well"] = label
                 meta["timestamp"] = ts
                 meta_path = raw_dir / f"{label}_{ts}_metadata.json"

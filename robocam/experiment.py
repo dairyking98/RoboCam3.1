@@ -5,6 +5,7 @@ import cv2
 import json
 import logging
 import queue
+import shutil
 import threading
 import numpy as np
 from datetime import datetime
@@ -25,6 +26,36 @@ RAW_BURST_QUEUE_MAXSIZE = 128
 # and the burst would silently "complete" with near-empty data instead of
 # surfacing an error.
 MAX_CONSECUTIVE_CAPTURE_FAILURES = 50
+
+# All of a well's frames are stacked into one (n_frames, H, W) array, written
+# incrementally via np.lib.format.open_memmap() so it's one file from the
+# first frame, not built in RAM and dumped at the end. The array shape has to
+# be fixed at creation time, and true achieved fps isn't known in advance
+# (that's the open investigation in PROJECT_STATE.md § 9) — so preallocate
+# comfortably above the camera's advertised 90-120fps ceiling rather than
+# risk running out of rows mid-burst. Unwritten rows are sparse (no real
+# disk cost on ext4/NVMe) and are never trimmed — frames_captured in
+# metadata.json is the authoritative count; nothing should trust
+# stack.shape[0]. NOTE: this makes the file a transfer footgun — naive cp/
+# drag-and-drop materializes the full preallocated size, so any packaging/
+# transfer step must use sparse-aware tools (tar --sparse, rsync --sparse,
+# cp --sparse=always).
+RAW_BURST_FPS_CEILING_ESTIMATE = 150
+
+# How often (in frames) the writer thread flushes the memmap to disk and
+# checks free space. Piggybacks one cadence for both instead of a separate
+# timer.
+MEMMAP_FLUSH_EVERY_N_FRAMES = 30
+
+# Safety floor checked against shutil.disk_usage(...).free on the same
+# cadence as the periodic flush above. A memory-mapped write that runs out
+# of backing disk space raises SIGBUS, not a catchable Python exception —
+# unlike a plain np.save() failing with a catchable OSError. Aborting
+# cleanly well before actually hitting ENOSPC via the mmap fault path is the
+# only way to keep this failure mode inside the writer_failed/RuntimeError
+# path already built for other writer failures, instead of crashing the
+# whole process.
+MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 
 
 class ExperimentRunner:
@@ -77,10 +108,12 @@ class ExperimentRunner:
         laser_controller=None,
         laser_on_s: float = 0.0,
         laser_start_s: float = 0.0,
+        bit_depth: int = 8,
     ) -> dict:
         """
         Capture raw sensor frames as fast as possible for `total_duration_s`
-        seconds, saving each as a .npy file. Returns a metadata dict.
+        seconds, stacking them into one `<label>_<timestamp>_stack.npy`
+        memory-mapped array `(n_frames, H, W)`. Returns a metadata dict.
 
         Capture (this thread, the producer) and disk writes (a separate
         writer thread, the consumer) are decoupled by a bounded queue, so a
@@ -90,11 +123,19 @@ class ExperimentRunner:
         synchronous behaviour; `queue_full_stalls`/`queue_full_stall_s_total`
         in the returned metadata report how often/how long that happened.
 
-        Per-frame records are also appended, as captured, to a
+        The stack array is preallocated to `total_duration_s *
+        RAW_BURST_FPS_CEILING_ESTIMATE` rows since true achieved fps isn't
+        known in advance and the array's shape is fixed at creation time.
+        Unwritten trailing rows are sparse (no real disk cost) and are never
+        trimmed — `frames_captured` in the returned dict is the only
+        authoritative frame count; nothing should trust the array's own
+        `.shape[0]`. See the module-level comment on
+        `RAW_BURST_FPS_CEILING_ESTIMATE` for the transfer-tooling implication
+        of that.
+
+        Per-frame timing records are also appended, as captured, to a
         `<label>_<timestamp>_frames.jsonl` sidecar so a crash/disconnect
-        mid-burst doesn't lose timing metadata for frames already on disk —
-        the final `frames`/`laser_events`/etc. keys below are unchanged from
-        before, for `postprocess.py` compatibility.
+        mid-burst doesn't lose timing metadata for frames already on disk.
         """
         frames_saved = []
         laser_events = []
@@ -110,10 +151,20 @@ class ExperimentRunner:
         stall_s_total = 0.0
         jsonl_path = os.path.join(output_dir, f"{label}_{timestamp}_frames.jsonl")
 
+        w, h = self.camera.resolution
+        dtype = np.uint8 if bit_depth <= 8 else np.uint16
+        max_frames = int(total_duration_s * RAW_BURST_FPS_CEILING_ESTIMATE) + 50
+        stack_filename = f"{label}_{timestamp}_stack.npy"
+        stack_path = os.path.join(output_dir, stack_filename)
+        stack = np.lib.format.open_memmap(
+            stack_path, mode="w+", dtype=dtype, shape=(max_frames, h, w)
+        )
+
         writer_failed = threading.Event()
         writer_exc: dict = {}
 
         def _writer():
+            n_written = 0
             try:
                 with open(jsonl_path, "w", encoding="utf-8") as jf:
                     while True:
@@ -121,12 +172,21 @@ class ExperimentRunner:
                         if item is None:  # sentinel: producer is done
                             return
                         idx, raw, t_capture = item
-                        fname = f"{label}_{timestamp}_f{idx:05d}.npy"
-                        np.save(os.path.join(output_dir, fname), raw)
-                        record = {"frame_index": idx, "file": fname, "time_offset_s": round(t_capture, 6)}
+                        stack[idx] = raw
+                        record = {"frame_index": idx, "time_offset_s": round(t_capture, 6)}
                         frames_saved.append(record)
                         jf.write(json.dumps(record) + "\n")
                         jf.flush()
+                        n_written += 1
+                        if n_written % MEMMAP_FLUSH_EVERY_N_FRAMES == 0:
+                            stack.flush()
+                            free = shutil.disk_usage(output_dir).free
+                            if free < MIN_FREE_DISK_BYTES:
+                                raise OSError(
+                                    f"Only {free} bytes free in {output_dir}, "
+                                    f"below the {MIN_FREE_DISK_BYTES}-byte safety floor "
+                                    f"— aborting before a memmap write can hit ENOSPC."
+                                )
             except Exception as e:
                 # Record the failure and switch to drain-only mode — the
                 # producer must never block forever on a full queue waiting
@@ -137,6 +197,14 @@ class ExperimentRunner:
                     item = frame_queue.get()
                     if item is None:
                         return
+            finally:
+                # Whatever was written must be durable even on abort — a
+                # memmap write that never reached this point could otherwise
+                # be lost to OS page-cache buffering.
+                try:
+                    stack.flush()
+                except Exception:
+                    pass
 
         writer_thread = threading.Thread(target=_writer, daemon=True)
         writer_thread.start()
@@ -167,6 +235,23 @@ class ExperimentRunner:
 
                 raw = self.camera.get_raw_frame()
                 if raw is not None:
+                    if frame_idx >= max_frames:
+                        # Deterministic guard, not just reactive: relying only
+                        # on the writer noticing an IndexError and setting
+                        # writer_failed leaves a race where this producer
+                        # loop could queue many more frames before it next
+                        # checks that flag, silently discarding captures that
+                        # frames_captured would then over-report. Should
+                        # never fire on real hardware (the ceiling is well
+                        # above the camera's advertised max), but must be
+                        # deterministic if the estimate ever proves wrong.
+                        raise RuntimeError(
+                            f"Raw-burst preallocation ceiling ({max_frames} frames) "
+                            f"reached before {total_duration_s}s elapsed for well "
+                            f"{label} — RAW_BURST_FPS_CEILING_ESTIMATE "
+                            f"({RAW_BURST_FPS_CEILING_ESTIMATE}) is too low for the "
+                            f"achieved capture rate."
+                        )
                     consecutive_failures = 0
                     # Timestamp after get_raw_frame() returns — when frame is in hand
                     t_capture = time.perf_counter() - start
@@ -209,6 +294,7 @@ class ExperimentRunner:
         capture_stats = self.camera.get_capture_stats()
         return {
             "frames_captured": frame_idx,
+            "frames_file": stack_filename,
             "duration_requested_s": round(total_duration_s, 3),
             "duration_actual_s": round(duration_actual, 6),
             "fps_average": round(frame_idx / duration_actual, 4) if duration_actual > 0 else 0.0,
@@ -323,14 +409,15 @@ class ExperimentRunner:
                     capture_name = ""
 
                     if mode == "raw":
-                        # Burst of raw .npy frames saved to raw/ subdir
+                        # Burst of raw frames stacked into one .npy array in raw/ subdir
                         burst_meta = self._write_raw_burst(
                             raw_dir, label, timestamp, total_duration,
                             laser_controller=laser_controller,
                             laser_on_s=float(laser_on_duration),
                             laser_start_s=laser_start,
+                            bit_depth=int(cam_meta.get("bit_depth", 8)),
                         )
-                        capture_name = f"raw/{label}_{timestamp}_f*.npy ({burst_meta['frames_captured']} frames)"
+                        capture_name = f"raw/{burst_meta['frames_file']} ({burst_meta['frames_captured']} frames)"
                         meta_path = os.path.join(raw_dir, f"{label}_{timestamp}_metadata.json")
                         burst_meta["well"] = label
                         burst_meta["timestamp"] = capture_time
