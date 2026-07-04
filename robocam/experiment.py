@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 # (see PROJECT_STATE.md § 9).
 RAW_BURST_QUEUE_MAXSIZE = 128
 
+# Abort a raw burst if get_raw_frame() fails this many times in a row — a
+# real camera disconnect looks identical to a normal timing miss otherwise,
+# and the burst would silently "complete" with near-empty data instead of
+# surfacing an error.
+MAX_CONSECUTIVE_CAPTURE_FAILURES = 50
+
 
 class ExperimentRunner:
     """
@@ -104,25 +110,43 @@ class ExperimentRunner:
         stall_s_total = 0.0
         jsonl_path = os.path.join(output_dir, f"{label}_{timestamp}_frames.jsonl")
 
+        writer_failed = threading.Event()
+        writer_exc: dict = {}
+
         def _writer():
-            with open(jsonl_path, "w", encoding="utf-8") as jf:
+            try:
+                with open(jsonl_path, "w", encoding="utf-8") as jf:
+                    while True:
+                        item = frame_queue.get()
+                        if item is None:  # sentinel: producer is done
+                            return
+                        idx, raw, t_capture = item
+                        fname = f"{label}_{timestamp}_f{idx:05d}.npy"
+                        np.save(os.path.join(output_dir, fname), raw)
+                        record = {"frame_index": idx, "file": fname, "time_offset_s": round(t_capture, 6)}
+                        frames_saved.append(record)
+                        jf.write(json.dumps(record) + "\n")
+                        jf.flush()
+            except Exception as e:
+                # Record the failure and switch to drain-only mode — the
+                # producer must never block forever on a full queue waiting
+                # for a writer that has died (e.g. disk full, drive unmounted).
+                writer_exc["error"] = e
+                writer_failed.set()
                 while True:
                     item = frame_queue.get()
-                    if item is None:  # sentinel: producer is done
-                        break
-                    idx, raw, t_capture = item
-                    fname = f"{label}_{timestamp}_f{idx:05d}.npy"
-                    np.save(os.path.join(output_dir, fname), raw)
-                    record = {"frame_index": idx, "file": fname, "time_offset_s": round(t_capture, 6)}
-                    frames_saved.append(record)
-                    jf.write(json.dumps(record) + "\n")
-                    jf.flush()
+                    if item is None:
+                        return
 
         writer_thread = threading.Thread(target=_writer, daemon=True)
         writer_thread.start()
 
         try:
+            consecutive_failures = 0
             while self.running:
+                if writer_failed.is_set():
+                    break
+
                 elapsed = time.perf_counter() - start
                 if elapsed >= total_duration_s:
                     break
@@ -143,6 +167,7 @@ class ExperimentRunner:
 
                 raw = self.camera.get_raw_frame()
                 if raw is not None:
+                    consecutive_failures = 0
                     # Timestamp after get_raw_frame() returns — when frame is in hand
                     t_capture = time.perf_counter() - start
                     put_start = time.perf_counter()
@@ -152,7 +177,19 @@ class ExperimentRunner:
                         stall_count += 1
                         stall_s_total += put_elapsed
                     frame_idx += 1
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_CONSECUTIVE_CAPTURE_FAILURES:
+                        raise RuntimeError(
+                            f"Camera unresponsive: {consecutive_failures} consecutive "
+                            f"failed frame grabs for well {label} — aborting burst."
+                        )
                 # No sleep — capture as fast as possible
+
+            if writer_failed.is_set():
+                raise RuntimeError(
+                    f"Raw-burst writer thread failed for well {label}: {writer_exc['error']}"
+                ) from writer_exc["error"]
 
         finally:
             if laser_controller and last_laser_state:
