@@ -128,14 +128,14 @@ Shared by both the CLI (`scripts/reconstruct_vfr.py`) and the GUI (Processing ta
 
 ## Known Issues
 
-- **Pi camera (Picamera2) raw burst → color output is currently wrong.** Something between `Camera.get_raw_frame()`'s `capture_array("raw")` and `postprocess.npy_to_bgr()`'s debayer/scaling is mismatched — likely the actual bit depth/packing of the raw stream vs. what `camera_meta.json` claims. See `PROJECT_STATE.md` § 9 for the investigation notes.
+- **Pi camera (Picamera2) raw burst → color output is currently wrong.** Leading hypothesis (2026-07-06, unconfirmed): the raw format is CSI-2 **packed** (e.g. `"SRGGB10_CSI2P"`) — a genuinely bit-packed byte layout (10-bit: 4 pixels packed into 5 bytes), not one `uint16` per pixel as `get_raw_frame()`'s comment assumes. If `capture_array("raw")` doesn't auto-unpack that, the array's shape/dtype don't correspond to a real pixel grid, and `postprocess.npy_to_bgr()`'s scaling+demosaic run on bit-scrambled data. See `PROJECT_STATE.md` § 9 for the full reasoning and the diagnostic check to run next Pi session.
 - **PlayerOne `bayer_pattern` was hardcoded to `"RGGB"` regardless of the actual camera** — fixed 2026-07-06 to read `isColorCamera`/`bayerPattern_` from the SDK instead, since the Mars 662M is mono and was being demosaiced as if it had a color filter array. Not yet re-verified visually on hardware — prior claims of PlayerOne output being "verified end-to-end on real hardware" predate this fix. See `PROJECT_STATE.md` § 9.
 - **PlayerOne effective capture rate is ~30fps, well under the Mars 662M's advertised 90-120fps.** Jitter/robustness causes (synchronous disk writes, poll-loop latency, buffer allocation, cross-tab lock contention) are fixed in software and verified in `simulate=True` mode; the fps *ceiling* causes (exposure, `POA_HQI`, USB bandwidth, sensor mode) are exposed as UI controls but not yet confirmed on real hardware. See `PROJECT_STATE.md` § 9.
 - **Klipper motion backend is implemented but not yet exercised on real Klipper hardware** — only Marlin has been run end-to-end so far.
 
 ## Open Items
 
-- [ ] Root-cause and fix the Pi camera raw-burst debayer/bit-depth bug above
+- [ ] Test the CSI-2 packing hypothesis for the Pi camera debayer bug (print `arr.dtype`/`arr.shape` from `capture_array("raw")`, compare against expected pixel width — see `PROJECT_STATE.md` § 9) and fix if confirmed
 - [ ] Verify the PlayerOne jitter fixes (queue/writer thread, direct blocking `GetImageData`, buffer reuse, grabber-pause broadcast) actually improve real fps/stability, and find the ceiling fix via the new HQI/USB-bandwidth/sensor-mode/exposure UI controls — camera unavailable until 2026-07-06
 - [ ] Benchmark Pi camera max FPS at 1920×1080 with video+raw config
 - [ ] Verify the Klipper backend against a real Moonraker/Klipper setup
