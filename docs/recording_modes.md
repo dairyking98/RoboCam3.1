@@ -56,9 +56,10 @@ Note: timestamps and laser events live inside the per-well `*_metadata.json`, no
 - Uses a **video configuration with a raw stream** — this is the only way to get burst-rate raw frames; still configuration adds inter-frame latency
 - Captures via `capture_array("raw")` — true Bayer pattern data, no ISP processing
 - Bit depth: 10-bit (Camera Module 3) or 12-bit (HQ Camera), unpacked to uint16 in the array
-- Each frame saved as a `.npy` file
+- Frames are stacked into one `<well>_<ts>_stack.npy` array per well, same as the PlayerOne path (see above) — this backend shares `_write_raw_burst()`, nothing Picamera2-specific about the storage format
 - Per-frame timestamps via `time.perf_counter()`
 - `camera_meta.json` **must** include Bayer metadata (see below) for correct reconstruction
+- **Auto-exposure/auto-gain is explicitly disabled at connect** (`_init_picam2()`, fixed 2026-07-06) — previously it was left running until the user manually applied exposure/gain via the Calibration tab, and for darkfield (mostly-black) scenes AE chased a "properly exposed" brightness that drove exposure time way up, measured at only ~15fps on real hardware. `ae_enabled` is now a live-adjustable UI control (Calibration tab, Picamera2 only) and recorded in `camera_meta.json`. See `PROJECT_STATE.md` § 9 — unverified until the Pi camera is available again.
 
 **Picamera2 configuration:**
 ```python

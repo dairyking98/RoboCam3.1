@@ -228,6 +228,21 @@ class Camera:
             self._picam2_exposure_us = 20000
             self._picam2_gain = 1.0
 
+            # Explicitly disable auto-exposure/auto-gain and push a manual
+            # default, mirroring _init_playerone()'s SetExp(...,False)/
+            # SetGain(...,False) at connect time. Without this, the camera
+            # runs full AE/AGC until the user manually hits Apply in the
+            # Calibration tab — for darkfield (mostly-black) scenes, AE
+            # chases a "properly exposed" average brightness that was never
+            # the point, driving exposure time (and thus achievable fps) up
+            # arbitrarily. See PROJECT_STATE.md § 9.
+            self._picam2_ae_enabled = False
+            self.picam2.set_controls({
+                "ExposureTime": self._picam2_exposure_us,
+                "AnalogueGain": self._picam2_gain,
+                "AeEnable": False,
+            })
+
             # Sensor's native FrameDurationLimits (us) — used to reset an uncapped fps
             fd_limits = self.picam2.camera_controls.get("FrameDurationLimits")
             self._picam2_frame_duration_range = (fd_limits[0], fd_limits[1]) if fd_limits else (100, 1_000_000_000)
@@ -281,6 +296,7 @@ class Camera:
         """Set exposure in microseconds."""
         if self.backend == "picamera2":
             self._picam2_exposure_us = int(us)
+            self._picam2_ae_enabled = False
             self.picam2.set_controls({"ExposureTime": int(us), "AeEnable": False})
             return
         if self.simulate or not self.running or self.backend != "playerone":
@@ -303,6 +319,7 @@ class Camera:
         """Set gain; for picamera2 interprets gain/100 as analogue gain multiplier."""
         if self.backend == "picamera2":
             self._picam2_gain = max(1.0, gain / 100.0)
+            self._picam2_ae_enabled = False
             self.picam2.set_controls({"AnalogueGain": self._picam2_gain, "AeEnable": False})
             return
         if self.simulate or not self.running or self.backend != "playerone":
@@ -310,6 +327,20 @@ class Camera:
         with self._sdk_lock:
             val = int(round(float(gain)))
             self._poa.SetGain(self._camera_id, val, False)
+
+    def get_ae_enabled(self) -> bool:
+        """Get auto-exposure/auto-gain state (Picamera2 only; always False elsewhere)."""
+        if self.backend != "picamera2" or self.simulate or not self.running:
+            return False
+        return bool(getattr(self, "_picam2_ae_enabled", False))
+
+    def set_ae_enabled(self, enabled: bool) -> None:
+        """Toggle auto-exposure/auto-gain (Picamera2 only). Off by default at connect —
+        see the note in _init_picam2() on why AE fights darkfield/high-fps capture."""
+        if self.backend != "picamera2" or self.simulate or not self.running:
+            return
+        self._picam2_ae_enabled = bool(enabled)
+        self.picam2.set_controls({"AeEnable": bool(enabled)})
 
     def get_fps(self) -> float:
         """Get the current frame-rate cap; 0 means uncapped (max sensor/backend rate)."""
@@ -585,6 +616,7 @@ class Camera:
                 "bayer_pattern": getattr(self, "_picam2_bayer_pattern", "RGGB"),
                 "analogue_gain": getattr(self, "_picam2_gain", 1.0),
                 "exposure_us": getattr(self, "_picam2_exposure_us", 20000),
+                "ae_enabled": getattr(self, "_picam2_ae_enabled", False),
                 "fps_limit": self.fps_limit,
             }
         if self.backend == "playerone":

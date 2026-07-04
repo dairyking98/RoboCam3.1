@@ -202,6 +202,7 @@ class CalibrationPanel(QWidget):
         self.hqi_check.setChecked(bool(s.get("hqi_enabled", False)))
         self.usb_bw_spin.setValue(int(s.get("usb_bandwidth", 100)))
         self.offset_spin.setValue(int(s.get("offset", 0)))
+        self.ae_check.setChecked(bool(s.get("ae_enabled", False)))
         # Step size — match preset button or fall back to custom
         step = s.get("step", "1.0")
         matched = False
@@ -236,6 +237,7 @@ class CalibrationPanel(QWidget):
             "usb_bandwidth": self.usb_bw_spin.value(),
             "offset": self.offset_spin.value(),
             "sensor_mode_index": self.sensor_mode_combo.currentIndex() if self.sensor_mode_combo.count() else int(session_manager.get("calibration").get("sensor_mode_index", 0)),
+            "ae_enabled": self.ae_check.isChecked(),
             "step": self.step_input.text(),
             "qc_format": self.qc_fmt_combo.currentText(),
             "qc_duration": self.qc_video_spin.value(),
@@ -375,13 +377,20 @@ class CalibrationPanel(QWidget):
         self.sensor_mode_combo = QComboBox()
         layout.addWidget(self.sensor_mode_combo, 5, 1)
 
+        # Picamera2-specific control — off by default at connect (see
+        # _init_picam2()'s note on why AE fights darkfield/high-fps capture).
+        # Hidden/disabled for non-Picamera2 backends via _refresh_camera_controls().
+        layout.addWidget(QLabel("Auto Exposure:"), 6, 0)
+        self.ae_check = QCheckBox("Enabled (off by default — see PROJECT_STATE.md § 9)")
+        layout.addWidget(self.ae_check, 6, 1)
+
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self._apply_camera_controls)
-        layout.addWidget(apply_btn, 6, 0)
+        layout.addWidget(apply_btn, 7, 0)
 
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._refresh_camera_controls)
-        layout.addWidget(refresh_btn, 6, 1)
+        layout.addWidget(refresh_btn, 7, 1)
 
         return grp
 
@@ -510,13 +519,19 @@ class CalibrationPanel(QWidget):
         """Push last-used exposure/gain/etc from session into the camera and update UI."""
         cam = hw_state.get_camera()
         is_playerone = bool(cam and cam.running and cam.backend == "playerone")
+        is_picamera2 = bool(cam and cam.running and cam.backend == "picamera2")
         for w in (self.hqi_check, self.usb_bw_spin, self.offset_spin, self.sensor_mode_combo):
             w.setEnabled(is_playerone)
+        self.ae_check.setEnabled(is_picamera2)
         if cam and cam.running:
             s = session_manager.get("calibration")
             exp_ms = int(s.get("exp_ms", 20))
             gain = int(s.get("gain", 100))
             try:
+                # set_exposure()/set_gain() always force AE off as a side
+                # effect (see camera.py) -- apply them first, then restore
+                # the saved AE preference afterward so "AE on" can win if
+                # that's what was saved.
                 cam.set_exposure(exp_ms * 1000)
                 cam.set_gain(gain)
             except Exception:
@@ -546,6 +561,14 @@ class CalibrationPanel(QWidget):
                 self.usb_bw_spin.setValue(usb_bw)
                 self.offset_spin.setValue(offset)
 
+            if is_picamera2:
+                ae = bool(s.get("ae_enabled", False))
+                try:
+                    cam.set_ae_enabled(ae)
+                except Exception:
+                    pass
+                self.ae_check.setChecked(ae)
+
     def _apply_camera_controls(self):
         cam = hw_state.get_camera()
         if cam and cam.running:
@@ -558,6 +581,10 @@ class CalibrationPanel(QWidget):
                     cam.set_offset(self.offset_spin.value())
                     if self.sensor_mode_combo.count():
                         cam.set_sensor_mode(self.sensor_mode_combo.currentIndex())
+                elif cam.backend == "picamera2":
+                    # Applied after exposure/gain -- those force AE off as a
+                    # side effect, so this must run last for "AE on" to stick.
+                    cam.set_ae_enabled(self.ae_check.isChecked())
             except Exception:
                 pass
         self._save_session()

@@ -37,6 +37,7 @@ DEFAULT_SESSION: Dict[str, Any] = {
         "usb_bandwidth": 100,
         "offset": 0,
         "sensor_mode_index": 0,
+        "ae_enabled": False,
         "step": "1.0",
         "qc_format": "jpg",
         "qc_duration": 5.0,
