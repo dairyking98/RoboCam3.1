@@ -57,6 +57,18 @@ class MainWindow(QMainWindow):
             lambda: self._set_tabs_enabled(True)
         )
 
+        # Pause every live-preview grabber (not just the Experiment tab's own)
+        # for the duration of a raw-burst capture — Calibration's and Manual
+        # Control's grabbers run continuously in the background regardless of
+        # which tab is visible, and otherwise contend with the raw-burst loop
+        # for Camera._sdk_lock the whole time. See PROJECT_STATE.md § 9.
+        self.experiment_panel.experiment_started.connect(
+            lambda: self._set_grabbers_paused(True)
+        )
+        self.experiment_panel.experiment_finished.connect(
+            lambda: self._set_grabbers_paused(False)
+        )
+
         # Calibration → experiment sync
         self.calibration_panel.cols_spin.valueChanged.connect(
             lambda _: self.experiment_panel.sync_from_calibration()
@@ -130,3 +142,11 @@ class MainWindow(QMainWindow):
             if i != exp_idx:
                 self.tabs.setTabEnabled(i, enabled)
         self.tabs.setTabEnabled(exp_idx, True)
+
+    def _set_grabbers_paused(self, paused: bool):
+        for panel in (self.calibration_panel,
+                      self.experiment_panel,
+                      self.manual_panel):
+            grabber = getattr(panel, "_grabber", None)
+            if grabber:
+                grabber.set_paused(paused)

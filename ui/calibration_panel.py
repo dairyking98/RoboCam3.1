@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QLabel, QPushButton, QSpinBox, QComboBox,
     QLineEdit, QButtonGroup, QRadioButton, QSplitter,
     QFileDialog, QMessageBox, QScrollArea, QSizePolicy,
-    QDoubleSpinBox,
+    QDoubleSpinBox, QCheckBox,
 )
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
 
@@ -199,6 +199,9 @@ class CalibrationPanel(QWidget):
         self.cal_name_edit.setText(s.get("cal_name", "calibration"))
         self.exp_spin.setValue(int(s.get("exp_ms", 20)))
         self.gain_spin.setValue(int(s.get("gain", 100)))
+        self.hqi_check.setChecked(bool(s.get("hqi_enabled", False)))
+        self.usb_bw_spin.setValue(int(s.get("usb_bandwidth", 100)))
+        self.offset_spin.setValue(int(s.get("offset", 0)))
         # Step size — match preset button or fall back to custom
         step = s.get("step", "1.0")
         matched = False
@@ -229,6 +232,10 @@ class CalibrationPanel(QWidget):
             "cal_name": self.cal_name_edit.text(),
             "exp_ms": self.exp_spin.value(),
             "gain": self.gain_spin.value(),
+            "hqi_enabled": self.hqi_check.isChecked(),
+            "usb_bandwidth": self.usb_bw_spin.value(),
+            "offset": self.offset_spin.value(),
+            "sensor_mode_index": self.sensor_mode_combo.currentIndex() if self.sensor_mode_combo.count() else int(session_manager.get("calibration").get("sensor_mode_index", 0)),
             "step": self.step_input.text(),
             "qc_format": self.qc_fmt_combo.currentText(),
             "qc_duration": self.qc_video_spin.value(),
@@ -343,13 +350,38 @@ class CalibrationPanel(QWidget):
         self.gain_spin.setValue(100)
         layout.addWidget(self.gain_spin, 1, 1)
 
+        # PlayerOne-specific controls below — relevant to the fps-ceiling
+        # investigation in PROJECT_STATE.md § 9. Hidden/disabled for non-
+        # PlayerOne backends via _refresh_camera_controls().
+        layout.addWidget(QLabel("High Quality Image:"), 2, 0)
+        self.hqi_check = QCheckBox("Enabled (trades fps for image quality)")
+        layout.addWidget(self.hqi_check, 2, 1)
+
+        layout.addWidget(QLabel("USB Bandwidth:"), 3, 0)
+        self.usb_bw_spin = QSpinBox()
+        self.usb_bw_spin.setRange(35, 100)
+        self.usb_bw_spin.setSingleStep(5)
+        self.usb_bw_spin.setSuffix(" %")
+        self.usb_bw_spin.setValue(100)
+        layout.addWidget(self.usb_bw_spin, 3, 1)
+
+        layout.addWidget(QLabel("Offset:"), 4, 0)
+        self.offset_spin = QSpinBox()
+        self.offset_spin.setRange(0, 1000)
+        self.offset_spin.setValue(0)
+        layout.addWidget(self.offset_spin, 4, 1)
+
+        layout.addWidget(QLabel("Sensor Mode:"), 5, 0)
+        self.sensor_mode_combo = QComboBox()
+        layout.addWidget(self.sensor_mode_combo, 5, 1)
+
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self._apply_camera_controls)
-        layout.addWidget(apply_btn, 2, 0)
+        layout.addWidget(apply_btn, 6, 0)
 
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._refresh_camera_controls)
-        layout.addWidget(refresh_btn, 2, 1)
+        layout.addWidget(refresh_btn, 6, 1)
 
         return grp
 
@@ -475,8 +507,11 @@ class CalibrationPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _refresh_camera_controls(self):
-        """Push last-used exposure/gain from session into the camera and update UI."""
+        """Push last-used exposure/gain/etc from session into the camera and update UI."""
         cam = hw_state.get_camera()
+        is_playerone = bool(cam and cam.running and cam.backend == "playerone")
+        for w in (self.hqi_check, self.usb_bw_spin, self.offset_spin, self.sensor_mode_combo):
+            w.setEnabled(is_playerone)
         if cam and cam.running:
             s = session_manager.get("calibration")
             exp_ms = int(s.get("exp_ms", 20))
@@ -489,12 +524,40 @@ class CalibrationPanel(QWidget):
             self.exp_spin.setValue(exp_ms)
             self.gain_spin.setValue(gain)
 
+            if is_playerone:
+                hqi = bool(s.get("hqi_enabled", False))
+                usb_bw = int(s.get("usb_bandwidth", 100))
+                offset = int(s.get("offset", 0))
+                mode_idx = int(s.get("sensor_mode_index", 0))
+                try:
+                    cam.set_hqi(hqi)
+                    cam.set_usb_bandwidth(usb_bw)
+                    cam.set_offset(offset)
+                    modes = cam.list_sensor_modes()
+                    self.sensor_mode_combo.clear()
+                    self.sensor_mode_combo.addItems(modes)
+                    self.sensor_mode_combo.setEnabled(bool(modes))
+                    if modes and 0 <= mode_idx < len(modes):
+                        cam.set_sensor_mode(mode_idx)
+                        self.sensor_mode_combo.setCurrentIndex(mode_idx)
+                except Exception:
+                    pass
+                self.hqi_check.setChecked(hqi)
+                self.usb_bw_spin.setValue(usb_bw)
+                self.offset_spin.setValue(offset)
+
     def _apply_camera_controls(self):
         cam = hw_state.get_camera()
         if cam and cam.running:
             try:
                 cam.set_exposure(self.exp_spin.value() * 1000)
                 cam.set_gain(self.gain_spin.value())
+                if cam.backend == "playerone":
+                    cam.set_hqi(self.hqi_check.isChecked())
+                    cam.set_usb_bandwidth(self.usb_bw_spin.value())
+                    cam.set_offset(self.offset_spin.value())
+                    if self.sensor_mode_combo.count():
+                        cam.set_sensor_mode(self.sensor_mode_combo.currentIndex())
             except Exception:
                 pass
         self._save_session()

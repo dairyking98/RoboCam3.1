@@ -174,8 +174,8 @@ After running the post-processing pipeline (Processing tab or `scripts/reconstru
 ```
   images/
     A1/
-      A1_00000_000006203us_laser-off.png   ← debayered, clean (no overlay)
-      A1_00152_005003994us_laser-on.png
+      A1_00000_000006ms_laser-off.png   ← debayered, clean (no overlay)
+      A1_00152_005003ms_laser-on.png
       ...
     A2/
       ...
@@ -214,7 +214,7 @@ python scripts/reconstruct_vfr.py outputs/exp/ --mono
 
 **Image filenames** encode frame index, timestamp, and laser state for direct use in tracking pipelines:
 ```
-A1_00152_005003994us_laser-on.png
+A1_00152_005003ms_laser-on.png
 ```
 
 **Videos**: The MKV uses per-frame PTS (90 kHz time base) derived from the sidecar metadata's `time_offset_s`, so timing is accurate to about 1 ms — intended for archival. The MP4 uses the burst's actual average FPS with sequential PTS for smooth, Pi-hardware-decodable playback, with a white/black asterisk overlay marking laser-ON frames.

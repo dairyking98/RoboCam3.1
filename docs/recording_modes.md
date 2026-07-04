@@ -20,17 +20,25 @@ Real-time encoded video (the former `Video (AVI)` mode) has been removed. Post-p
 - Bit depth: 8-bit — `camera.py` explicitly requests `POA_RAW8` at init (`_init_playerone()`), not the sensor's native depth. (An earlier version of this doc said "16-bit (sensor-native)"; that was aspirational, not what the code does. `POA_RAW16` is available in the SDK but unused.)
 - Each frame saved as a `.npy` file (NumPy binary array)
 - Per-frame timestamps via `time.perf_counter()`
-- **Max achievable FPS is currently ~30fps in practice, well under the Mars 662M's advertised 90-120fps** (measured consistently across the 2026-07-01 test dataset). Root cause is not yet confirmed on hardware; see `PROJECT_STATE.md` § 9 Known Issues for the full investigation and knobs to check next session (exposure time, `POA_HQI`, `POA_USB_BANDWIDTH_LIMIT`, sensor-mode selection, and the synchronous-write capture loop in `experiment.py`).
+- **Max achievable FPS is currently ~30fps in practice, well under the Mars 662M's advertised 90-120fps** (measured consistently across the 2026-07-01 test dataset). The capture loop's jitter/robustness issues (synchronous disk writes, poll-loop latency, double buffer allocation, cross-tab lock contention) have been fixed in software — see `PROJECT_STATE.md` § 9. The fps *ceiling* itself (exposure, `POA_HQI`, `POA_USB_BANDWIDTH_LIMIT`, sensor-mode selection) is not yet confirmed on hardware; those are now exposed as live UI controls on the Calibration tab for testing next session.
+- Capture is decoupled: an acquisition thread pushes frames onto a bounded queue (`RAW_BURST_QUEUE_MAXSIZE` in `experiment.py`), and a separate writer thread does the `.npy` save plus an incremental `<well>_<ts>_frames.jsonl` sidecar (crash-resilient per-frame timing, independent of the final `metadata.json`). The queue is always fully drained before a burst returns — no captured frame is ever dropped, even on `stop()`.
+- Each well's `metadata.json` now also includes `capture_failures` (lock-timeout / SDK-timeout-or-error counts), `sdk_dropped_frames` (the SDK's own dropped-frame counter), and `queue_full_stalls`/`queue_full_stall_s_total` (how often/how long acquisition blocked waiting on a full write queue).
 
 **Output folder layout (actual, as written by `ExperimentRunner`):**
 ```
 <exp_dir>/
   raw/
-    camera_meta.json                 ← written once per experiment: backend, model, bit depth, resolution, gain, exposure, fps
+    camera_meta.json                 ← written once per experiment: backend, model, bit depth, resolution,
+                                        gain, exposure, fps, hqi_enabled, usb_bandwidth_limit, offset,
+                                        sensor_mode_index, sensor_mode_name
     <well>_<ts>_f00000.npy
     <well>_<ts>_f00001.npy
     ...
-    <well>_<ts>_metadata.json        ← frames[] (frame_index, file, time_offset_s), laser_events[], fps_average, duration_actual_s
+    <well>_<ts>_frames.jsonl         ← one JSON line per frame, appended as captured (crash-resilient;
+                                        not read by postprocess.py — a recovery artifact only)
+    <well>_<ts>_metadata.json        ← frames[] (frame_index, file, time_offset_s), laser_events[],
+                                        fps_average, duration_actual_s, capture_failures,
+                                        sdk_dropped_frames, queue_full_stalls, queue_full_stall_s_total
   <ts>_<name>_points.csv
 ```
 
@@ -117,14 +125,16 @@ Shared by both the CLI (`scripts/reconstruct_vfr.py`) and the GUI (Processing ta
 ## Known Issues
 
 - **Pi camera (Picamera2) raw burst → color output is currently wrong.** Something between `Camera.get_raw_frame()`'s `capture_array("raw")` and `postprocess.npy_to_bgr()`'s debayer/scaling is mismatched — likely the actual bit depth/packing of the raw stream vs. what `camera_meta.json` claims. The PlayerOne backend path is unaffected and has been verified end-to-end (including laser-timed bursts) on real hardware. See `PROJECT_STATE.md` § 9 for the investigation notes.
-- **PlayerOne effective capture rate is ~30fps, well under the Mars 662M's advertised 90-120fps.** Not yet root-caused on hardware. See `PROJECT_STATE.md` § 9 for the five candidate causes and the test plan.
+- **PlayerOne effective capture rate is ~30fps, well under the Mars 662M's advertised 90-120fps.** Jitter/robustness causes (synchronous disk writes, poll-loop latency, buffer allocation, cross-tab lock contention) are fixed in software and verified in `simulate=True` mode; the fps *ceiling* causes (exposure, `POA_HQI`, USB bandwidth, sensor mode) are exposed as UI controls but not yet confirmed on real hardware. See `PROJECT_STATE.md` § 9.
 - **Klipper motion backend is implemented but not yet exercised on real Klipper hardware** — only Marlin has been run end-to-end so far.
 
 ## Open Items
 
 - [ ] Root-cause and fix the Pi camera raw-burst debayer/bit-depth bug above
-- [ ] Root-cause the PlayerOne ~30fps ceiling (see `PROJECT_STATE.md` § 9 test plan) — camera unavailable until 2026-07-06
+- [ ] Verify the PlayerOne jitter fixes (queue/writer thread, direct blocking `GetImageData`, buffer reuse, grabber-pause broadcast) actually improve real fps/stability, and find the ceiling fix via the new HQI/USB-bandwidth/sensor-mode/exposure UI controls — camera unavailable until 2026-07-06
 - [ ] Benchmark Pi camera max FPS at 1920×1080 with video+raw config
 - [ ] Verify the Klipper backend against a real Moonraker/Klipper setup
 - [x] Build Processing tab UI — done, verified working
+- [x] Decouple raw-burst disk writes from acquisition via bounded queue + writer thread — done, verified in simulate mode
+- [x] Fix cross-tab live-preview lock contention during raw-burst capture — done, verified offscreen
 - [x] Add auto-process checkbox to Experiment tab — done, verified working

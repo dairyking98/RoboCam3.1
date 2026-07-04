@@ -636,9 +636,9 @@ class ExperimentPanel(QWidget):
         mode_map = {"Image": "image", "Raw Burst": "raw"}
         mode = mode_map.get(self.mode_combo.currentText(), "image")
 
-        # Always pause the grabber during experiments to avoid frame-capture
-        # contention and show the experiment overlay on the preview widget.
-        self._grabber.set_paused(True)
+        # Grabber pausing (all tabs, not just this one) is centralized in
+        # MainWindow via the experiment_started/experiment_finished signals
+        # this panel emits — see ui/main_window.py's _set_grabbers_paused.
         self._preview.set_experiment_running(True)
 
         self._exp_thread = _ExperimentThread(
@@ -681,7 +681,6 @@ class ExperimentPanel(QWidget):
             self.pause_btn.setText("Resume")
 
     def _on_experiment_finished(self):
-        self._grabber.set_paused(False)
         self._preview.set_experiment_running(False)
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)

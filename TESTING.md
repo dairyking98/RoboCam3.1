@@ -78,7 +78,7 @@ This document is the live testing checklist for the physical Raspberry Pi sessio
 ### Post-Processing Pipeline
 - [ ] Activate venv: `source .venv/bin/activate`
 - [ ] Run: `python scripts/reconstruct_vfr.py outputs/<exp_dir>/`
-- [ ] In `outputs/<exp_dir>/images/A1/`, verify PNG files named with frame index, µs timestamp, and laser state (e.g., `A1_f00000_000006203us_laser-off.png`).
+- [ ] In `outputs/<exp_dir>/images/A1/`, verify PNG files named with frame index, ms timestamp, and laser state (e.g., `A1_f00000_000006ms_laser-off.png`).
 - [ ] In `outputs/<exp_dir>/videos/`, verify `A1_<ts>_vfr.mkv` and `A1_<ts>.mp4` are created.
 - [ ] Play the MP4 on the Pi — verify smooth playback and asterisk (*) overlay visible during laser-ON frames.
 - [ ] Verify MKV timing: `ffprobe -show_entries frame=best_effort_timestamp_time -select_streams v:0 outputs/<exp_dir>/videos/A1_*_vfr.mkv | head -20` — timestamps should match `metadata.json` `frames[].time_offset_s`.

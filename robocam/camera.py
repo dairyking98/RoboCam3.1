@@ -109,6 +109,11 @@ class Camera:
         self.running = False
         self._device_index = device_index
         self.fps_limit = 0.0
+        self._po_frame_buf: Optional[np.ndarray] = None
+
+        # Capture-failure counters for get_raw_frame(), reset per raw-burst
+        self._stat_lock_timeout = 0
+        self._stat_sdk_timeout_or_error = 0
 
         # Lock to protect SDK calls from simultaneous UI preview and experiment thread access
         self._sdk_lock = threading.Lock()
@@ -164,6 +169,7 @@ class Camera:
             poa.SetImageSize(self._camera_id, w, h)
             poa.SetImageBin(self._camera_id, 1)
             poa.SetImageFormat(self._camera_id, poa.POAImgFormat.POA_RAW8)
+            self._po_frame_buf = np.zeros(w * h, dtype=np.uint8)
 
             # Set default exposure and gain
             poa.SetExp(self._camera_id, 20000, False)
@@ -322,6 +328,88 @@ class Camera:
         with self._sdk_lock:
             self._poa.SetConfig(self._camera_id, self._poa.POAConfig.POA_FRAME_LIMIT, int(round(fps)), False)
 
+    def get_hqi(self) -> bool:
+        """Get High Quality Image mode — on cameras without DDR, HQI trades frame rate for image quality."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return False
+        with self._sdk_lock:
+            _, val, _ = self._poa.GetConfig(self._camera_id, self._poa.POAConfig.POA_HQI)
+            return bool(val)
+
+    def set_hqi(self, enabled: bool) -> None:
+        """Set High Quality Image mode on/off."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return
+        with self._sdk_lock:
+            self._poa.SetConfig(self._camera_id, self._poa.POAConfig.POA_HQI, bool(enabled), False)
+
+    def get_usb_bandwidth(self) -> int:
+        """Get USB bandwidth limit, percent [35-100]."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return 100
+        with self._sdk_lock:
+            _, val, _ = self._poa.GetConfig(self._camera_id, self._poa.POAConfig.POA_USB_BANDWIDTH_LIMIT)
+            return int(val)
+
+    def set_usb_bandwidth(self, percent: int) -> None:
+        """Set USB bandwidth limit, percent [35-100]."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return
+        with self._sdk_lock:
+            val = max(35, min(100, int(round(percent))))
+            self._poa.SetConfig(self._camera_id, self._poa.POAConfig.POA_USB_BANDWIDTH_LIMIT, val, False)
+
+    def get_offset(self) -> int:
+        """Get sensor black-level offset."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return 0
+        with self._sdk_lock:
+            _, val, _ = self._poa.GetConfig(self._camera_id, self._poa.POAConfig.POA_OFFSET)
+            return int(val)
+
+    def set_offset(self, offset: int) -> None:
+        """Set sensor black-level offset."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return
+        with self._sdk_lock:
+            self._poa.SetConfig(self._camera_id, self._poa.POAConfig.POA_OFFSET, int(round(offset)), False)
+
+    def list_sensor_modes(self) -> list[str]:
+        """Return sensor mode names supported by this camera; empty if the camera has no mode selection."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return []
+        with self._sdk_lock:
+            err, count = self._poa.GetSensorModeCount(self._camera_id)
+            if err != self._poa.POAErrors.POA_OK or count <= 0:
+                return []
+            names = []
+            for i in range(count):
+                err, info = self._poa.GetSensorModeInfo(self._camera_id, i)
+                if err == self._poa.POAErrors.POA_OK:
+                    names.append(info.name.decode(errors="replace").strip())
+                else:
+                    names.append(f"Mode {i}")
+            return names
+
+    def get_sensor_mode_index(self) -> int:
+        """Get the currently active sensor mode index; -1 if unsupported."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return -1
+        with self._sdk_lock:
+            err, idx = self._poa.GetSensorMode(self._camera_id)
+            if err != self._poa.POAErrors.POA_OK:
+                return -1
+            return int(idx)
+
+    def set_sensor_mode(self, index: int) -> None:
+        """Set the sensor mode by index. Stops and restarts exposure, as the SDK requires."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return
+        with self._sdk_lock:
+            self._poa.StopExposure(self._camera_id)
+            self._poa.SetSensorMode(self._camera_id, int(index))
+            self._poa.StartExposure(self._camera_id, False)
+
     def get_supported_resolutions(self) -> list[Tuple[int, int]]:
         """Return supported resolutions based on camera properties."""
         standards = [
@@ -359,6 +447,7 @@ class Camera:
             self._poa.StopExposure(self._camera_id)
             self._poa.SetImageSize(self._camera_id, w, h)
             self.resolution = (w, h)
+            self._po_frame_buf = np.zeros(w * h, dtype=np.uint8)
             self._poa.StartExposure(self._camera_id, False)
             logger.info(f"Resolution changed to {w}x{h}")
 
@@ -404,33 +493,57 @@ class Camera:
                 
         return np.zeros((self.resolution[1], self.resolution[0], 3), dtype=np.uint8)
 
+    def reset_capture_stats(self) -> None:
+        """Zero the get_raw_frame() failure counters — call at the start of a raw burst."""
+        self._stat_lock_timeout = 0
+        self._stat_sdk_timeout_or_error = 0
+
+    def get_capture_stats(self) -> dict:
+        """Return counts of get_raw_frame() failures since the last reset_capture_stats()."""
+        return {
+            "lock_timeout": self._stat_lock_timeout,
+            "sdk_timeout_or_error": self._stat_sdk_timeout_or_error,
+        }
+
+    def get_dropped_frames_count(self) -> int:
+        """SDK-side dropped-frame count (frames the driver dropped before delivery); resets on stop."""
+        if self.simulate or not self.running or self.backend != "playerone":
+            return 0
+        with self._sdk_lock:
+            err, count = self._poa.GetDroppedImagesCount(self._camera_id)
+            if err != self._poa.POAErrors.POA_OK:
+                return 0
+            return int(count)
+
     def get_raw_frame(self) -> Optional[np.ndarray]:
         """Returns the raw 1D/2D buffer directly from the sensor for fast writing."""
         if self.simulate or not self.running:
             return np.zeros((self.resolution[1], self.resolution[0]), dtype=np.uint8)
-            
+
         if self.backend == "playerone":
             if not self._sdk_lock.acquire(timeout=0.05):
+                self._stat_lock_timeout += 1
                 return None
             try:
                 poa = self._poa
                 cid = self._camera_id
-                
-                deadline = time.monotonic() + 0.1
-                while time.monotonic() < deadline:
-                    err, ready = poa.ImageReady(cid)
-                    if err == poa.POAErrors.POA_OK and ready:
-                        break
-                    time.sleep(0.005)
-                else:
-                    return None
-                    
-                w, h = self.resolution
-                buf = np.zeros(w * h, dtype=np.uint8)
-                err = poa.GetImageData(cid, buf, 500)
+
+                # Direct blocking fetch instead of a manual ImageReady() poll loop —
+                # the SDK's own GetImageData() blocks internally until the frame is
+                # ready or the timeout elapses. Timeout is bounded (not -1/infinite)
+                # so control still returns often enough for the caller to notice a
+                # stop request. See PROJECT_STATE.md § 9.
+                # NOTE: use poa.GetConfig() directly, not self.get_exposure() — that
+                # method re-acquires _sdk_lock, which would deadlock since we're
+                # already holding it here (threading.Lock is not reentrant).
+                _, exposure_us, _ = poa.GetConfig(cid, poa.POAConfig.POA_EXPOSURE)
+                timeout_ms = min(200, max(20, int(exposure_us) // 1000 + 50))
+                err = poa.GetImageData(cid, self._po_frame_buf, timeout_ms)
                 if err != poa.POAErrors.POA_OK:
+                    self._stat_sdk_timeout_or_error += 1
                     return None
-                return buf.reshape((h, w)).copy()
+                w, h = self.resolution
+                return self._po_frame_buf.reshape((h, w)).copy()
             finally:
                 self._sdk_lock.release()
                 
@@ -464,6 +577,8 @@ class Camera:
                 "fps_limit": self.fps_limit,
             }
         if self.backend == "playerone":
+            sensor_modes = self.list_sensor_modes()
+            mode_idx = self.get_sensor_mode_index()
             return {
                 "backend": "playerone",
                 "model": getattr(self, "_playerone_model", ""),
@@ -473,6 +588,11 @@ class Camera:
                 "gain": self.get_gain(),
                 "exposure_us": self.get_exposure(),
                 "fps_limit": self.get_fps(),
+                "hqi_enabled": self.get_hqi(),
+                "usb_bandwidth_limit": self.get_usb_bandwidth(),
+                "offset": self.get_offset(),
+                "sensor_mode_index": mode_idx,
+                "sensor_mode_name": sensor_modes[mode_idx] if 0 <= mode_idx < len(sensor_modes) else "",
             }
         return {
             "backend": self.backend or "unknown",

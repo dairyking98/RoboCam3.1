@@ -225,9 +225,9 @@ def process_well(
             is_on  = laser_on_at(fi["time_offset_s"], laser_events)
 
             if do_images:
-                t_us      = int(fi["time_offset_s"] * 1_000_000)
+                t_ms      = int(fi["time_offset_s"] * 1_000)
                 laser_str = "laser-on" if is_on else "laser-off"
-                img_name  = f"{well}_{fi['frame_index']:05d}_{t_us:09d}us_{laser_str}.png"
+                img_name  = f"{well}_{fi['frame_index']:05d}_{t_ms:06d}ms_{laser_str}.png"
                 cv2.imwrite(str(img_dir / img_name), bgr)
 
             if do_video:

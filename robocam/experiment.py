@@ -4,6 +4,8 @@ import csv
 import cv2
 import json
 import logging
+import queue
+import threading
 import numpy as np
 from datetime import datetime
 from typing import List, Optional, Tuple
@@ -11,6 +13,12 @@ from .config import get_config
 from .peripherals import LaserController
 
 logger = logging.getLogger(__name__)
+
+# Bounded queue depth between the raw-burst capture (producer) thread and the
+# disk-write (consumer) thread. Sized as initial headroom for the NVMe M.2
+# HAT; revisit after real-world timing numbers come back from hardware
+# (see PROJECT_STATE.md § 9).
+RAW_BURST_QUEUE_MAXSIZE = 128
 
 
 class ExperimentRunner:
@@ -67,6 +75,20 @@ class ExperimentRunner:
         """
         Capture raw sensor frames as fast as possible for `total_duration_s`
         seconds, saving each as a .npy file. Returns a metadata dict.
+
+        Capture (this thread, the producer) and disk writes (a separate
+        writer thread, the consumer) are decoupled by a bounded queue, so a
+        transient disk stall doesn't stall frame-acquisition timing. The
+        producer *blocks* on a full queue rather than dropping frames — an
+        already-captured frame is never discarded, matching the previous
+        synchronous behaviour; `queue_full_stalls`/`queue_full_stall_s_total`
+        in the returned metadata report how often/how long that happened.
+
+        Per-frame records are also appended, as captured, to a
+        `<label>_<timestamp>_frames.jsonl` sidecar so a crash/disconnect
+        mid-burst doesn't lose timing metadata for frames already on disk —
+        the final `frames`/`laser_events`/etc. keys below are unchanged from
+        before, for `postprocess.py` compatibility.
         """
         frames_saved = []
         laser_events = []
@@ -74,6 +96,30 @@ class ExperimentRunner:
         laser_end_s = laser_start_s + laser_on_s
         frame_idx = 0
         start = time.perf_counter()
+
+        self.camera.reset_capture_stats()
+
+        frame_queue: "queue.Queue" = queue.Queue(maxsize=RAW_BURST_QUEUE_MAXSIZE)
+        stall_count = 0
+        stall_s_total = 0.0
+        jsonl_path = os.path.join(output_dir, f"{label}_{timestamp}_frames.jsonl")
+
+        def _writer():
+            with open(jsonl_path, "w", encoding="utf-8") as jf:
+                while True:
+                    item = frame_queue.get()
+                    if item is None:  # sentinel: producer is done
+                        break
+                    idx, raw, t_capture = item
+                    fname = f"{label}_{timestamp}_f{idx:05d}.npy"
+                    np.save(os.path.join(output_dir, fname), raw)
+                    record = {"frame_index": idx, "file": fname, "time_offset_s": round(t_capture, 6)}
+                    frames_saved.append(record)
+                    jf.write(json.dumps(record) + "\n")
+                    jf.flush()
+
+        writer_thread = threading.Thread(target=_writer, daemon=True)
+        writer_thread.start()
 
         try:
             while self.running:
@@ -99,13 +145,12 @@ class ExperimentRunner:
                 if raw is not None:
                     # Timestamp after get_raw_frame() returns — when frame is in hand
                     t_capture = time.perf_counter() - start
-                    fname = f"{label}_{timestamp}_f{frame_idx:05d}.npy"
-                    np.save(os.path.join(output_dir, fname), raw)
-                    frames_saved.append({
-                        "frame_index": frame_idx,
-                        "file": fname,
-                        "time_offset_s": round(t_capture, 6),
-                    })
+                    put_start = time.perf_counter()
+                    frame_queue.put((frame_idx, raw, t_capture))
+                    put_elapsed = time.perf_counter() - put_start
+                    if put_elapsed > 0.001:
+                        stall_count += 1
+                        stall_s_total += put_elapsed
                     frame_idx += 1
                 # No sleep — capture as fast as possible
 
@@ -117,8 +162,14 @@ class ExperimentRunner:
                     "state": "OFF",
                     "frame_index": frame_idx,
                 })
+            # Drain: signal no more frames, then wait for every already-queued
+            # frame to actually be written before returning — never lose an
+            # already-captured frame, whether stopped normally or by the user.
+            frame_queue.put(None)
+            writer_thread.join()
 
         duration_actual = time.perf_counter() - start
+        capture_stats = self.camera.get_capture_stats()
         return {
             "frames_captured": frame_idx,
             "duration_requested_s": round(total_duration_s, 3),
@@ -126,6 +177,10 @@ class ExperimentRunner:
             "fps_average": round(frame_idx / duration_actual, 4) if duration_actual > 0 else 0.0,
             "laser_events": laser_events,
             "frames": frames_saved,
+            "capture_failures": capture_stats,
+            "sdk_dropped_frames": self.camera.get_dropped_frames_count(),
+            "queue_full_stalls": stall_count,
+            "queue_full_stall_s_total": round(stall_s_total, 6),
         }
 
     # ------------------------------------------------------------------
