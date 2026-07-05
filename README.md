@@ -2,6 +2,8 @@
 
 RoboCam 3.1 is a Python desktop application for automated well-plate imaging using a 3D printer motion system and a Player One astronomy camera (or a Raspberry Pi HQ/Camera Module, or a generic USB webcam). It is designed for scientific use on a Raspberry Pi 4/5, with a PySide6 GUI, a headless CLI, and a post-processing pipeline that turns raw sensor bursts into per-frame images and timing-accurate video.
 
+This is the third rebuild of the platform, following [screamuch/RoboCam](https://github.com/screamuch/RoboCam) and [RoboCam-Suite](https://github.com/dairyking98/RoboCam-Suite)/[RoboCam-Suite2.0](https://github.com/dairyking98/RoboCam-Suite2.0), which in turn were inspired by [FlyCam](https://github.com/E-Lab-SFSU/FlyCam) (Esquerra Lab, SFSU). See [docs/history.md](docs/history.md) for the full lineage.
+
 ---
 
 ## Key Features
@@ -60,7 +62,8 @@ RoboCam3.1/
 │   ├── test_config.py              # Config get/set/deep-update/persistence
 │   └── test_cli.py                 # Headless CLI argument parser (no hardware required)
 ├── docs/
-│   └── recording_modes.md          # Design notes on raw-burst-first capture philosophy
+│   ├── recording_modes.md          # Design notes on raw-burst-first capture philosophy
+│   └── history.md                  # Project lineage: FlyCam -> screamuch/RoboCam -> RoboCam-Suite -> Suite2.0 -> 3.1
 ├── outputs/                        # Experiment output folders (configurable in GUI)
 ├── setup.sh / setup.bat            # Linux/Pi and Windows setup scripts
 ├── start_robocam.sh / .bat         # One-click launchers
