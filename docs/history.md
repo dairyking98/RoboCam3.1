@@ -2,7 +2,7 @@
 
 RoboCam 3.1 is the current stage of a platform that started as someone else's project and has been rebuilt twice since, each time for a specific reason rather than just for its own sake.
 
-1. **[FlyCam](https://github.com/E-Lab-SFSU/FlyCam)** (Esquerra Lab, SFSU) — the original idea: use a 3D printer as an imaging stage. Not part of this codebase, but the inspiration for treating a 3D printer's motion system as a general-purpose positioning stage for a camera.
+1. **[FlyCam](https://github.com/E-Lab-SFSU/FlyCam)** (Esquerra Lab, SFSU) — the original idea: use a 3D printer as an imaging stage. Predates everything below, despite what the GitHub repo's commit history alone would suggest (its earliest commits reflect when the code was pushed to GitHub, not when it was actually written). Not part of this codebase, but the inspiration for treating a 3D printer's motion system as a general-purpose positioning stage for a camera. Its original GUI was built on PySimpleGUI, which had to be migrated to the FreeSimpleGUI fork after PySimpleGUI's license changed to a paid/restricted model — the same licensing shift is why the Tkinter-based projects below avoided PySimpleGUI from the start.
 
 2. **[screamuch/RoboCam](https://github.com/screamuch/RoboCam)** — the base implementation this project was built on top of. Development continued here rather than on the original repo because that repo's author was no longer around to keep working on it.
 
