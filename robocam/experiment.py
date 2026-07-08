@@ -362,10 +362,19 @@ class ExperimentRunner:
                 writer = csv.writer(f)
                 writer.writerow(["Well", "X", "Y", "Z", "Capture_File", "Capture_Mode", "Laser", "Timestamp"])
 
+                # Reuse the shared LaserController (e.g. one already claimed by
+                # the Manual Control panel) rather than claiming the GPIO pin
+                # again, which would fail with "GPIO busy".
                 laser_controller = None
+                laser_owned_here = False
                 if use_laser and mode == "raw":
-                    laser_controller = LaserController(self.motion)
-                    laser_controller.connect()
+                    import robocam.hw_state as hw_state
+                    laser_controller = hw_state.get_laser()
+                    if laser_controller is None:
+                        laser_controller = LaserController(self.motion)
+                        laser_controller.connect()
+                        hw_state.set_laser(laser_controller)
+                        laser_owned_here = True
 
                 for i, (pos, label) in enumerate(zip(positions, labels)):
                     if not self.running:
@@ -399,6 +408,15 @@ class ExperimentRunner:
                     if callback:
                         callback(self.status_msg)
                     time.sleep(delay_per_well)
+
+                    # Cameras run in continuous free-running exposure, so the frame
+                    # sitting in the buffer right now may have been captured while
+                    # the stage was still moving. Discard it so the first frame we
+                    # actually use/save reflects the post-dwell, settled position.
+                    if mode == "raw":
+                        self.camera.get_raw_frame()
+                    else:
+                        self.camera.get_frame()
 
                     self.status_msg = f"Capturing {label} ({i + 1}/{len(positions)})..."
                     logger.info(self.status_msg)

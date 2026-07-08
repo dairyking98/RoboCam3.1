@@ -139,13 +139,16 @@ class MarlinBackend(MotionBackend):
         if self._m400_supported is None:
             logger.debug("Testing M400 support on first move...")
             try:
-                self.send_gcode("M400", timeout=5.0)
+                # Use the full movement timeout here, not a short probe window —
+                # a slow first move (e.g. a long travel to well A1) can easily
+                # exceed a few seconds and must not be misread as "no M400".
+                self.send_gcode("M400", timeout=timeout)
                 self._m400_supported = True
                 return
             except Exception as e:
                 self._m400_supported = False
                 logger.warning(f"M400 not supported ({e}). Switching to delay-based fallback.")
-                
+
         if self._m400_supported:
             try:
                 self.send_gcode("M400", timeout=timeout)
@@ -153,9 +156,11 @@ class MarlinBackend(MotionBackend):
             except Exception as e:
                 logger.warning(f"M400 failed during move ({e}). Marking M400 as unsupported.")
                 self._m400_supported = False
-                
-        fallback_delay = min(timeout, 2.0)
-        time.sleep(fallback_delay)
+
+        # No reliable "move complete" signal without M400 — wait the full
+        # configured allowance rather than an arbitrary short cap, so capture
+        # never starts while the stage may still be physically travelling.
+        time.sleep(timeout)
 
     def move_relative(self, X=None, Y=None, Z=None, speed=None):
         self.send_gcode('G91')

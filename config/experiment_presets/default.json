@@ -1,0 +1,11 @@
+{
+  "name": "july1 24well test kimidiana",
+  "mode": "Raw Burst",
+  "dwell": 1.0,
+  "image_format": "jpg",
+  "duration": 30.0,
+  "use_laser": true,
+  "laser_on": 60.0,
+  "post": 120.0,
+  "cal_file": "calibration.json"
+}

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QPushButton, QListWidget, QListWidgetItem,
     QCheckBox, QProgressBar, QTextEdit, QFileDialog,
-    QSizePolicy,
+    QSizePolicy, QAbstractItemView, QTreeView, QListView,
 )
 
 # Ensure project root is importable when running standalone
@@ -204,9 +204,35 @@ class ProcessingPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _add_folder(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Experiment Folder")
-        if path:
+        for path in self._select_multiple_directories():
             self._add_path(path)
+
+    def _select_multiple_directories(self) -> list[str]:
+        """Open a directory picker that allows selecting several folders at once.
+
+        Qt's native getExistingDirectory() only returns one path, so this uses
+        a non-native QFileDialog in Directory mode with the internal tree/list
+        views switched to extended selection. Directory-mode selectedFiles()
+        collapses a multi-selection down to a single path, so the selected
+        rows are instead read directly off the dialog's internal "listView".
+        """
+        dialog = QFileDialog(self, "Select Experiment Folders")
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+
+        for view in dialog.findChildren(QListView) + dialog.findChildren(QTreeView):
+            view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+
+        if dialog.exec() != QFileDialog.DialogCode.Accepted:
+            return []
+
+        view = dialog.findChild(QListView, "listView")
+        if view is None or view.model() is None:
+            return dialog.selectedFiles()
+        model = view.model()
+        paths = sorted({model.filePath(idx) for idx in view.selectionModel().selectedIndexes()})
+        return paths or dialog.selectedFiles()
 
     def _add_path(self, path: str):
         # Avoid duplicates

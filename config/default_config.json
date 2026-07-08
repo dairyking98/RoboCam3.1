@@ -26,8 +26,8 @@
       "default_fps": 30.0,
       "fps_limit": 0,
       "resolution": [
-        1920,
-        1080
+        1024,
+        768
       ]
     },
     "laser": {

@@ -12,10 +12,12 @@ if TYPE_CHECKING:
     from robocam.camera import Camera
     from robocam.motion import MotionController
     from robocam.experiment import ExperimentRunner
+    from robocam.peripherals import LaserController
 
 _camera: "Camera | None" = None
 _motion: "MotionController | None" = None
 _runner: "ExperimentRunner | None" = None
+_laser: "LaserController | None" = None
 
 
 def get_camera() -> "Camera | None":
@@ -28,6 +30,19 @@ def get_motion() -> "MotionController | None":
 
 def get_runner() -> "ExperimentRunner | None":
     return _runner
+
+
+def get_laser() -> "LaserController | None":
+    """Shared LaserController — a GPIO pin can only be claimed by one
+    instance at a time, so Manual Control and the Experiment runner must
+    reuse the same connected controller instead of each claiming pin
+    ownership independently."""
+    return _laser
+
+
+def set_laser(laser: "LaserController | None") -> None:
+    global _laser
+    _laser = laser
 
 
 def set_camera(camera: "Camera | None") -> None:

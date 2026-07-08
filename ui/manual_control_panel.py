@@ -29,7 +29,6 @@ STEP_PRESETS = ["0.1", "0.5", "1.0", "5.0", "10.0"]
 class ManualControlPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._laser_ctrl = None  # persistent across button presses
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
@@ -283,16 +282,18 @@ class ManualControlPanel(QWidget):
         from robocam.peripherals import LaserController
         mc = hw_state.get_motion()
         try:
-            if self._laser_ctrl is None:
-                self._laser_ctrl = LaserController(mc)
-                self._laser_ctrl.connect()
-            self._laser_ctrl.set_laser(state)
+            laser = hw_state.get_laser()
+            if laser is None:
+                laser = LaserController(mc)
+                laser.connect()
+                hw_state.set_laser(laser)
+            laser.set_laser(state)
             label = "ON" if state else "OFF"
             color = "red" if state else "gray"
             self.laser_state_lbl.setText(f"Laser: {label}")
             self.laser_state_lbl.setStyleSheet(f"color: {color};")
         except Exception as e:
-            self._laser_ctrl = None  # force re-init on next press
+            hw_state.set_laser(None)  # force re-init on next press
             self.gcode_log.append(f"[Laser Error] {e}")
 
     def _send_gcode(self):
