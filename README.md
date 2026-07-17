@@ -404,7 +404,7 @@ Downloads the Player One Camera SDK archive for the current OS (Windows `.zip`, 
 
 ### `config/default_config.json`
 
-Auto-created by `robocam.config.Config` on first run (from `Config.DEFAULT_CONFIG`) and rewritten on every `Config.set()` call made anywhere in the app — effectively the live, persisted view of all hardware/path settings (motion backend choice, printer/Klipper connection parameters, camera resolution/fps cap, laser mode/pin/G-code, and `paths.output_dir`/`paths.calibration_dir`). Not meant to be hand-edited except for bootstrapping a fresh install; the GUI is the normal way to change these values.
+Auto-created by `robocam.config.Config` on first run (from `Config.DEFAULT_CONFIG`) and rewritten on every `Config.set()` call made anywhere in the app — effectively the live, persisted view of all hardware/path settings (motion backend choice, printer/Klipper connection parameters, camera resolution, laser mode/pin/G-code, and `paths.output_dir`/`paths.calibration_dir`). Not meant to be hand-edited except for bootstrapping a fresh install; the GUI is the normal way to change these values.
 
 ### `tests/`
 

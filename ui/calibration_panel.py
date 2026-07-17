@@ -345,6 +345,21 @@ class CalibrationPanel(QWidget):
         self.exp_spin.setValue(20)
         layout.addWidget(self.exp_spin, 0, 1)
 
+        layout.addWidget(QLabel("Target FPS:"), 0, 2)
+        self.fps_spin = QDoubleSpinBox()
+        self.fps_spin.setRange(0.5, 1000.0)
+        self.fps_spin.setDecimals(1)
+        self.fps_spin.setSuffix(" fps")
+        self.fps_spin.setToolTip(
+            "Linked to Exposure (fps ≈ 1000 / exposure_ms) -- capture rate is "
+            "exposure-bound now that I/O overhead is negligible (see PROJECT_STATE.md "
+            "§ 9). Editing either field updates the other."
+        )
+        self.fps_spin.setValue(1000.0 / self.exp_spin.value())
+        layout.addWidget(self.fps_spin, 0, 3)
+        self.exp_spin.valueChanged.connect(self._on_exp_changed)
+        self.fps_spin.valueChanged.connect(self._on_fps_changed)
+
         layout.addWidget(QLabel("Gain:"), 1, 0)
         self.gain_spin = QSpinBox()
         self.gain_spin.setRange(0, 500)
@@ -514,6 +529,29 @@ class CalibrationPanel(QWidget):
     # ------------------------------------------------------------------
     # Refreshers (called from MainWindow on camera_connected signal)
     # ------------------------------------------------------------------
+
+    def _on_exp_changed(self, ms: int):
+        if getattr(self, "_syncing_exp_fps", False):
+            return
+        self._syncing_exp_fps = True
+        try:
+            self.fps_spin.setValue(1000.0 / ms)
+        finally:
+            self._syncing_exp_fps = False
+
+    def _on_fps_changed(self, fps: float):
+        if getattr(self, "_syncing_exp_fps", False):
+            return
+        self._syncing_exp_fps = True
+        try:
+            ms = round(1000.0 / fps)
+            ms = max(self.exp_spin.minimum(), min(self.exp_spin.maximum(), ms))
+            self.exp_spin.setValue(ms)
+            # Reflect the rounded exposure (ms is an int) back into the fps
+            # field so it doesn't keep showing an unattainable fractional fps.
+            self.fps_spin.setValue(1000.0 / ms)
+        finally:
+            self._syncing_exp_fps = False
 
     def _refresh_camera_controls(self):
         """Push last-used exposure/gain/etc from session into the camera and update UI."""

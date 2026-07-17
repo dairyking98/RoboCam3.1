@@ -98,7 +98,7 @@ def get_playerone_camera_count() -> int:
         return 0
 
 class Camera:
-    def __init__(self, resolution=(1920, 1080), simulate=False, backend=None, device_index=0, fps: float = 0.0):
+    def __init__(self, resolution=(1920, 1080), simulate=False, backend=None, device_index=0):
         self.resolution = resolution
         self.simulate = simulate
         self.backend = None
@@ -108,7 +108,6 @@ class Camera:
         self._camera_id = None
         self.running = False
         self._device_index = device_index
-        self.fps_limit = 0.0
         self._po_frame_buf: Optional[np.ndarray] = None
 
         # Capture-failure counters for get_raw_frame(), reset per raw-burst
@@ -135,9 +134,6 @@ class Camera:
                 self._init_picam2(0)
             else:
                 self._init_cv2(0)
-
-        if fps and fps > 0 and self.running:
-            self.set_fps(fps)
 
     def _init_playerone(self, device_index: int = 0):
         sdk_path = get_playerone_sdk_python_path()
@@ -341,34 +337,6 @@ class Camera:
             return
         self._picam2_ae_enabled = bool(enabled)
         self.picam2.set_controls({"AeEnable": bool(enabled)})
-
-    def get_fps(self) -> float:
-        """Get the current frame-rate cap; 0 means uncapped (max sensor/backend rate)."""
-        if self.backend != "playerone" or self.simulate or not self.running:
-            return self.fps_limit
-        with self._sdk_lock:
-            _, val, _ = self._poa.GetConfig(self._camera_id, self._poa.POAConfig.POA_FRAME_LIMIT)
-            return float(val)
-
-    def set_fps(self, fps: float) -> None:
-        """Set a frame-rate cap; 0 means uncapped (max sensor/backend rate)."""
-        fps = max(0.0, float(fps))
-        self.fps_limit = fps
-        if self.backend == "picamera2":
-            if fps > 0:
-                dur_us = int(round(1_000_000 / fps))
-                self.picam2.set_controls({"FrameDurationLimits": (dur_us, dur_us)})
-            else:
-                self.picam2.set_controls({"FrameDurationLimits": self._picam2_frame_duration_range})
-            return
-        if self.backend == "cv2":
-            if self.cv2_cap:
-                self.cv2_cap.set(cv2.CAP_PROP_FPS, fps if fps > 0 else 30.0)
-            return
-        if self.simulate or not self.running or self.backend != "playerone":
-            return
-        with self._sdk_lock:
-            self._poa.SetConfig(self._camera_id, self._poa.POAConfig.POA_FRAME_LIMIT, int(round(fps)), False)
 
     def get_hqi(self) -> bool:
         """Get High Quality Image mode — on cameras without DDR, HQI trades frame rate for image quality."""
@@ -617,7 +585,6 @@ class Camera:
                 "analogue_gain": getattr(self, "_picam2_gain", 1.0),
                 "exposure_us": getattr(self, "_picam2_exposure_us", 20000),
                 "ae_enabled": getattr(self, "_picam2_ae_enabled", False),
-                "fps_limit": self.fps_limit,
             }
         if self.backend == "playerone":
             sensor_modes = self.list_sensor_modes()
@@ -630,7 +597,6 @@ class Camera:
                 "bayer_pattern": getattr(self, "_playerone_bayer_pattern", "RGGB"),
                 "gain": self.get_gain(),
                 "exposure_us": self.get_exposure(),
-                "fps_limit": self.get_fps(),
                 "hqi_enabled": self.get_hqi(),
                 "usb_bandwidth_limit": self.get_usb_bandwidth(),
                 "offset": self.get_offset(),

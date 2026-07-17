@@ -24,7 +24,6 @@
         600
       ],
       "default_fps": 30.0,
-      "fps_limit": 0,
       "resolution": [
         1024,
         768
