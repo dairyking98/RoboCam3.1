@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QPushButton, QLineEdit, QTextEdit,
@@ -26,6 +26,41 @@ from ui.camera_widget import _FrameGrabber, _LivePreview
 STEP_PRESETS = ["0.1", "0.5", "1.0", "5.0", "10.0"]
 
 
+class _DemoWindow(QWidget):
+    """Standalone fullscreen camera-only window for booth/demo use. Esc exits."""
+
+    closed = Signal()
+
+    def __init__(self, grabber: _FrameGrabber, parent=None):
+        super().__init__(parent, Qt.WindowType.Window)
+        self.setWindowTitle("RoboCam — Demo Mode")
+        self.setStyleSheet("background-color: black;")
+        self.setCursor(Qt.CursorShape.BlankCursor)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._grabber = grabber
+        self._preview = _LivePreview(grabber)
+        layout.addWidget(self._preview)
+
+        grabber.frame_ready.connect(self._preview.update_frame)
+        grabber.camera_disconnected.connect(self._preview.show_disconnected)
+
+        self.showFullScreen()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        self._grabber.frame_ready.disconnect(self._preview.update_frame)
+        self._grabber.camera_disconnected.disconnect(self._preview.show_disconnected)
+        self.closed.emit()
+        super().closeEvent(event)
+
+
 class ManualControlPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,9 +71,19 @@ class ManualControlPanel(QWidget):
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 4, 0)
+        hdr_row = QHBoxLayout()
         hdr = QLabel("Live Camera Preview")
         hdr.setStyleSheet("font-weight: bold; font-size: 11px;")
-        ll.addWidget(hdr)
+        hdr_row.addWidget(hdr)
+        hdr_row.addStretch()
+        demo_btn = QPushButton("Demo Mode")
+        demo_btn.setToolTip(
+            "Fullscreen camera-only view for showing off at events (e.g. Open Sauce). "
+            "Press Esc to exit."
+        )
+        demo_btn.clicked.connect(self._enter_demo_mode)
+        hdr_row.addWidget(demo_btn)
+        ll.addLayout(hdr_row)
         self._grabber = _FrameGrabber(fps=15)
         self._preview = _LivePreview(self._grabber)
         ll.addWidget(self._preview, stretch=1)
@@ -78,10 +123,25 @@ class ManualControlPanel(QWidget):
         self._pos_timer.timeout.connect(self._refresh_position)
         self._pos_timer.start(500)
 
+        self._demo_window: _DemoWindow | None = None
+
     def closeEvent(self, event):
         self._grabber.stop()
         self._grabber.wait(1000)
         super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Demo mode
+    # ------------------------------------------------------------------
+
+    def _enter_demo_mode(self):
+        if self._demo_window is not None:
+            return
+        self._demo_window = _DemoWindow(self._grabber)
+        self._demo_window.closed.connect(self._exit_demo_mode)
+
+    def _exit_demo_mode(self):
+        self._demo_window = None
 
     # ------------------------------------------------------------------
     # Group builders
