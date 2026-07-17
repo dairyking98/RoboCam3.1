@@ -204,12 +204,12 @@ class ManualControlPanel(QWidget):
         grid.addWidget(y_minus, 2, 1)
         grid.addWidget(z_plus,  0, 3)
         grid.addWidget(z_minus, 2, 3)
-        y_plus.clicked.connect(lambda:  self._jog("y",  1))
-        y_minus.clicked.connect(lambda: self._jog("y", -1))
-        x_plus.clicked.connect(lambda:  self._jog("x",  1))
-        x_minus.clicked.connect(lambda: self._jog("x", -1))
-        z_plus.clicked.connect(lambda:  self._jog("z",  1))
-        z_minus.clicked.connect(lambda: self._jog("z", -1))
+        y_plus.clicked.connect(lambda:  self._jog("Y",  1))
+        y_minus.clicked.connect(lambda: self._jog("Y", -1))
+        x_plus.clicked.connect(lambda:  self._jog("X",  1))
+        x_minus.clicked.connect(lambda: self._jog("X", -1))
+        z_plus.clicked.connect(lambda:  self._jog("Z",  1))
+        z_minus.clicked.connect(lambda: self._jog("Z", -1))
         layout.addLayout(grid)
 
         return grp
