@@ -1,3 +1,4 @@
+import ast
 import os
 import time
 import csv
@@ -30,17 +31,25 @@ MAX_CONSECUTIVE_CAPTURE_FAILURES = 50
 # All of a well's frames are stacked into one (n_frames, H, W) array, written
 # incrementally via np.lib.format.open_memmap() so it's one file from the
 # first frame, not built in RAM and dumped at the end. The array shape has to
-# be fixed at creation time, and true achieved fps isn't known in advance
-# (that's the open investigation in PROJECT_STATE.md § 9) — so preallocate
-# comfortably above the camera's advertised 90-120fps ceiling rather than
-# risk running out of rows mid-burst. Unwritten rows are sparse (no real
-# disk cost on ext4/NVMe) and are never trimmed — frames_captured in
-# metadata.json is the authoritative count; nothing should trust
-# stack.shape[0]. NOTE: this makes the file a transfer footgun — naive cp/
-# drag-and-drop materializes the full preallocated size, so any packaging/
-# transfer step must use sparse-aware tools (tar --sparse, rsync --sparse,
-# cp --sparse=always).
-RAW_BURST_FPS_CEILING_ESTIMATE = 150
+# be fixed at creation time, and true achieved fps isn't known in advance, so
+# it's preallocated to an estimated ceiling rather than risk running out of
+# rows mid-burst.
+#
+# fps is exposure-bound, confirmed on hardware (~50/94fps at two tested
+# exposures — see PROJECT_STATE.md § 9 and the same fps ≈ 1e6/exposure_us
+# link used in calibration_panel.py's fps field), so the ceiling is computed
+# per-burst from the camera's current exposure setting rather than one flat
+# guess shared across all exposures. RAW_BURST_FPS_MARGIN is extra headroom
+# on top of that estimate; RAW_BURST_FRAME_BUFFER is a small flat buffer for
+# the last partial flush interval.
+#
+# Unwritten trailing rows are NOT sparse on disk in practice (confirmed via
+# stat: a preallocated file is fully materialized, not hole-punched), so
+# _trim_raw_stack() truncates each stack.npy down to its real frames_captured
+# size right after capture finishes rather than leaving the ceiling-sized
+# file around.
+RAW_BURST_FPS_MARGIN = 1.3
+RAW_BURST_FRAME_BUFFER = 50
 
 # How often (in frames) the writer thread flushes the memmap to disk and
 # checks free space. Piggybacks one cadence for both instead of a separate
@@ -56,6 +65,57 @@ MEMMAP_FLUSH_EVERY_N_FRAMES = 30
 # path already built for other writer failures, instead of crashing the
 # whole process.
 MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
+
+
+def _trim_raw_stack(stack_path: str, frames_captured: int) -> None:
+    """Truncate a preallocated raw *_stack.npy file in place, dropping the
+    unused ceiling-sized tail beyond `frames_captured` real frames.
+
+    Frames are stored row-major with the frame axis outermost, so every row
+    past frames_captured - 1 is one contiguous block at the end of the file
+    -- trimming never touches real frame bytes. Only the header's shape
+    field is rewritten, padded with spaces to occupy the exact same byte
+    length as before so data_offset doesn't move, and the file is then
+    truncated at the new end.
+    """
+    with open(stack_path, "r+b") as f:
+        magic = f.read(6)
+        if magic != np.lib.format.MAGIC_PREFIX:
+            raise ValueError(f"{stack_path} is not a valid .npy file")
+        major = f.read(1)[0]
+        f.read(1)  # minor version, unused
+        len_field_size = 2 if major == 1 else 4
+        hlen = int.from_bytes(f.read(len_field_size), "little")
+        header_text_offset = f.tell()
+        header_text = f.read(hlen).decode("latin1")
+        data_offset = f.tell()
+
+        header_dict = ast.literal_eval(header_text)
+        old_shape = header_dict["shape"]
+        dtype = np.dtype(header_dict["descr"])
+        new_shape = (frames_captured,) + tuple(old_shape[1:])
+
+        new_dict_str = (
+            "{'descr': " + repr(header_dict["descr"])
+            + ", 'fortran_order': " + repr(header_dict["fortran_order"])
+            + ", 'shape': " + repr(new_shape) + ", }"
+        )
+        pad_len = hlen - len(new_dict_str) - 1  # -1 for the trailing newline
+        if pad_len < 0:
+            raise ValueError(
+                f"Trimmed .npy header for {stack_path} doesn't fit in the "
+                f"original {hlen}-byte header slot"
+            )
+        new_header_text = new_dict_str + (" " * pad_len) + "\n"
+
+        f.seek(header_text_offset)
+        f.write(new_header_text.encode("latin1"))
+
+        row_elems = 1
+        for d in old_shape[1:]:
+            row_elems *= d
+        row_bytes = row_elems * dtype.itemsize
+        f.truncate(data_offset + frames_captured * row_bytes)
 
 
 class ExperimentRunner:
@@ -123,15 +183,13 @@ class ExperimentRunner:
         synchronous behaviour; `queue_full_stalls`/`queue_full_stall_s_total`
         in the returned metadata report how often/how long that happened.
 
-        The stack array is preallocated to `total_duration_s *
-        RAW_BURST_FPS_CEILING_ESTIMATE` rows since true achieved fps isn't
-        known in advance and the array's shape is fixed at creation time.
-        Unwritten trailing rows are sparse (no real disk cost) and are never
-        trimmed — `frames_captured` in the returned dict is the only
-        authoritative frame count; nothing should trust the array's own
-        `.shape[0]`. See the module-level comment on
-        `RAW_BURST_FPS_CEILING_ESTIMATE` for the transfer-tooling implication
-        of that.
+        The stack array is preallocated to `total_duration_s * fps_ceiling_est
+        * RAW_BURST_FPS_MARGIN` rows, where `fps_ceiling_est` is derived from
+        the camera's current exposure setting (fps is exposure-bound — see
+        the module-level comment), since true achieved fps isn't known in
+        advance and the array's shape is fixed at creation time. Once the
+        burst finishes, `_trim_raw_stack()` truncates the file down to
+        `frames_captured` real rows before this method returns.
 
         Per-frame timing records are also appended, as captured, to a
         `<label>_<timestamp>_frames.jsonl` sidecar so a crash/disconnect
@@ -153,7 +211,12 @@ class ExperimentRunner:
 
         w, h = self.camera.resolution
         dtype = np.uint8 if bit_depth <= 8 else np.uint16
-        max_frames = int(total_duration_s * RAW_BURST_FPS_CEILING_ESTIMATE) + 50
+        exposure_us = self.camera.get_exposure()
+        fps_ceiling_est = 1_000_000.0 / exposure_us
+        max_frames = (
+            int(total_duration_s * fps_ceiling_est * RAW_BURST_FPS_MARGIN)
+            + RAW_BURST_FRAME_BUFFER
+        )
         stack_filename = f"{label}_{timestamp}_stack.npy"
         stack_path = os.path.join(output_dir, stack_filename)
         stack = np.lib.format.open_memmap(
@@ -242,14 +305,17 @@ class ExperimentRunner:
                         # loop could queue many more frames before it next
                         # checks that flag, silently discarding captures that
                         # frames_captured would then over-report. Should
-                        # never fire on real hardware (the ceiling is well
-                        # above the camera's advertised max), but must be
-                        # deterministic if the estimate ever proves wrong.
+                        # never fire on real hardware (RAW_BURST_FPS_MARGIN
+                        # gives headroom above the exposure-derived estimate),
+                        # but must be deterministic if that estimate ever
+                        # proves wrong (e.g. exposure changed after this
+                        # burst's shape was already fixed).
                         raise RuntimeError(
                             f"Raw-burst preallocation ceiling ({max_frames} frames) "
                             f"reached before {total_duration_s}s elapsed for well "
-                            f"{label} — RAW_BURST_FPS_CEILING_ESTIMATE "
-                            f"({RAW_BURST_FPS_CEILING_ESTIMATE}) is too low for the "
+                            f"{label} — exposure-derived fps ceiling estimate "
+                            f"({fps_ceiling_est:.1f}fps @ {exposure_us}us exposure, "
+                            f"x{RAW_BURST_FPS_MARGIN} margin) is too low for the "
                             f"achieved capture rate."
                         )
                     consecutive_failures = 0
@@ -289,6 +355,14 @@ class ExperimentRunner:
             # already-captured frame, whether stopped normally or by the user.
             frame_queue.put(None)
             writer_thread.join()
+
+        # Close the memmap before truncating its backing file below — the
+        # writer thread already flushed it in its own finally block, but the
+        # mmap object (kept alive by the writer thread's closure) must be
+        # closed first or a truncate here could race a lingering mapping.
+        stack.flush()
+        stack._mmap.close()
+        _trim_raw_stack(stack_path, frame_idx)
 
         duration_actual = time.perf_counter() - start
         capture_stats = self.camera.get_capture_stats()
