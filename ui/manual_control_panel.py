@@ -253,6 +253,16 @@ class _DemoWindow(QWidget):
             return
         label, *_ = self._grid[self._row][self._col]
         self.well_lbl.setText(label)
+        self._update_nav_buttons()
+
+    def _update_nav_buttons(self):
+        if self._grid is None:
+            return
+        up_btn, down_btn, left_btn, right_btn = self._nav_buttons
+        up_btn.setEnabled(self._row > 0)
+        down_btn.setEnabled(self._row < self._rows - 1)
+        left_btn.setEnabled(self._col > 0)
+        right_btn.setEnabled(self._col < self._cols - 1)
 
     # ------------------------------------------------------------------
     # Well navigation
