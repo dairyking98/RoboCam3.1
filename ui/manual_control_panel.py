@@ -212,6 +212,10 @@ class _DemoWindow(QWidget):
         for b in (up_btn, down_btn, left_btn, right_btn):
             b.setStyleSheet(_NAV_BTN_STYLE)
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        up_btn.setToolTip("Move to well above (↑ arrow key)")
+        down_btn.setToolTip("Move to well below (↓ arrow key)")
+        left_btn.setToolTip("Move to well left (← arrow key)")
+        right_btn.setToolTip("Move to well right (→ arrow key)")
         nav.addWidget(up_btn,    0, 1)
         nav.addWidget(left_btn,  1, 0)
         nav.addWidget(right_btn, 1, 2)
@@ -223,11 +227,16 @@ class _DemoWindow(QWidget):
         self._nav_buttons = (up_btn, down_btn, left_btn, right_btn)
         row.addLayout(nav)
 
+        nav_hint = QLabel("(or arrow keys)")
+        nav_hint.setStyleSheet("color: #888; font-size: 10px;")
+        row.addWidget(nav_hint)
+
         row.addStretch()
 
-        self.laser_btn = QPushButton("Fire Laser")
+        self.laser_btn = QPushButton("Fire Laser (Space)")
         self.laser_btn.setStyleSheet(_LASER_IDLE_STYLE)
         self.laser_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.laser_btn.setToolTip("Fire the laser (spacebar also works)")
         self.laser_btn.clicked.connect(self._fire_laser)
         row.addWidget(self.laser_btn)
 
@@ -313,7 +322,7 @@ class _DemoWindow(QWidget):
         else:
             self._laser_state = "idle"
             self._laser_timer.stop()
-            self.laser_btn.setText("Fire Laser")
+            self.laser_btn.setText("Fire Laser (Space)")
             self.laser_btn.setStyleSheet(_LASER_IDLE_STYLE)
 
     # ------------------------------------------------------------------
