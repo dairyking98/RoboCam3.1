@@ -1,5 +1,6 @@
 import serial
 import serial.tools.list_ports
+import threading
 import time
 import re
 import logging
@@ -323,39 +324,46 @@ class MotionController:
         self.simulate = simulate
         self.backend = None
         self._homed = False
+        # Serializes all backend I/O — multiple UI/experiment threads can call
+        # into the same shared MotionController concurrently (e.g. rapid demo
+        # mode well-nav clicks), and the serial connection is not safe for
+        # interleaved writes/reads from multiple threads at once.
+        self._lock = threading.RLock()
         self.connect()
 
     def connect(self):
-        if self.backend and self.backend.is_connected:
-            self.backend.disconnect()
+        with self._lock:
+            if self.backend and self.backend.is_connected:
+                self.backend.disconnect()
 
-        if self.simulate:
-            self.backend = SimulationBackend()
-        else:
-            backend_type = self.config.get("hardware.motion_backend", "marlin").lower()
-            if backend_type == "klipper":
-                self.backend = KlipperBackend()
+            if self.simulate:
+                self.backend = SimulationBackend()
             else:
-                self.backend = MarlinBackend()
+                backend_type = self.config.get("hardware.motion_backend", "marlin").lower()
+                if backend_type == "klipper":
+                    self.backend = KlipperBackend()
+                else:
+                    self.backend = MarlinBackend()
 
-        self.backend.connect()
+            self.backend.connect()
 
-        # Infer homed state from position reported at connect.
-        # Marlin's power-on default is (0,0,0) before any G28 — treat that as
-        # "not homed". Also treat X==Y (e.g. 220,220) as not homed: that is the
-        # firmware's default park position, not a real post-home coordinate.
-        # A position where X != Y means the stage was actually moved after a
-        # previous home, so it is safe to continue without re-homing.
-        if self.simulate:
-            self._homed = True
-        else:
-            x, y, z = self.backend.X, self.backend.Y, self.backend.Z
-            not_homed = (x == 0.0 and y == 0.0 and z == 0.0) or (x == y)
-            self._homed = not not_homed
+            # Infer homed state from position reported at connect.
+            # Marlin's power-on default is (0,0,0) before any G28 — treat that as
+            # "not homed". Also treat X==Y (e.g. 220,220) as not homed: that is the
+            # firmware's default park position, not a real post-home coordinate.
+            # A position where X != Y means the stage was actually moved after a
+            # previous home, so it is safe to continue without re-homing.
+            if self.simulate:
+                self._homed = True
+            else:
+                x, y, z = self.backend.X, self.backend.Y, self.backend.Z
+                not_homed = (x == 0.0 and y == 0.0 and z == 0.0) or (x == y)
+                self._homed = not not_homed
 
     def disconnect(self):
-        if self.backend:
-            self.backend.disconnect()
+        with self._lock:
+            if self.backend:
+                self.backend.disconnect()
 
     @property
     def is_connected(self) -> bool:
@@ -373,18 +381,23 @@ class MotionController:
     def Z(self): return self.backend.Z
 
     def home(self):
-        self.backend.home()
-        self._homed = True
-        
+        with self._lock:
+            self.backend.home()
+            self._homed = True
+
     def update_position(self):
-        return self.backend.update_position()
-        
+        with self._lock:
+            return self.backend.update_position()
+
     def move_relative(self, X=None, Y=None, Z=None, speed=None):
-        self.backend.move_relative(X=X, Y=Y, Z=Z, speed=speed)
-        
+        with self._lock:
+            self.backend.move_relative(X=X, Y=Y, Z=Z, speed=speed)
+
     def move_absolute(self, X=None, Y=None, Z=None, speed=None):
-        self.backend.move_absolute(X=X, Y=Y, Z=Z, speed=speed)
+        with self._lock:
+            self.backend.move_absolute(X=X, Y=Y, Z=Z, speed=speed)
 
     def send_raw(self, command: str):
         """Send a raw G-code command directly to the backend (e.g. M18, M84)."""
-        self.backend.send_gcode(command)
+        with self._lock:
+            self.backend.send_gcode(command)
