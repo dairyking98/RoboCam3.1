@@ -42,6 +42,9 @@ DEFAULT_SESSION: Dict[str, Any] = {
         "qc_format": "jpg",
         "qc_duration": 5.0,
     },
+    "manual_control": {
+        "cal_file": "",
+    },
 }
 
 
