@@ -211,6 +211,7 @@ class _DemoWindow(QWidget):
         right_btn = QPushButton("►")
         for b in (up_btn, down_btn, left_btn, right_btn):
             b.setStyleSheet(_NAV_BTN_STYLE)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         nav.addWidget(up_btn,    0, 1)
         nav.addWidget(left_btn,  1, 0)
         nav.addWidget(right_btn, 1, 2)
@@ -226,13 +227,9 @@ class _DemoWindow(QWidget):
 
         self.laser_btn = QPushButton("Fire Laser")
         self.laser_btn.setStyleSheet(_LASER_IDLE_STYLE)
+        self.laser_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.laser_btn.clicked.connect(self._fire_laser)
         row.addWidget(self.laser_btn)
-
-        exit_btn = QPushButton("Exit (Esc)")
-        exit_btn.setStyleSheet(_NAV_BTN_STYLE)
-        exit_btn.clicked.connect(self.close)
-        row.addWidget(exit_btn)
 
         if self._grid is None:
             self.well_lbl.setText("--")
