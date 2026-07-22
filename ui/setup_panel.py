@@ -405,6 +405,13 @@ class SetupPanel(QWidget):
         self._home_warning.hide()
         layout.addWidget(self._home_warning, 3, 0, 1, 3)
 
+        # Error banner — shown when a Home All Axes attempt fails
+        self._home_error_lbl = QLabel()
+        self._home_error_lbl.setStyleSheet("color: #b00020; font-weight: bold;")
+        self._home_error_lbl.setWordWrap(True)
+        self._home_error_lbl.hide()
+        layout.addWidget(self._home_error_lbl, 4, 0, 1, 3)
+
         return grp
 
     def _build_connection_group(self) -> QGroupBox:
@@ -660,12 +667,18 @@ class SetupPanel(QWidget):
             return
         self.home_now_btn.setEnabled(False)
         self.home_now_btn.setText("Homing…")
+        self._home_error_lbl.hide()
         self._home_thread = _HomeThread(motion, self)
         self._home_thread.finished.connect(self._on_home_finished)
         self._home_thread.start()
 
     def _on_home_finished(self, success: bool, message: str):
         self.home_now_btn.setText("Home All Axes")
+        if success:
+            self._home_error_lbl.hide()
+        else:
+            self._home_error_lbl.setText(f"Homing failed: {message}")
+            self._home_error_lbl.show()
         self._refresh_status()
 
     def _connect_all(self):

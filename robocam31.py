@@ -1,3 +1,4 @@
+import logging
 import os
 import signal
 import sys
@@ -6,6 +7,15 @@ import sys
 # config file produce broken palette values in Qt 6 (e.g. gray highlight,
 # near-white highlighted-text that makes dropdown items invisible).
 os.environ.pop("QT_QPA_PLATFORMTHEME", None)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "robocam.log")),
+    ],
+)
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor, QPalette

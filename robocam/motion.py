@@ -55,7 +55,21 @@ class MarlinBackend(MotionBackend):
         try:
             self.serial_conn = serial.Serial(port, self.baud_rate, timeout=self.timeout)
             time.sleep(2)
+            boot_banner = self.serial_conn.read(self.serial_conn.in_waiting or 1)
             self.serial_conn.reset_input_buffer()
+            banner_text = boot_banner.decode("utf-8", errors="replace").strip()
+            if banner_text:
+                logger.info(f"[MotionCtrl] Boot banner from {port} @ {self.baud_rate}: {banner_text!r}")
+                if "grbl" in banner_text.lower():
+                    logger.warning(
+                        f"[MotionCtrl] Firmware identifies as GRBL, which this backend does not support "
+                        f"(expects Marlin or Klipper). Homing and G-code will not work correctly."
+                    )
+            else:
+                logger.info(
+                    f"[MotionCtrl] No boot banner received from {port} @ {self.baud_rate} within 2s "
+                    f"(firmware may not print one, or the baud rate may be wrong)."
+                )
             logger.info(f"[MotionCtrl] Connected to printer on {port}.")
         except serial.SerialException as e:
             raise ConnectionError(f"Failed to connect to motion controller on {port}: {e}")
@@ -96,7 +110,13 @@ class MarlinBackend(MotionBackend):
         
         while True:
             if time.time() - start_time > timeout:
-                raise TimeoutError(f"Timeout waiting for 'ok' from printer after {command!r}.")
+                port = self.serial_conn.port if self.serial_conn else "?"
+                raise TimeoutError(
+                    f"Timeout waiting for 'ok' from printer after {command!r} "
+                    f"(port={port}, baud={self.baud_rate}). "
+                    f"Check that the baud rate matches the firmware and that it is Marlin or Klipper "
+                    f"(GRBL is not supported)."
+                )
                 
             if self.serial_conn.in_waiting > 0:
                 raw = self.serial_conn.readline()
