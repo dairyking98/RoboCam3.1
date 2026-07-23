@@ -11,12 +11,15 @@ Connection   : Connect All / Disconnect All
 """
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import subprocess
 from pathlib import Path
 
 import serial.tools.list_ports
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -123,8 +126,8 @@ class _CameraEnumerator(QThread):
                                 "Raspberry Pi Camera — not detected (check CSI cable/adapter)",
                                 "picamera2", 0,
                             ))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Raspberry Pi camera detection failed: %r", e, exc_info=True)
 
             # Player One cameras
             try:
@@ -149,8 +152,8 @@ class _CameraEnumerator(QThread):
                                 devices.append((f"PlayerOne #{i} — USB permission denied (install udev rules)", "playerone", i))
                     finally:
                         sys.path[:] = prev
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("PlayerOne camera detection failed: %r", e, exc_info=True)
 
             # OpenCV webcams (indices 0–3)
             try:
@@ -160,11 +163,11 @@ class _CameraEnumerator(QThread):
                     if cap.isOpened():
                         devices.append((f"USB / Webcam (index {idx})", "cv2", idx))
                     cap.release()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("OpenCV webcam detection failed: %r", e, exc_info=True)
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Camera enumeration thread failed: %r", e, exc_info=True)
 
         if not devices:
             devices.append(("No cameras detected", "cv2", 0))
