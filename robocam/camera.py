@@ -82,6 +82,10 @@ def _ensure_pypoa_patched_for_linux(sdk_python_path: str) -> bool:
 def get_playerone_camera_count() -> int:
     sdk_path = get_playerone_sdk_python_path()
     if sdk_path is None:
+        logger.warning(
+            "PlayerOne SDK not found (checked project root, $PLAYERONE_SDK_PYTHON, "
+            "and ~/PlayerOne_Camera_SDK_Linux_*/python) - skipping PlayerOne camera detection."
+        )
         return 0
     _ensure_pypoa_patched_for_linux(sdk_path)
     try:
@@ -91,10 +95,13 @@ def get_playerone_camera_count() -> int:
         try:
             import pyPOACamera as poa
             count = poa.GetCameraCount()
-            return int(count) if count is not None else 0
+            count = int(count) if count is not None else 0
+            logger.info(f"PlayerOne SDK loaded from {sdk_path}; GetCameraCount() = {count}")
+            return count
         finally:
             sys.path[:] = prev
-    except Exception:
+    except Exception as e:
+        logger.warning(f"PlayerOne camera detection failed (sdk_path={sdk_path}): {e!r}")
         return 0
 
 class Camera:
