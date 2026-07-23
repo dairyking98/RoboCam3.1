@@ -31,9 +31,14 @@ import sys
 
 def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     logging.basicConfig(
         format="%(levelname)s %(name)s: %(message)s",
         level=level,
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(os.path.join(project_root, "robocam.log")),
+        ],
     )
 
 
