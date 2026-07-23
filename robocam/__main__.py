@@ -37,7 +37,7 @@ def _setup_logging(verbose: bool) -> None:
         level=level,
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(os.path.join(project_root, "robocam.log")),
+            logging.FileHandler(os.path.join(project_root, "robocam.log"), mode="w"),
         ],
     )
 

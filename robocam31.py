@@ -13,7 +13,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "robocam.log")),
+        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "robocam.log"), mode="w"),
     ],
 )
 
