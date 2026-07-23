@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import glob
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (
@@ -592,11 +595,13 @@ class ExperimentPanel(QWidget):
     def _start_experiment(self):
         runner = hw_state.get_runner()
         if runner is None:
+            logger.warning("Start Experiment blocked: motion controller not connected (hw_state.get_runner() is None).")
             QMessageBox.critical(self, "Error", "Motion controller not connected.")
             return
 
         motion = hw_state.get_motion()
         if motion is not None and not motion.is_homed:
+            logger.warning("Start Experiment blocked: printer has not been homed this session.")
             QMessageBox.warning(
                 self, "Home Required",
                 "The printer has not been homed this session.\n\n"
@@ -606,6 +611,7 @@ class ExperimentPanel(QWidget):
 
         cal_file = self.cal_combo.currentText()
         if not cal_file:
+            logger.warning("Start Experiment blocked: no calibration file selected.")
             QMessageBox.critical(self, "Error", "Select a calibration file.")
             return
 
@@ -616,10 +622,12 @@ class ExperimentPanel(QWidget):
         try:
             positions, labels = self._load_cal_positions(cal_path)
         except Exception as e:
+            logger.warning(f"Start Experiment blocked: failed to load calibration {cal_path!r}: {e!r}", exc_info=True)
             QMessageBox.critical(self, "Error", f"Failed to load calibration: {e}")
             return
 
         if not positions:
+            logger.warning(f"Start Experiment blocked: calibration file {cal_path!r} has no well positions.")
             QMessageBox.critical(self, "Error",
                 "Calibration file has no well positions.\n"
                 "Re-save it from the Calibration tab.")
@@ -627,6 +635,7 @@ class ExperimentPanel(QWidget):
 
         selected = self.well_grid.get_selected_indices()
         if not selected:
+            logger.warning("Start Experiment blocked: no wells selected.")
             QMessageBox.critical(self, "Error", "No wells selected.")
             return
 

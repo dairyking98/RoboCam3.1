@@ -8,8 +8,10 @@ import sys
 # near-white highlighted-text that makes dropdown items invisible).
 os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 
+_verbose = "--verbose" in sys.argv or "-v" in sys.argv
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG if _verbose else logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),

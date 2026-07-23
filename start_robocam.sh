@@ -23,6 +23,6 @@ unset QT_QPA_PLATFORMTHEME
 
 # Run the application
 echo "Launching main application..."
-python3 robocam31.py
+python3 robocam31.py "$@"
 
 echo "=== RoboCam 3.1 Closed ==="
