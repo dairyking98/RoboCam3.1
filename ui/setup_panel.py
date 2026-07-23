@@ -622,7 +622,7 @@ class SetupPanel(QWidget):
             hw_state.rebuild_runner()
             self.camera_connected.emit()
         except Exception as e:
-            print(f"[Setup] Camera reconnect failed: {e}")
+            logger.warning(f"[Setup] Camera reconnect failed: {e!r}", exc_info=True)
         self._refresh_status()
 
     def _apply_printer(self):
@@ -654,7 +654,7 @@ class SetupPanel(QWidget):
             hw_state.set_motion(mc)
             self.motion_connected.emit()
         except Exception as e:
-            print(f"[Setup] Printer reconnect failed: {e}")
+            logger.warning(f"[Setup] Printer reconnect failed: {e!r}", exc_info=True)
         self._refresh_status()
 
     def _apply_laser(self):
