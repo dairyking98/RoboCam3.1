@@ -10,11 +10,16 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Try to import Picamera2 as fallback/alternative
+# Try to import Picamera2 as fallback/alternative. Catches more than
+# ImportError because a broken picamera2 install (e.g. a numpy ABI
+# mismatch in its simplejpeg dependency) raises other exception types
+# deep in its import chain — letting one propagate here would take down
+# this whole module, including PlayerOne detection, as collateral damage.
 try:
     from picamera2 import Picamera2
     PICAM2_AVAILABLE = True
-except ImportError:
+except Exception as e:
+    logger.warning(f"picamera2 unavailable, disabling Pi camera support: {e!r}")
     PICAM2_AVAILABLE = False
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
