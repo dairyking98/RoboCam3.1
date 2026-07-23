@@ -543,12 +543,19 @@ class ExperimentPanel(QWidget):
         chosen = QFileDialog.getExistingDirectory(self, "Select Output Folder", current)
         if not chosen:
             return
+        try:
+            os.makedirs(chosen, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Output directory {chosen!r} is not usable: {e!r}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Can't use that folder: {e}")
+            return
         get_config().set("paths.output_dir", chosen)
         self.out_dir_lbl.setText(chosen)
-        os.makedirs(chosen, exist_ok=True)
-        runner = hw_state.get_runner()
-        if runner:
-            runner.out_dir = chosen
+        # The runner was previously None (e.g. the old path wasn't writable),
+        # or already exists and just needs the new path picked up - either
+        # way, rebuilding from current hw_state is what makes the change take
+        # effect without requiring a full Connect All.
+        hw_state.rebuild_runner()
 
     # ------------------------------------------------------------------
     # Calibration loader (format-agnostic)
