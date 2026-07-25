@@ -17,7 +17,7 @@ from robocam.session import session_manager
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, simulate: bool = False):
         super().__init__()
         self.setWindowTitle("RoboCam 3.1")
         self.setGeometry(100, 100, 1440, 900)
@@ -33,7 +33,7 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         root.addWidget(self.tabs)
 
-        self.setup_panel          = SetupPanel()
+        self.setup_panel          = SetupPanel(simulate=simulate)
         self.motion_profiles_panel = MotionProfilesPanel()
         self.calibration_panel    = CalibrationPanel()
         self.experiment_panel     = ExperimentPanel(

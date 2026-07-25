@@ -9,6 +9,7 @@ import sys
 os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 
 _verbose = "--verbose" in sys.argv or "-v" in sys.argv
+_simulate = "--simulate" in sys.argv or "-s" in sys.argv
 
 logging.basicConfig(
     level=logging.DEBUG if _verbose else logging.INFO,
@@ -73,7 +74,7 @@ def main():
     _sigint_timer.start(200)
     _sigint_timer.timeout.connect(lambda: None)
 
-    window = MainWindow()
+    window = MainWindow(simulate=_simulate)
     window.show()
     sys.exit(app.exec())
 
