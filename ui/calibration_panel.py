@@ -157,6 +157,16 @@ class CalibrationPanel(QWidget):
         c3l.addWidget(self.well_map, stretch=1)
         splitter.addWidget(col3)
 
+        # Dirty-tracking for the active calibration file: cleared on a
+        # successful save/load, set on any corner/dimension/pattern edit
+        # after that. get_active_calibration_path() returns None while
+        # dirty so a stale-but-valid-looking file (or unsaved in-memory
+        # edits) is never mistaken for the current calibration by callers
+        # like the Experiment tab.
+        self._active_cal_path: Optional[str] = None
+        self._cal_dirty: bool = False
+        self._loading_calibration: bool = False
+
         splitter.setSizes([540, 360, 300])
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
@@ -191,12 +201,14 @@ class CalibrationPanel(QWidget):
 
     def _load_session(self):
         s = session_manager.get("calibration")
+        self._loading_calibration = True
         self.cols_spin.setValue(int(s.get("cols", 12)))
         self.rows_spin.setValue(int(s.get("rows", 8)))
         pattern_idx = self.pattern_combo.findText(s.get("pattern", "Raster"))
         if pattern_idx >= 0:
             self.pattern_combo.setCurrentIndex(pattern_idx)
         self.cal_name_edit.setText(s.get("cal_name", "calibration"))
+        self._loading_calibration = False
         self.exp_spin.setValue(int(s.get("exp_ms", 20)))
         self.gain_spin.setValue(int(s.get("gain", 100)))
         self.hqi_check.setChecked(bool(s.get("hqi_enabled", False)))
@@ -224,6 +236,8 @@ class CalibrationPanel(QWidget):
         last_cal = s.get("last_cal_path", "")
         if last_cal and os.path.isfile(last_cal):
             self._load_calibration(last_cal)
+        self._update_cal_status_label()
+        self._refresh_cal_dropdown()
 
     def _save_session(self):
         session_manager.update("calibration", {
@@ -450,17 +464,20 @@ class CalibrationPanel(QWidget):
         self.cols_spin = QSpinBox()
         self.cols_spin.setRange(1, 48)
         self.cols_spin.setValue(12)
+        self.cols_spin.valueChanged.connect(self._mark_dirty)
         layout.addWidget(self.cols_spin, 0, 1)
 
         layout.addWidget(QLabel("Rows (Y):"), 1, 0)
         self.rows_spin = QSpinBox()
         self.rows_spin.setRange(1, 32)
         self.rows_spin.setValue(8)
+        self.rows_spin.valueChanged.connect(self._mark_dirty)
         layout.addWidget(self.rows_spin, 1, 1)
 
         layout.addWidget(QLabel("Pattern:"), 2, 0)
         self.pattern_combo = QComboBox()
         self.pattern_combo.addItems([WellPlate.PATTERN_RASTER, WellPlate.PATTERN_SNAKE])
+        self.pattern_combo.currentIndexChanged.connect(self._mark_dirty)
         layout.addWidget(self.pattern_combo, 2, 1)
 
         layout.addWidget(QLabel("Name:"), 3, 0)
@@ -476,6 +493,14 @@ class CalibrationPanel(QWidget):
     def _build_save_load_group(self) -> QGroupBox:
         grp = QGroupBox("Calibration File")
         root = QVBoxLayout(grp)
+
+        combo_row = QHBoxLayout()
+        combo_row.addWidget(QLabel("Saved:"))
+        self.cal_file_combo = QComboBox()
+        self.cal_file_combo.setMinimumWidth(150)
+        self.cal_file_combo.activated.connect(self._on_cal_combo_activated)
+        combo_row.addWidget(self.cal_file_combo, stretch=1)
+        root.addLayout(combo_row)
 
         btn_row = QHBoxLayout()
         save_btn = QPushButton("Update && Save…")
@@ -705,6 +730,7 @@ class CalibrationPanel(QWidget):
                 f"X:{pos[0]:.2f}  Y:{pos[1]:.2f}  Z:{pos[2]:.2f}"
             )
             self.corners[name]["label"].setStyleSheet("color: green;")
+            self._mark_dirty()
             self._try_auto_generate_well_map()
             self.corners_changed.emit()
         except Exception as e:
@@ -769,6 +795,56 @@ class CalibrationPanel(QWidget):
     def _get_cal_dir(self) -> Path:
         return _cal_dir_from_config()
 
+    def get_active_calibration_path(self) -> Optional[str]:
+        """The saved/loaded calibration file currently in effect, or None if
+        there isn't one — either nothing has been saved/loaded yet, or the
+        corners/dimensions/pattern have been edited since (self._cal_dirty).
+        Consumers (e.g. the Experiment tab) must treat None the same as "no
+        calibration": neither a stale saved file nor unsaved live edits are
+        a valid stand-in for what's actually on screen right now.
+        """
+        if self._cal_dirty:
+            return None
+        return self._active_cal_path
+
+    def _mark_dirty(self, *_args):
+        if self._loading_calibration:
+            return
+        self._cal_dirty = True
+        self._update_cal_status_label()
+        self.corners_changed.emit()
+
+    def _mark_clean(self, path: str):
+        self._cal_dirty = False
+        self._active_cal_path = path
+        self._update_cal_status_label()
+        self._refresh_cal_dropdown()
+        self.corners_changed.emit()
+
+    def _update_cal_status_label(self):
+        name = Path(self._active_cal_path).name if self._active_cal_path else "(none)"
+        if self._cal_dirty:
+            self._cal_status_lbl.setText(f"{name} — NOT SAVED")
+            self._cal_status_lbl.setStyleSheet("font-size: 10px; color: orange;")
+        else:
+            self._cal_status_lbl.setText(name)
+            self._cal_status_lbl.setStyleSheet("font-size: 10px; color: green;")
+
+    def _refresh_cal_dropdown(self):
+        files = sorted(p.name for p in self._get_cal_dir().glob("*.json"))
+        current = Path(self._active_cal_path).name if self._active_cal_path else ""
+        self.cal_file_combo.blockSignals(True)
+        self.cal_file_combo.clear()
+        self.cal_file_combo.addItems(files)
+        if current in files:
+            self.cal_file_combo.setCurrentText(current)
+        self.cal_file_combo.blockSignals(False)
+
+    def _on_cal_combo_activated(self, index: int):
+        name = self.cal_file_combo.itemText(index)
+        if name:
+            self._load_calibration(str(self._get_cal_dir() / name))
+
     def _save_calibration(self):
         corners = {n: self.corners[n]["position"] for n in CORNER_NAMES}
         if any(v is None for v in corners.values()):
@@ -804,8 +880,7 @@ class CalibrationPanel(QWidget):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            self._cal_status_lbl.setText(f"Saved: {Path(path).name}")
-            self._cal_status_lbl.setStyleSheet("font-size: 10px; color: green;")
+            self._mark_clean(path)
         except Exception as e:
             QMessageBox.critical(self, "Save Error", str(e))
 
@@ -825,6 +900,7 @@ class CalibrationPanel(QWidget):
             QMessageBox.critical(self, "Load Error", str(e))
             return
 
+        self._loading_calibration = True
         corners = data.get("corners", {})
         for name in CORNER_NAMES:
             pos = corners.get(name)
@@ -845,9 +921,8 @@ class CalibrationPanel(QWidget):
             self.cal_name_edit.setText(data["name"])
 
         self._generate_well_map()
-        self._cal_status_lbl.setText(f"Loaded: {Path(path).name}")
-        self._cal_status_lbl.setStyleSheet("font-size: 10px; color: green;")
-        self.corners_changed.emit()
+        self._loading_calibration = False
+        self._mark_clean(path)
         # Persist the loaded path so it can be auto-restored next session
         session_manager.update("calibration", {"last_cal_path": str(path)})
         session_manager.save()

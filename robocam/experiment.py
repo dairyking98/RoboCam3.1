@@ -450,6 +450,10 @@ class ExperimentRunner:
                         hw_state.set_laser(laser_controller)
                         laser_owned_here = True
 
+                wells_captured = 0
+                total_capture_failures = {"lock_timeout": 0, "sdk_timeout_or_error": 0}
+                total_dropped_frames = 0
+
                 for i, (pos, label) in enumerate(zip(positions, labels)):
                     if not self.running:
                         self.status_msg = "Experiment stopped by user."
@@ -516,6 +520,23 @@ class ExperimentRunner:
                         with open(meta_path, "w", encoding="utf-8") as mf:
                             json.dump(burst_meta, mf, indent=2)
 
+                        wells_captured += 1
+                        for k in total_capture_failures:
+                            total_capture_failures[k] += burst_meta["capture_failures"].get(k, 0)
+                        total_dropped_frames += burst_meta["sdk_dropped_frames"]
+
+                        logger.debug(
+                            f"{label} capture summary: {burst_meta['frames_captured']} frames, "
+                            f"{burst_meta['duration_actual_s']:.3f}s actual vs "
+                            f"{burst_meta['duration_requested_s']:.3f}s requested "
+                            f"({burst_meta['fps_average']:.2f} fps avg), "
+                            f"laser_events={burst_meta['laser_events']}, "
+                            f"capture_failures={burst_meta['capture_failures']}, "
+                            f"sdk_dropped_frames={burst_meta['sdk_dropped_frames']}, "
+                            f"queue_full_stalls={burst_meta['queue_full_stalls']} "
+                            f"({burst_meta['queue_full_stall_s_total']:.3f}s total)"
+                        )
+
                     else:
                         # Standard still image
                         fmt = (image_format or "jpg").lower().lstrip(".")
@@ -527,6 +548,8 @@ class ExperimentRunner:
                                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                             cv2.imwrite(img_path, frame)
                             self.last_written_image_path = img_path
+                            wells_captured += 1
+                            logger.debug(f"{label} capture summary: wrote {img_path}")
                         else:
                             logger.warning(f"Failed to capture frame for {label}")
 
@@ -537,6 +560,11 @@ class ExperimentRunner:
             if self.running:
                 self.status_msg = "Experiment finished."
                 logger.info(self.status_msg)
+                logger.debug(
+                    f"Experiment summary: {wells_captured}/{len(positions)} wells captured, "
+                    f"total capture_failures={total_capture_failures}, "
+                    f"total sdk_dropped_frames={total_dropped_frames}"
+                )
                 if callback:
                     callback(self.status_msg)
 

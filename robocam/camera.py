@@ -559,7 +559,12 @@ class Camera:
                 # method re-acquires _sdk_lock, which would deadlock since we're
                 # already holding it here (threading.Lock is not reentrant).
                 _, exposure_us, _ = poa.GetConfig(cid, poa.POAConfig.POA_EXPOSURE)
-                timeout_ms = min(200, max(20, int(exposure_us) // 1000 + 50))
+                # Bounded above so a stalled/disconnected camera still returns
+                # control to the caller reasonably often (see PROJECT_STATE.md
+                # § 9), but must exceed the exposure itself - exposures run up
+                # to 2000ms (calibration_panel.py exp_spin range), so a flat
+                # 200ms cap was timing out on legitimately long exposures.
+                timeout_ms = min(2500, max(20, int(exposure_us) // 1000 + 100))
                 err = poa.GetImageData(cid, self._po_frame_buf, timeout_ms)
                 if err != poa.POAErrors.POA_OK:
                     self._stat_sdk_timeout_or_error += 1
