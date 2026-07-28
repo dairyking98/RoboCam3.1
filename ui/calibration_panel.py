@@ -880,9 +880,17 @@ class CalibrationPanel(QWidget):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            self._mark_clean(path)
         except Exception as e:
             QMessageBox.critical(self, "Save Error", str(e))
+            return
+        # Saving doesn't automatically make this the loaded calibration
+        # (e.g. saving under a new name while a different file is active) —
+        # load it back so the active path, well map, and persisted
+        # last_cal_path all reflect what was just saved.
+        if self.get_active_calibration_path() != path:
+            self._load_calibration(path)
+        else:
+            self._mark_clean(path)
 
     def _load_calibration(self, path: Optional[str] = None):
         if not path:
