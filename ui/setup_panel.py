@@ -205,9 +205,10 @@ class SetupPanel(QWidget):
     camera_connected = Signal()
     motion_connected = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, simulate: bool = False):
         super().__init__(parent)
         self._cfg = get_config()
+        self._simulate = simulate
         self._camera_devices: list[tuple] = []  # (label, backend, dev_idx[, max_w, max_h])
 
         scroll = QScrollArea(self)
@@ -614,7 +615,7 @@ class SetupPanel(QWidget):
             from robocam.camera import Camera
             cam = Camera(
                 resolution=self._pending_cam_res,
-                simulate=False,
+                simulate=self._simulate,
                 backend=self._pending_cam_backend,
                 device_index=self._pending_cam_idx,
             )
@@ -650,7 +651,7 @@ class SetupPanel(QWidget):
 
         try:
             from robocam.motion import MotionController
-            mc = MotionController(simulate=False)
+            mc = MotionController(simulate=self._simulate)
             hw_state.set_motion(mc)
             self.motion_connected.emit()
         except Exception as e:

@@ -151,6 +151,7 @@ class ExperimentPanel(QWidget):
         self._refresh_presets()
         self._load_session()
         self._update_mode_visibility()
+        self._update_active_cal_label()
 
         # Auto-save on every field change so a crash doesn't lose the session
         self.name_edit.textChanged.connect(self._autosave)
@@ -181,8 +182,24 @@ class ExperimentPanel(QWidget):
         self.name_edit = QLineEdit("my_experiment")
         layout.addWidget(self.name_edit, row, 1); row += 1
 
-        layout.addWidget(QLabel("Calibration file:"), row, 0)
-        cal_row = QHBoxLayout()
+        layout.addWidget(QLabel("Calibration:"), row, 0)
+        self.active_cal_lbl = QLabel("(none)")
+        self.active_cal_lbl.setWordWrap(True)
+        self.active_cal_lbl.setStyleSheet("color: gray;")
+        layout.addWidget(self.active_cal_lbl, row, 1); row += 1
+
+        # By default the experiment always uses whatever calibration is
+        # currently loaded+saved in the Calibration tab (1:1, kept in sync
+        # live via sync_from_calibration()) so the two can't silently drift
+        # apart. Override opts back into picking a specific saved file.
+        self.override_cal_chk = QCheckBox("Override (use a different saved file)")
+        self.override_cal_chk.setChecked(False)
+        self.override_cal_chk.toggled.connect(self._on_override_cal_toggled)
+        layout.addWidget(self.override_cal_chk, row, 0, 1, 2); row += 1
+
+        self._cal_override_row = QWidget()
+        cal_row = QHBoxLayout(self._cal_override_row)
+        cal_row.setContentsMargins(0, 0, 0, 0)
         self.cal_combo = QComboBox()
         self.cal_combo.setMinimumWidth(150)
         cal_row.addWidget(self.cal_combo)
@@ -190,7 +207,8 @@ class ExperimentPanel(QWidget):
         refresh_cal_btn.setFixedWidth(28)
         refresh_cal_btn.clicked.connect(self._refresh_cals)
         cal_row.addWidget(refresh_cal_btn)
-        layout.addLayout(cal_row, row, 1); row += 1
+        self._cal_override_row.setVisible(False)
+        layout.addWidget(self._cal_override_row, row, 0, 1, 2); row += 1
 
         layout.addWidget(QLabel("Mode:"), row, 0)
         self.mode_combo = QComboBox()
@@ -393,6 +411,7 @@ class ExperimentPanel(QWidget):
 
     def sync_from_calibration(self):
         """Called by MainWindow when calibration corners or dimensions change."""
+        self._update_active_cal_label()
         if self._cal_panel is None:
             return
         if not self._cal_panel.has_well_map():
@@ -403,6 +422,31 @@ class ExperimentPanel(QWidget):
             self._update_sel_count()
             self._well_placeholder.hide()
             self._well_scroll.show()
+
+    def _update_active_cal_label(self):
+        """Reflect the Calibration tab's currently active (loaded+saved,
+        not dirty) calibration file — the one that will actually be used
+        by _start_experiment() when Override is unchecked."""
+        if self._cal_panel is None:
+            return
+        path = self._cal_panel.get_active_calibration_path()
+        if path:
+            self.active_cal_lbl.setText(Path(path).name)
+            self.active_cal_lbl.setStyleSheet("color: green;")
+        elif getattr(self._cal_panel, "_cal_dirty", False):
+            self.active_cal_lbl.setText(
+                "⚠ Calibration tab has unsaved changes — save it first"
+            )
+            self.active_cal_lbl.setStyleSheet("color: #cc7a00;")
+        else:
+            self.active_cal_lbl.setText(
+                "⚠ No calibration loaded — load/save one in the Calibration tab"
+            )
+            self.active_cal_lbl.setStyleSheet("color: #cc7a00;")
+
+    def _on_override_cal_toggled(self, checked: bool):
+        self._cal_override_row.setVisible(checked)
+        self._autosave()
 
     def _refresh_cals(self):
         cfg = get_config()
@@ -516,6 +560,7 @@ class ExperimentPanel(QWidget):
             cal_idx = self.cal_combo.findText(cal)
             if cal_idx >= 0:
                 self.cal_combo.setCurrentIndex(cal_idx)
+        self.override_cal_chk.setChecked(bool(s.get("use_cal_override", False)))
 
     def _autosave(self, *_):
         self._save_session()
@@ -532,6 +577,7 @@ class ExperimentPanel(QWidget):
             "laser_on": self.laser_on_spin.value(),
             "post": self.post_spin.value(),
             "cal_file": self.cal_combo.currentText(),
+            "use_cal_override": self.override_cal_chk.isChecked(),
         })
 
     # ------------------------------------------------------------------
@@ -616,16 +662,27 @@ class ExperimentPanel(QWidget):
             )
             return
 
-        cal_file = self.cal_combo.currentText()
-        if not cal_file:
-            logger.warning("Start Experiment blocked: no calibration file selected.")
-            QMessageBox.critical(self, "Error", "Select a calibration file.")
-            return
+        if self.override_cal_chk.isChecked():
+            cal_file = self.cal_combo.currentText()
+            if not cal_file:
+                logger.warning("Start Experiment blocked: no calibration file selected (override).")
+                QMessageBox.critical(self, "Error", "Select a calibration file.")
+                return
+            cfg = get_config()
+            cal_path = os.path.join(
+                cfg.get("paths.calibration_dir", "config/calibrations"), cal_file
+            )
+        else:
+            cal_path = self._cal_panel.get_active_calibration_path() if self._cal_panel else None
+            if not cal_path:
+                if self._cal_panel is not None and getattr(self._cal_panel, "_cal_dirty", False):
+                    msg = "The Calibration tab has unsaved changes. Save it before starting the experiment."
+                else:
+                    msg = "No calibration is loaded. Load or save one in the Calibration tab first."
+                logger.warning(f"Start Experiment blocked: {msg}")
+                QMessageBox.critical(self, "Error", msg)
+                return
 
-        cfg = get_config()
-        cal_path = os.path.join(
-            cfg.get("paths.calibration_dir", "config/calibrations"), cal_file
-        )
         try:
             positions, labels = self._load_cal_positions(cal_path)
         except Exception as e:
