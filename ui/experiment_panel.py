@@ -118,7 +118,7 @@ class ExperimentPanel(QWidget):
         ws_l.addWidget(self._build_well_selection_group())
         col1.addWidget(well_sel_widget)
 
-        col1.setStretchFactor(0, 1)
+        col1.setStretchFactor(0, 2)
         col1.setStretchFactor(1, 1)
         col1.setCollapsible(0, False)
         splitter.addWidget(col1)
@@ -177,14 +177,14 @@ class ExperimentPanel(QWidget):
         super().showEvent(event)
         # First real show is the earliest point the splitters have their
         # actual laid-out geometry (QSplitter.setSizes() called any earlier
-        # falls back to children's sizeHint()s instead of an even split).
+        # falls back to children's sizeHint()s instead of the ratio below).
         # Only done once so it doesn't clobber a manual resize on later
         # tab switches.
         if not self._did_initial_split:
             self._did_initial_split = True
             w, h = self._h_splitter.width(), self._v_splitter.height()
             self._h_splitter.setSizes([w // 2, w - w // 2])
-            self._v_splitter.setSizes([h // 2, h - h // 2])
+            self._v_splitter.setSizes([h * 2 // 3, h - h * 2 // 3])
 
     def closeEvent(self, event):
         self._grabber.stop()
