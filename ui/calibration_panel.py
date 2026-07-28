@@ -135,8 +135,9 @@ class CalibrationPanel(QWidget):
         self.well_map.well_clicked.connect(self._goto_xyz)
         col1.addWidget(self.well_map)
 
-        col1.setStretchFactor(0, 2)
+        col1.setStretchFactor(0, 1)
         col1.setStretchFactor(1, 1)
+        col1.setSizes([1, 1])
         col1.setCollapsible(0, False)
         splitter.addWidget(col1)
 

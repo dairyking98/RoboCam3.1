@@ -118,8 +118,9 @@ class ExperimentPanel(QWidget):
         ws_l.addWidget(self._build_well_selection_group())
         col1.addWidget(well_sel_widget)
 
-        col1.setStretchFactor(0, 2)
+        col1.setStretchFactor(0, 1)
         col1.setStretchFactor(1, 1)
+        col1.setSizes([1, 1])
         col1.setCollapsible(0, False)
         splitter.addWidget(col1)
 
