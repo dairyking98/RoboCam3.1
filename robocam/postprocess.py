@@ -256,7 +256,12 @@ def process_well(
                 t_ms      = int(fi["time_offset_s"] * 1_000)
                 laser_str = "laser-on" if is_on else "laser-off"
                 img_name  = f"{well}_{fi['frame_index']:05d}_{t_ms:06d}ms_{laser_str}.png"
-                cv2.imwrite(str(img_dir / img_name), bgr)
+                # PNG color-type metadata is unambiguous (unlike H.264 chroma
+                # flags, which decoders resynthesize to RGB on playback) — so
+                # this is what actually makes Fiji's Image Sequence importer
+                # produce an 8-bit stack for mono sensors, not the mp4 fix above.
+                img_out = bgr[:, :, 0] if is_mono else bgr
+                cv2.imwrite(str(img_dir / img_name), img_out)
 
             if do_video:
                 vid_frame = bgr.copy()
