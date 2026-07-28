@@ -366,13 +366,10 @@ class SimulationBackend(MotionBackend):
     def __init__(self):
         self.X, self.Y, self.Z = 0.0, 0.0, 0.0
         self._connected = False
-        # Plausible Marlin defaults, purely so the Motion Profiles UI has
-        # something to show/edit without real hardware.
-        self._profiles = {
-            "max_feed_x": 500.0, "max_feed_y": 500.0, "max_feed_z": 5.0,
-            "max_accel_x": 500.0, "max_accel_y": 500.0, "max_accel_z": 100.0,
-            "jerk_x": 10.0, "jerk_y": 10.0, "jerk_z": 0.4,
-        }
+        # Empty until apply_profiles() is called — motion profile values
+        # are unknown until read from (or set on) a real printer, so
+        # simulate mode shouldn't invent plausible-looking numbers either.
+        self._profiles: dict = {}
         
     @property
     def is_connected(self) -> bool:

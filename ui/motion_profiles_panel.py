@@ -3,16 +3,34 @@ Motion Profiles Panel — read/edit/write Marlin feed-rate, acceleration,
 and jerk settings (M203 / M201 / M205), plus named presets.
 
 Slider format ported from RoboCam-Suite 2.0 (label | slider | spinbox |
-default marker), simplified: no extruder axis (this rig has none),
+ghost-tick marker), simplified: no extruder axis (this rig has none),
 Marlin only — Klipper has no equivalent gcode for these settings — and
 X/Y are always chained into a single slider rather than two rows with
 a "Link X=Y" checkbox, since this stage never needs them independent.
 
+Slider ranges are the actual M203/M201/M205 edit ceilings from
+Creality's shipped Ender-5 S1 Marlin firmware (Configuration.h,
+LIMITED_MAX_FR_EDITING / LIMITED_MAX_ACCEL_EDITING / LIMITED_JERK_EDITING
+— MARRY_HIGHT_SPEED variant, which is what ships): M203 X/Y up to 600
+mm/s (Z 20), M201 X/Y up to 2000 mm/s² (Z 200), M205 X/Y up to 10 mm/s
+(Z 0.6). Sending a value above these gets silently clamped by the
+firmware anyway, so there's no point letting the slider go higher.
+Note the firmware's own boot-time defaults (feed 500/20, accel 3000/100,
+jerk 15/0.4) actually exceed some of these edit ceilings — a real
+firmware quirk, not a bug here.
+
 Presets (save/load named slider configurations to
 config/motion_profile_presets/<name>.json) follow the same convention
 as ui/experiment_panel.py's Experiment Presets group, so profiles can
-be prepared and saved without a printer connected, then pushed to
-hardware later with Apply.
+be prepared and saved without a printer connected. Loading a preset
+sends it to the printer immediately (same as Apply) rather than just
+populating the sliders — motion profiles are not known to reliably
+persist across a printer power cycle, so anything meant to take effect
+is pushed as gcode right away instead of sitting unsent in the UI. The
+same reasoning applies on (re)connect: if a profile was already
+read/applied/loaded earlier in this session, it's re-sent then too, in
+case the printer's actual state drifted (e.g. a power cycle reset it
+to firmware defaults) while disconnected.
 """
 from __future__ import annotations
 
@@ -32,18 +50,20 @@ from ui.profile_slider import ProfileSliderRow
 
 # Each group is (title, [(keys, label, lo, hi, step, decimals, suffix), ...]).
 # `keys` has two entries for a chained X/Y row, one for a single axis.
+# Ranges are the real Ender-5 S1 firmware M203/M201/M205 edit ceilings
+# (see module docstring) — not arbitrary/generic values.
 _GROUPS = [
     ("Max Feed Rate  (M203, mm/s)", [
-        (("max_feed_x", "max_feed_y"), "XY:", 0, 2000, 5, 1, " mm/s"),
-        (("max_feed_z",),              "Z:",  0, 50,   0.5, 1, " mm/s"),
+        (("max_feed_x", "max_feed_y"), "XY:", 0, 600, 5,   1, " mm/s"),
+        (("max_feed_z",),              "Z:",  0, 20,  0.5, 1, " mm/s"),
     ]),
     ("Max Acceleration  (M201, mm/s²)", [
-        (("max_accel_x", "max_accel_y"), "XY:", 0, 5000, 50, 0, " mm/s²"),
-        (("max_accel_z",),               "Z:",  0, 500,  5,  0, " mm/s²"),
+        (("max_accel_x", "max_accel_y"), "XY:", 0, 2000, 25, 0, " mm/s²"),
+        (("max_accel_z",),               "Z:",  0, 200,  5,  0, " mm/s²"),
     ]),
     ("Jerk  (M205, mm/s)", [
-        (("jerk_x", "jerk_y"), "XY:", 0, 30, 0.5, 1, " mm/s"),
-        (("jerk_z",),          "Z:",  0, 5,  0.1, 2, " mm/s"),
+        (("jerk_x", "jerk_y"), "XY:", 0, 10,  0.5, 1, " mm/s"),
+        (("jerk_z",),          "Z:",  0, 0.6, 0.05, 2, " mm/s"),
     ]),
 ]
 
@@ -85,6 +105,9 @@ class MotionProfilesPanel(QWidget):
 
         # list of (keys_tuple, ProfileSliderRow)
         self._rows: list[tuple[tuple, ProfileSliderRow]] = []
+        # Last profile confirmed on the printer, via Read or a successful
+        # Apply (including an auto-Apply from Load) — used both for Reset
+        # and to re-push on reconnect. Empty until the first Read/Apply.
         self._last_read: dict = {}
         self._read_thread: _ReadThread | None = None
         self._apply_thread: _ApplyThread | None = None
@@ -96,7 +119,7 @@ class MotionProfilesPanel(QWidget):
         self.read_btn = QPushButton("Read from Printer")
         self.read_btn.setToolTip(
             "Query M503 and populate the sliders below with the current printer values.\n"
-            "Also marks them as the default (orange triangle)."
+            "Also marks them with a ghost tick, showing where they currently are on hardware."
         )
         self.read_btn.clicked.connect(self._read_profiles)
         btn_row.addWidget(self.read_btn)
@@ -136,9 +159,11 @@ class MotionProfilesPanel(QWidget):
     def _build_presets_group(self) -> QGroupBox:
         grp = QGroupBox("Motion Profile Presets")
         grp.setToolTip(
-            "Save or load the slider values above as a named preset —\n"
-            "independent of the printer connection, so profiles can be\n"
-            "prepared offline and applied to hardware later."
+            "Save the slider values above as a named preset, independent of\n"
+            "the printer connection, so profiles can be prepared offline.\n"
+            "Loading a preset sends it to the printer immediately (like Apply) —\n"
+            "profiles aren't known to reliably survive a printer power cycle,\n"
+            "so anything you load is pushed right away rather than left pending."
         )
         layout = QHBoxLayout(grp)
 
@@ -151,6 +176,7 @@ class MotionProfilesPanel(QWidget):
         layout.addWidget(save_btn)
 
         load_btn = QPushButton("Load")
+        load_btn.setToolTip("Populate the sliders and immediately send them to the printer.")
         load_btn.clicked.connect(self._load_preset)
         layout.addWidget(load_btn)
 
@@ -164,9 +190,11 @@ class MotionProfilesPanel(QWidget):
     def _build_group(self, title: str, specs: list) -> QGroupBox:
         grp = QGroupBox(title)
         grp.setToolTip(
-            "The orange triangle on each slider marks the value last read\n"
-            "from (or applied to) the printer. X and Y are always kept\n"
-            "equal — this stage has no need to tune them independently."
+            "The ghost tick on each slider marks the value last confirmed on the\n"
+            "printer (via Read or a successful Apply). A highlighted field means\n"
+            "its current position differs from the ghost tick — Apply would\n"
+            "actually change that value. X and Y are always kept equal — this\n"
+            "stage has no need to tune them independently."
         )
         layout = QVBoxLayout(grp)
         layout.setSpacing(2)
@@ -202,7 +230,7 @@ class MotionProfilesPanel(QWidget):
         super().showEvent(event)
         self._refresh_support()
 
-    def _populate(self, profiles: dict, mark_default: bool):
+    def _populate(self, profiles: dict, mark_current: bool):
         for keys, row in self._rows:
             # For a chained X/Y row there are two keys; use whichever is
             # present (they're always kept equal by this panel).
@@ -214,8 +242,8 @@ class MotionProfilesPanel(QWidget):
             if val is None:
                 continue
             row.set_value(float(val))
-            if mark_default:
-                row.set_default(float(val))
+            if mark_current:
+                row.set_current(float(val))
 
     # ------------------------------------------------------------------
     # Read / Apply / Reset (hardware)
@@ -244,7 +272,7 @@ class MotionProfilesPanel(QWidget):
             return
         self._last_read = dict(profiles)
         self.reset_btn.setEnabled(True)
-        self._populate(profiles, mark_default=True)
+        self._populate(profiles, mark_current=True)
         self._set_status(
             "Values read from printer. Adjust sliders and click ‘Apply to Printer’.", "green"
         )
@@ -268,7 +296,7 @@ class MotionProfilesPanel(QWidget):
         if success:
             self._last_read = dict(profiles)
             self.reset_btn.setEnabled(True)
-            self._populate(profiles, mark_default=True)
+            self._populate(profiles, mark_current=True)
             self._set_status("Profiles applied and saved to EEPROM (M500).", "green")
         else:
             self._set_status(f"Error applying profiles: {error}", "red")
@@ -277,8 +305,29 @@ class MotionProfilesPanel(QWidget):
         if not self._last_read:
             self._set_status("Nothing to reset — read from printer first.", "orange")
             return
-        self._populate(self._last_read, mark_default=False)
+        self._populate(self._last_read, mark_current=False)
         self._set_status("Reset to last-read values.", "gray")
+
+    # ------------------------------------------------------------------
+    # Connect handling
+    # ------------------------------------------------------------------
+
+    def _on_printer_connected(self):
+        """Wired to SetupPanel.motion_connected. Motion profiles aren't
+        known to reliably survive a printer power cycle, so if we already
+        know what profile *should* be active (read, applied, or loaded
+        earlier this session), re-push it now rather than just reading —
+        the printer's actual state may have drifted while disconnected.
+        With nothing known yet, fall back to a plain Read."""
+        if self._last_read:
+            self._populate(self._last_read, mark_current=False)
+            self._set_status(
+                "Printer connected — re-applying the last-known profile "
+                "in case it didn't persist…", "gray"
+            )
+            self._apply_profiles()
+        else:
+            self._read_profiles()
 
     # ------------------------------------------------------------------
     # Presets (disk, independent of hardware)
@@ -333,7 +382,6 @@ class MotionProfilesPanel(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Preset Error", str(e))
             return
-        self._populate(data, mark_default=False)
-        self._set_status(
-            f"Preset ‘{name}’ loaded. Click ‘Apply to Printer’ to push it to hardware.", "green"
-        )
+        self._populate(data, mark_current=False)
+        self._set_status(f"Preset ‘{name}’ loaded — sending to printer…", "gray")
+        self._apply_profiles()

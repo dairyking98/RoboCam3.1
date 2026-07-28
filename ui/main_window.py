@@ -88,7 +88,7 @@ class MainWindow(QMainWindow):
             self.experiment_panel._update_resolution_label
         )
         self.setup_panel.motion_connected.connect(
-            self.motion_profiles_panel._read_profiles
+            self.motion_profiles_panel._on_printer_connected
         )
 
         # Auto-process: switch to Processing tab and queue the experiment folder
