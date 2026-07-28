@@ -28,7 +28,7 @@ RoboCam 3.1 is a Python desktop application built with **PySide6** (Qt 6). It ha
 |---|---|
 | `ui/main_window.py` | QMainWindow with six tabs; cross-panel signal wiring; clean shutdown. |
 | `ui/setup_panel.py` | Hardware connection, camera enumeration/settings, laser config, udev installer. |
-| `ui/motion_profiles_panel.py` | Placeholder tab (feed-rate/accel/jerk — not yet implemented). |
+| `ui/motion_profiles_panel.py` | Read/edit/write feed-rate (M203), acceleration (M201), and jerk (M205) for X/Y/Z, Marlin only. |
 | `ui/manual_control_panel.py` | Jog, go-to, laser toggle, raw G-code sender. |
 | `ui/calibration_panel.py` | Corner capture, well map, calibration save/load, quick capture. |
 | `ui/experiment_panel.py` | Experiment configuration, output folder picker, run/stop/pause control. |
@@ -55,7 +55,7 @@ RoboCam 3.1 is a Python desktop application built with **PySide6** (Qt 6). It ha
 - Hardware Status group with live connection/homing indicators and a "Home All Axes" shortcut.
 
 ### Tab 2: Motion Profiles
-Placeholder only — no controls wired up yet. Intended to expose `M203`/`M201`/`M204`/`M205` (feed-rate/acceleration/jerk) for both backends.
+Read/edit/write max feed rate (`M203`), max acceleration (`M201`), and jerk (`M205`) for X/Y/Z via plain spin boxes. "Read from Printer" queries `M503`; "Apply to Printer" sends the M-codes and saves to EEPROM (`M500`). Marlin (and `SimulationBackend`, for testing) only — Klipper has no equivalent gcode for these, so the tab shows a disabled "not supported" message when that backend is selected. Simplified relative to the RoboCam-Suite 2.0 version (which had slider widgets, X=Y linking, and an extruder axis this rig doesn't have). Auto-reads when the printer connects via `SetupPanel.motion_connected`. Untested on real Marlin hardware — only exercised in simulate mode so far.
 
 ### Tab 3: Calibration
 - Set UL / LL / UR / LR corner positions by jogging to each and clicking Set; well map auto-generates once all four are set.
@@ -204,6 +204,6 @@ Frames captured by RoboCam eventually feed a separate cell-tracking pipeline (no
 | Bug (fixed in software, unverified — Pi camera untestable right now, also deferred to 2026-07-06) | Pi camera (picamera2) raw-burst fps measured at only ~15fps on real hardware (user-reported), worse than even the PlayerOne's ~30fps deficit. Root cause: **auto-exposure/auto-gain was never disabled at connect time.** `_init_picam2()` (`camera.py`) started the camera and cached `self._picam2_exposure_us = 20000` as a Python-side number but never pushed it to hardware or called `set_controls({"AeEnable": False})` — `AeEnable` only got disabled inside `set_exposure()`/`set_gain()`, which only fire if the user manually hits Apply on the Calibration tab first. Left running full AE/AGC, the camera was chasing a "properly exposed" average brightness for what is intentionally a **darkfield (mostly-black) scene** — AE algorithms target mid-range brightness, so a near-black scene drives exposure time (and gain) up trying to brighten it, directly capping fps (e.g. ~65ms exposure alone would explain ~15fps). Fixed: `_init_picam2()` now explicitly calls `set_controls({"ExposureTime", "AnalogueGain", "AeEnable": False})` at connect, matching `_init_playerone()`'s explicit `SetExp(...,False)`/`SetGain(...,False)` pattern. Added full tunability parity with the PlayerOne controls: `Camera.get_ae_enabled()`/`set_ae_enabled()`, an "Auto Exposure" checkbox in Calibration tab → Camera Controls (shown/enabled only for the picamera2 backend, off by default, session-persisted), and `ae_enabled` now recorded in `camera_meta.json`. Exposure/gain controls already applied generically to both backends before this fix — only the init-time default and the explicit AE toggle were missing. **Separate, not yet addressed**: `_init_picam2()` also configures a full-resolution `main` RGB888 stream alongside `raw` (`camera.py`) — during raw-burst capture nothing reads `main` (confirmed unused thanks to the grabber-pause fix above), so the ISP is doing wasted per-frame work converting/scaling a stream nobody consumes; shrinking or dynamically dropping `main` during bursts is a secondary, still-open fps lever. Verified only via syntax/offscreen-GUI checks — real timing validation needs the Pi camera, which is also unavailable right now. |
 | Untested | Klipper motion backend is implemented (Moonraker HTTP API) but has not yet been exercised on real Klipper hardware — only Marlin has been run end-to-end. |
 | Pending | Z-hop during experiment travel — single `G0` command moves X/Y/Z simultaneously; collision risk if lens is close to plate walls |
-| Planned | Motion Profiles tab (feed-rate/acceleration/jerk for both backends) |
+| Untested | Motion Profiles tab (feed-rate/acceleration/jerk, Marlin only — see § 2 Tab 2) implemented but only exercised in `simulate=True` mode; needs a real Marlin printer to confirm `M503` parsing and `M203`/`M201`/`M205`/`M500` round-trip against actual firmware output formatting. |
 | Planned | Temperature control widgets |
 | Planned | Extruder as pump/dispenser |
