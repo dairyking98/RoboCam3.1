@@ -28,7 +28,8 @@ RoboCam 3.1 is a Python desktop application built with **PySide6** (Qt 6). It ha
 |---|---|
 | `ui/main_window.py` | QMainWindow with six tabs; cross-panel signal wiring; clean shutdown. |
 | `ui/setup_panel.py` | Hardware connection, camera enumeration/settings, laser config, udev installer. |
-| `ui/motion_profiles_panel.py` | Read/edit/write feed-rate (M203), acceleration (M201), and jerk (M205) for X/Y/Z, Marlin only. |
+| `ui/motion_profiles_panel.py` | Slider-based feed-rate (M203) / acceleration (M201) / jerk (M205) editor, X/Y always chained, Marlin only, with save/load presets. |
+| `ui/profile_slider.py` | `ProfileSliderRow` — labeled slider + spinbox + default-value marker, ported from RoboCam-Suite 2.0. |
 | `ui/manual_control_panel.py` | Jog, go-to, laser toggle, raw G-code sender. |
 | `ui/calibration_panel.py` | Corner capture, well map, calibration save/load, quick capture. |
 | `ui/experiment_panel.py` | Experiment configuration, output folder picker, run/stop/pause control. |
@@ -55,7 +56,7 @@ RoboCam 3.1 is a Python desktop application built with **PySide6** (Qt 6). It ha
 - Hardware Status group with live connection/homing indicators and a "Home All Axes" shortcut.
 
 ### Tab 2: Motion Profiles
-Read/edit/write max feed rate (`M203`), max acceleration (`M201`), and jerk (`M205`) for X/Y/Z via plain spin boxes. "Read from Printer" queries `M503`; "Apply to Printer" sends the M-codes and saves to EEPROM (`M500`). Marlin (and `SimulationBackend`, for testing) only — Klipper has no equivalent gcode for these, so the tab shows a disabled "not supported" message when that backend is selected. Simplified relative to the RoboCam-Suite 2.0 version (which had slider widgets, X=Y linking, and an extruder axis this rig doesn't have). Auto-reads when the printer connects via `SetupPanel.motion_connected`. Untested on real Marlin hardware — only exercised in simulate mode so far.
+Read/edit/write max feed rate (`M203`), max acceleration (`M201`), and jerk (`M205`) for X/Y/Z via slider rows (`ui/profile_slider.py`, ported from RoboCam-Suite 2.0 — labeled slider + spinbox + orange default-value marker). X and Y are always chained into a single "XY:" row — no per-axis split, since this stage never needs them independent (Suite 2.0's "Link X=Y" checkbox is gone; it's just always linked). "Read from Printer" queries `M503`; "Apply to Printer" sends the M-codes and saves to EEPROM (`M500`); "Reset to Defaults" reverts sliders to the last-read/applied values without contacting the printer. Marlin (and `SimulationBackend`, for testing) only — Klipper has no equivalent gcode for these, so the tab shows a disabled "not supported" message when that backend is selected; sliders themselves stay editable regardless of connection state. **Motion Profile Presets**: save/load named slider configurations to `config/motion_profile_presets/<name>.json` (same convention as Experiment Presets), so a profile can be prepared and saved offline, then Applied to hardware later — loading a preset does not touch the printer. Auto-reads when the printer connects via `SetupPanel.motion_connected`. Untested on real Marlin hardware — only exercised in simulate mode so far.
 
 ### Tab 3: Calibration
 - Set UL / LL / UR / LR corner positions by jogging to each and clicking Set; well map auto-generates once all four are set.
