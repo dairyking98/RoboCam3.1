@@ -1,12 +1,11 @@
 """
 Calibration Panel — jog the stage, record corners, navigate wells.
 
-Three-column QSplitter
-----------------------
-Col 1 (large)  : Live camera preview
+Two-column QSplitter
+---------------------
+Col 1 (large)  : Live camera preview (top) + well map (bottom), stacked
 Col 2 (medium) : Scrollable controls — jog, camera settings, corners,
                  plate dimensions, save/load, quick capture
-Col 3 (medium) : Well map — compact clickable grid
 """
 from __future__ import annotations
 
@@ -117,16 +116,28 @@ class CalibrationPanel(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        # Col 1 — live preview
-        col1 = QWidget()
-        c1l = QVBoxLayout(col1)
-        c1l.setContentsMargins(0, 0, 4, 0)
+        # Col 1 — live preview (top) + well map (bottom), stacked
+        col1 = QSplitter(Qt.Orientation.Vertical)
+        col1.setContentsMargins(0, 0, 4, 0)
+
+        preview_widget = QWidget()
+        pv_l = QVBoxLayout(preview_widget)
+        pv_l.setContentsMargins(0, 0, 0, 0)
         hdr = QLabel("Live Camera Preview")
         hdr.setStyleSheet("font-weight: bold; font-size: 11px;")
-        c1l.addWidget(hdr)
+        pv_l.addWidget(hdr)
         self._grabber = _FrameGrabber(fps=15)
         self._preview = _LivePreview(self._grabber)
-        c1l.addWidget(self._preview, stretch=1)
+        pv_l.addWidget(self._preview, stretch=1)
+        col1.addWidget(preview_widget)
+
+        self.well_map = WellMapWidget()
+        self.well_map.well_clicked.connect(self._goto_xyz)
+        col1.addWidget(self.well_map)
+
+        col1.setStretchFactor(0, 2)
+        col1.setStretchFactor(1, 1)
+        col1.setCollapsible(0, False)
         splitter.addWidget(col1)
 
         # Col 2 — scrollable controls
@@ -148,15 +159,6 @@ class CalibrationPanel(QWidget):
         col2_scroll.setWidget(col2_inner)
         splitter.addWidget(col2_scroll)
 
-        # Col 3 — well map
-        col3 = QWidget()
-        c3l = QVBoxLayout(col3)
-        c3l.setContentsMargins(4, 4, 4, 4)
-        self.well_map = WellMapWidget()
-        self.well_map.well_clicked.connect(self._goto_xyz)
-        c3l.addWidget(self.well_map, stretch=1)
-        splitter.addWidget(col3)
-
         # Dirty-tracking for the active calibration file: cleared on a
         # successful save/load, set on any corner/dimension/pattern edit
         # after that. get_active_calibration_path() returns None while
@@ -167,16 +169,21 @@ class CalibrationPanel(QWidget):
         self._cal_dirty: bool = False
         self._loading_calibration: bool = False
 
-        splitter.setSizes([540, 360, 300])
-        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 1)
         splitter.setCollapsible(0, False)
         col1.setMinimumWidth(380)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(splitter)
+
+        # QSplitter.setSizes() before first show falls back to the children's
+        # sizeHint()s instead of the ratio requested, so the 50/50 split has
+        # to be applied after the splitters have real geometry.
+        self._h_splitter = splitter
+        self._v_splitter = col1
+        self._did_initial_split = False
 
         # Wire grabber
         self._grabber.frame_ready.connect(self._preview.update_frame)
@@ -189,6 +196,19 @@ class CalibrationPanel(QWidget):
         self._pos_timer.start(500)
 
         self._load_session()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # First real show is the earliest point the splitters have their
+        # actual laid-out geometry (QSplitter.setSizes() called any earlier
+        # falls back to children's sizeHint()s instead of the ratio below).
+        # Only done once so it doesn't clobber a manual resize on later
+        # tab switches.
+        if not self._did_initial_split:
+            self._did_initial_split = True
+            w, h = self._h_splitter.width(), self._v_splitter.height()
+            self._h_splitter.setSizes([w // 2, w - w // 2])
+            self._v_splitter.setSizes([h * 2 // 3, h - h * 2 // 3])
 
     def closeEvent(self, event):
         self._grabber.stop()
