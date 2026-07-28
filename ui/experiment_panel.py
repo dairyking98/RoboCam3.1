@@ -120,7 +120,6 @@ class ExperimentPanel(QWidget):
 
         col1.setStretchFactor(0, 1)
         col1.setStretchFactor(1, 1)
-        col1.setSizes([1, 1])
         col1.setCollapsible(0, False)
         splitter.addWidget(col1)
 
@@ -140,8 +139,7 @@ class ExperimentPanel(QWidget):
         col2_scroll.setWidget(col2_inner)
         splitter.addWidget(col2_scroll)
 
-        splitter.setSizes([600, 360])
-        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setCollapsible(0, False)
         col1.setMinimumWidth(380)
@@ -149,6 +147,10 @@ class ExperimentPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(splitter)
+
+        self._h_splitter = splitter
+        self._v_splitter = col1
+        self._did_initial_split = False
 
         self._grabber.frame_ready.connect(self._preview.update_frame)
         self._grabber.camera_disconnected.connect(self._preview.show_disconnected)
@@ -170,6 +172,19 @@ class ExperimentPanel(QWidget):
         self.duration_spin.valueChanged.connect(self._autosave)
         self.laser_on_spin.valueChanged.connect(self._autosave)
         self.post_spin.valueChanged.connect(self._autosave)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # First real show is the earliest point the splitters have their
+        # actual laid-out geometry (QSplitter.setSizes() called any earlier
+        # falls back to children's sizeHint()s instead of an even split).
+        # Only done once so it doesn't clobber a manual resize on later
+        # tab switches.
+        if not self._did_initial_split:
+            self._did_initial_split = True
+            w, h = self._h_splitter.width(), self._v_splitter.height()
+            self._h_splitter.setSizes([w // 2, w - w // 2])
+            self._v_splitter.setSizes([h // 2, h - h // 2])
 
     def closeEvent(self, event):
         self._grabber.stop()

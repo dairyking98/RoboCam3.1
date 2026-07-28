@@ -137,7 +137,6 @@ class CalibrationPanel(QWidget):
 
         col1.setStretchFactor(0, 1)
         col1.setStretchFactor(1, 1)
-        col1.setSizes([1, 1])
         col1.setCollapsible(0, False)
         splitter.addWidget(col1)
 
@@ -170,8 +169,7 @@ class CalibrationPanel(QWidget):
         self._cal_dirty: bool = False
         self._loading_calibration: bool = False
 
-        splitter.setSizes([600, 360])
-        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setCollapsible(0, False)
         col1.setMinimumWidth(380)
@@ -179,6 +177,13 @@ class CalibrationPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(splitter)
+
+        # QSplitter.setSizes() before first show falls back to the children's
+        # sizeHint()s instead of the ratio requested, so the 50/50 split has
+        # to be applied after the splitters have real geometry.
+        self._h_splitter = splitter
+        self._v_splitter = col1
+        self._did_initial_split = False
 
         # Wire grabber
         self._grabber.frame_ready.connect(self._preview.update_frame)
@@ -191,6 +196,19 @@ class CalibrationPanel(QWidget):
         self._pos_timer.start(500)
 
         self._load_session()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # First real show is the earliest point the splitters have their
+        # actual laid-out geometry (QSplitter.setSizes() called any earlier
+        # falls back to children's sizeHint()s instead of an even split).
+        # Only done once so it doesn't clobber a manual resize on later
+        # tab switches.
+        if not self._did_initial_split:
+            self._did_initial_split = True
+            w, h = self._h_splitter.width(), self._v_splitter.height()
+            self._h_splitter.setSizes([w // 2, w - w // 2])
+            self._v_splitter.setSizes([h // 2, h - h // 2])
 
     def closeEvent(self, event):
         self._grabber.stop()
