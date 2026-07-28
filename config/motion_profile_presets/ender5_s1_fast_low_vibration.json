@@ -1,0 +1,11 @@
+{
+  "max_feed_x": 300.0,
+  "max_feed_y": 300.0,
+  "max_feed_z": 20.0,
+  "max_accel_x": 1500.0,
+  "max_accel_y": 1500.0,
+  "max_accel_z": 100.0,
+  "jerk_x": 8.0,
+  "jerk_y": 8.0,
+  "jerk_z": 0.4
+}

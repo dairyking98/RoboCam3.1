@@ -10,7 +10,19 @@ from .config import get_config
 
 logger = logging.getLogger(__name__)
 
+#: Keys used for the simplified motion-profile editor (Marlin only).
+#: No extruder axis — this rig has no E axis to tune.
+PROFILE_KEYS = (
+    "max_feed_x", "max_feed_y", "max_feed_z",     # M203, mm/s
+    "max_accel_x", "max_accel_y", "max_accel_z",  # M201, mm/s^2
+    "jerk_x", "jerk_y", "jerk_z",                 # M205, mm/s
+)
+
+
 class MotionBackend:
+    #: Whether this backend can read/write feed-rate/accel/jerk profiles.
+    supports_profiles = False
+
     def connect(self): raise NotImplementedError
     def disconnect(self): raise NotImplementedError
     def send_gcode(self, command: str, timeout: Optional[float] = None, ignore_errors: bool = False): raise NotImplementedError
@@ -21,11 +33,18 @@ class MotionBackend:
     @property
     def is_connected(self) -> bool: raise NotImplementedError
 
+    def read_profiles(self) -> dict:
+        raise NotImplementedError("This motion backend does not support motion profiles.")
+
+    def apply_profiles(self, profiles: dict): raise NotImplementedError("This motion backend does not support motion profiles.")
+
 class MarlinBackend(MotionBackend):
     """
     Marlin backend ported directly from RoboCam-Suite 2.0 GCodeSerialMotionController.
     Implements robust M400 checking, command delay, and in_waiting sleep loop.
     """
+    supports_profiles = True
+
     def __init__(self):
         self.config = get_config()
         printer_cfg = self.config.get("hardware.printer", {})
@@ -202,6 +221,49 @@ class MarlinBackend(MotionBackend):
         self._wait_movement()
         self.update_position()
 
+    def read_profiles(self) -> dict:
+        """Query M503 and parse out max feed rate (M203), max acceleration
+        (M201), and jerk (M205) for X/Y/Z. Missing values are left out."""
+        response = self.send_gcode("M503", timeout=15.0)
+        result = {}
+
+        def _find(pattern, text):
+            m = re.search(pattern, text)
+            return float(m.group(1)) if m else None
+
+        for line in response.splitlines():
+            line = re.sub(r'^echo:\s*', '', line).strip()
+            if re.match(r'M203\b', line):
+                result["max_feed_x"] = _find(r'X([\d.]+)', line)
+                result["max_feed_y"] = _find(r'Y([\d.]+)', line)
+                result["max_feed_z"] = _find(r'Z([\d.]+)', line)
+            elif re.match(r'M201\b', line):
+                result["max_accel_x"] = _find(r'X([\d.]+)', line)
+                result["max_accel_y"] = _find(r'Y([\d.]+)', line)
+                result["max_accel_z"] = _find(r'Z([\d.]+)', line)
+            elif re.match(r'M205\b', line):
+                result["jerk_x"] = _find(r'X([\d.]+)', line)
+                result["jerk_y"] = _find(r'Y([\d.]+)', line)
+                result["jerk_z"] = _find(r'Z([\d.]+)', line)
+
+        return {k: v for k, v in result.items() if v is not None}
+
+    def apply_profiles(self, profiles: dict):
+        """Send M203/M201/M205 with the given values, then save to EEPROM (M500)."""
+        def _cmd(name, keys):
+            parts = [name]
+            for axis, key in keys:
+                v = profiles.get(key)
+                if v is not None:
+                    parts.append(f"{axis}{float(v):.3f}")
+            if len(parts) > 1:
+                self.send_gcode(" ".join(parts))
+
+        _cmd("M203", [("X", "max_feed_x"), ("Y", "max_feed_y"), ("Z", "max_feed_z")])
+        _cmd("M201", [("X", "max_accel_x"), ("Y", "max_accel_y"), ("Z", "max_accel_z")])
+        _cmd("M205", [("X", "jerk_x"), ("Y", "jerk_y"), ("Z", "jerk_z")])
+        self.send_gcode("M500")
+
 
 class KlipperBackend(MotionBackend):
     """
@@ -299,9 +361,15 @@ class KlipperBackend(MotionBackend):
 
 
 class SimulationBackend(MotionBackend):
+    supports_profiles = True
+
     def __init__(self):
         self.X, self.Y, self.Z = 0.0, 0.0, 0.0
         self._connected = False
+        # Empty until apply_profiles() is called — motion profile values
+        # are unknown until read from (or set on) a real printer, so
+        # simulate mode shouldn't invent plausible-looking numbers either.
+        self._profiles: dict = {}
         
     @property
     def is_connected(self) -> bool:
@@ -336,6 +404,14 @@ class SimulationBackend(MotionBackend):
         if Y is not None: self.Y = Y
         if Z is not None: self.Z = Z
         time.sleep(0.5)
+
+    def read_profiles(self) -> dict:
+        return dict(self._profiles)
+
+    def apply_profiles(self, profiles: dict):
+        for key in PROFILE_KEYS:
+            if profiles.get(key) is not None:
+                self._profiles[key] = float(profiles[key])
 
 
 class MotionController:
@@ -421,3 +497,15 @@ class MotionController:
         """Send a raw G-code command directly to the backend (e.g. M18, M84)."""
         with self._lock:
             self.backend.send_gcode(command)
+
+    @property
+    def supports_profiles(self) -> bool:
+        return bool(self.backend and self.backend.supports_profiles)
+
+    def read_profiles(self) -> dict:
+        with self._lock:
+            return self.backend.read_profiles()
+
+    def apply_profiles(self, profiles: dict):
+        with self._lock:
+            self.backend.apply_profiles(profiles)
