@@ -28,6 +28,11 @@ RAW_BURST_QUEUE_MAXSIZE = 128
 # surfacing an error.
 MAX_CONSECUTIVE_CAPTURE_FAILURES = 50
 
+# Cap on how many backlogged frames to discard when priming a well's capture
+# (see the comment above the discard loop in run()). Bounds the loop so a
+# camera with no backlog can't spin forever if get_exposure() ever returns 0.
+STALE_FRAME_MAX_DISCARDS = 6
+
 # All of a well's frames are stacked into one (n_frames, H, W) array, written
 # incrementally via np.lib.format.open_memmap() so it's one file from the
 # first frame, not built in RAM and dumped at the end. The array shape has to
@@ -487,14 +492,27 @@ class ExperimentRunner:
                         callback(self.status_msg)
                     time.sleep(delay_per_well)
 
-                    # Cameras run in continuous free-running exposure, so the frame
-                    # sitting in the buffer right now may have been captured while
-                    # the stage was still moving. Discard it so the first frame we
-                    # actually use/save reflects the post-dwell, settled position.
-                    if mode == "raw":
-                        self.camera.get_raw_frame()
-                    else:
-                        self.camera.get_frame()
+                    # Cameras run in continuous free-running exposure, so the SDK
+                    # can have a small backlog of already-completed frames queued
+                    # up from before/during the move above (see GetDroppedImagesCount
+                    # in pyPOACamera.py — the driver keeps a short ring buffer and
+                    # a single read only pops its oldest entry). GetImageData
+                    # returns near-instantly while backlog remains queued, and
+                    # only blocks for close to a full exposure once we're caught
+                    # up to real time, so keep discarding until that happens
+                    # instead of assuming one read is enough — a single discard
+                    # left up to 2 stale pre-dwell frames at the start of the
+                    # burst on hardware. Bounded so a genuinely fast sensor with
+                    # no backlog can't loop forever.
+                    exposure_s = self.camera.get_exposure() / 1_000_000.0
+                    for _ in range(STALE_FRAME_MAX_DISCARDS):
+                        discard_start = time.perf_counter()
+                        if mode == "raw":
+                            self.camera.get_raw_frame()
+                        else:
+                            self.camera.get_frame()
+                        if time.perf_counter() - discard_start >= exposure_s * 0.5:
+                            break
 
                     self.status_msg = f"Capturing {label} ({i + 1}/{len(positions)})..."
                     logger.info(self.status_msg)

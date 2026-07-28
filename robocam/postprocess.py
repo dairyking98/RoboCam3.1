@@ -173,6 +173,16 @@ def process_well(
     duration     = meta.get("duration_actual_s", 0)
     fps_avg      = meta.get("fps_average", meta.get("fps_actual", 0))
 
+    # Mono sensors (e.g. PlayerOne Mars 662M) have no real color data — the
+    # display MP4 is imported into Fiji/ImageJ as a frame stack, and Fiji's
+    # movie importer keys the stack type (8-bit grayscale vs 24-bit RGB) off
+    # the stream's actual color model, not the pixel content. A "gray"
+    # (R==G==B) frame encoded as yuv420p still decodes as 3-channel RGB, so
+    # Fiji imports it as an RGB stack — ~3x the RAM and the wrong type for
+    # most analysis functions. Encoding it as true single-channel (pix_fmt
+    # "gray", see below) makes Fiji import it as 8-bit grayscale directly.
+    is_mono = mono or camera_meta.get("bayer_pattern", "RGGB") == "mono"
+
     print(f"  {n} frames  |  {duration:.3f}s  |  {fps_avg:.2f} fps avg")
     for ev in laser_events:
         print(f"    laser {ev['state']:3s}  t={ev['time_offset_s']:.3f}s  frame {ev['frame_index']}")
@@ -228,9 +238,13 @@ def process_well(
         mp4_s          = mp4_con.add_stream("libx264", rate=display_fps)
         mp4_s.width    = w
         mp4_s.height   = h
-        mp4_s.pix_fmt  = "yuv420p"
-        mp4_s.options  = {"crf": str(crf), "preset": "medium",
-                          "profile": "baseline", "bframes": "0"}
+        mp4_s.pix_fmt  = "gray" if is_mono else "yuv420p"
+        mp4_s.options  = {"crf": str(crf), "preset": "medium", "bframes": "0"}
+        # "baseline" profile can't carry 4:0:0 (mono) — x264 errors outright
+        # ("baseline profile doesn't support 4:0:0") — so only pin it for
+        # color output; mono is left to auto-select (lands on High 4:0:0).
+        if not is_mono:
+            mp4_s.options["profile"] = "baseline"
 
     try:
         for i, fi in enumerate(frames_info):
@@ -255,8 +269,16 @@ def process_well(
                 for packet in mkv_s.encode(mkv_frame):
                     mkv_con.mux(packet)
 
-                mp4_frame     = av.VideoFrame.from_ndarray(vid_frame, format="bgr24")
-                mp4_frame     = mp4_frame.reformat(format="yuv420p")
+                if is_mono:
+                    # vid_frame is BGR with all 3 channels identical (from
+                    # npy_to_bgr's GRAY2BGR, plus the laser asterisk drawn in
+                    # gray-equivalent black/white) — slicing one channel back
+                    # out is lossless and avoids re-deriving it from the raw array.
+                    mp4_frame = av.VideoFrame.from_ndarray(
+                        np.ascontiguousarray(vid_frame[:, :, 0]), format="gray")
+                else:
+                    mp4_frame = av.VideoFrame.from_ndarray(vid_frame, format="bgr24")
+                    mp4_frame = mp4_frame.reformat(format="yuv420p")
                 mp4_frame.pts = i
                 for packet in mp4_s.encode(mp4_frame):
                     mp4_con.mux(packet)
