@@ -31,6 +31,14 @@ same reasoning applies on (re)connect: if a profile was already
 read/applied/loaded earlier in this session, it's re-sent then too, in
 case the printer's actual state drifted (e.g. a power cycle reset it
 to firmware defaults) while disconnected.
+
+Three bundled starting-point presets ship at fast/medium/slow speed
+tiers, all biased toward low vibration (see _DEFAULT_PRESET_NAME below
+for sourcing). "Slow" is treated as *the* default: it's what the combo
+box defaults to on first load, and what gets applied on the very first
+printer connect of a session when nothing else is known yet — safer
+to start conservative than to trust whatever the firmware happened to
+boot with.
 """
 from __future__ import annotations
 
@@ -66,6 +74,14 @@ _GROUPS = [
         (("jerk_z",),          "Z:",  0, 0.6, 0.05, 2, " mm/s"),
     ]),
 ]
+
+# The "slow" tier is the actual default: the preset combo box defaults to
+# it, and it's what gets applied on the very first printer connect of a
+# session (see _on_printer_connected) when nothing else is known yet —
+# safer to start conservative than trust whatever the firmware booted
+# with. All three (fast/medium/slow) are reasoned starting points, not
+# validated optima — see PROJECT_STATE.md for derivation.
+_DEFAULT_PRESET_NAME = "ender5_s1_slow_low_vibration"
 
 
 class _ReadThread(QThread):
@@ -318,12 +334,24 @@ class MotionProfilesPanel(QWidget):
         know what profile *should* be active (read, applied, or loaded
         earlier this session), re-push it now rather than just reading —
         the printer's actual state may have drifted while disconnected.
-        With nothing known yet, fall back to a plain Read."""
+        On the first connect of a session, with nothing else known yet,
+        apply the conservative default preset instead of trusting
+        whatever the firmware happened to boot with; only fall back to a
+        plain Read if that preset file is missing."""
         if self._last_read:
             self._populate(self._last_read, mark_current=False)
             self._set_status(
                 "Printer connected — re-applying the last-known profile "
                 "in case it didn't persist…", "gray"
+            )
+            self._apply_profiles()
+            return
+
+        data = self._read_preset_file(_DEFAULT_PRESET_NAME)
+        if data is not None:
+            self._populate(data, mark_current=False)
+            self._set_status(
+                f"Printer connected — applying default profile ‘{_DEFAULT_PRESET_NAME}’…", "gray"
             )
             self._apply_profiles()
         else:
@@ -356,6 +384,10 @@ class MotionProfilesPanel(QWidget):
         self.preset_combo.addItems(files)
         if current in files:
             self.preset_combo.setCurrentText(current)
+        elif not current and _DEFAULT_PRESET_NAME in files:
+            # First-ever population (nothing selected yet) — default the
+            # combo to the conservative preset rather than leaving it blank.
+            self.preset_combo.setCurrentText(_DEFAULT_PRESET_NAME)
 
     def _save_preset(self):
         name = self.preset_combo.currentText().strip() or "default"
@@ -370,17 +402,22 @@ class MotionProfilesPanel(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Preset Error", str(e))
 
+    def _read_preset_file(self, name: str) -> dict | None:
+        path = os.path.join(self._preset_dir(), f"{name}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
     def _load_preset(self):
         name = self.preset_combo.currentText().strip()
         if not name:
             QMessageBox.warning(self, "Preset", "Select a preset to load.")
             return
-        path = os.path.join(self._preset_dir(), f"{name}.json")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            QMessageBox.critical(self, "Preset Error", str(e))
+        data = self._read_preset_file(name)
+        if data is None:
+            QMessageBox.critical(self, "Preset Error", f"Could not load preset ‘{name}’.")
             return
         self._populate(data, mark_current=False)
         self._set_status(f"Preset ‘{name}’ loaded — sending to printer…", "gray")
