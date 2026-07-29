@@ -21,11 +21,12 @@ import serial.tools.list_ports
 
 logger = logging.getLogger(__name__)
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, QObject, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QPushButton, QComboBox,
-    QSpinBox, QLineEdit, QScrollArea, QCheckBox, QFrame,
+    QSpinBox, QLineEdit, QScrollArea, QCheckBox, QFrame, QTextEdit,
 )
 
 from robocam.config import get_config
@@ -55,6 +56,50 @@ class _HomeThread(QThread):
             self.finished.emit(True, "Homed successfully.")
         except Exception as e:
             self.finished.emit(False, str(e))
+
+
+# ---------------------------------------------------------------------------
+# Printer connect thread + live log bridge
+# ---------------------------------------------------------------------------
+
+class _PrinterConnectThread(QThread):
+    """Builds a MotionController off the GUI thread — Marlin connect can
+    block for several seconds (port scan, boot-banner wait, position query)."""
+
+    finished = Signal(bool, str, object)  # success, error message, MotionController|None
+
+    def __init__(self, simulate: bool, parent=None):
+        super().__init__(parent)
+        self._simulate = simulate
+
+    def run(self):
+        try:
+            from robocam.motion import MotionController
+            mc = MotionController(simulate=self._simulate)
+            self.finished.emit(True, "", mc)
+        except Exception as e:
+            self.finished.emit(False, str(e), None)
+
+
+class _QtLogHandler(logging.Handler):
+    """Forwards log records to a Qt signal so a background thread's logging
+    can be shown live in the GUI (widgets can only be touched from the
+    main thread, so this hands text across via a queued signal)."""
+
+    class _Bridge(QObject):
+        message = Signal(str)
+
+    def __init__(self, level=logging.INFO):
+        super().__init__(level)
+        self.bridge = self._Bridge()
+        self.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S"))
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+        except Exception:
+            msg = record.getMessage()
+        self.bridge.message.emit(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +383,18 @@ class SetupPanel(QWidget):
         self.printer_apply_btn = QPushButton("Apply && Reconnect Printer")
         self.printer_apply_btn.clicked.connect(self._apply_printer)
         layout.addWidget(self.printer_apply_btn, 5, 0, 1, 3)
+
+        layout.addWidget(QLabel("Connection log:"), 6, 0, 1, 3)
+        self.printer_log = QTextEdit()
+        self.printer_log.setReadOnly(True)
+        self.printer_log.setFont(QFont("Courier New", 9))
+        self.printer_log.setMinimumHeight(90)
+        self.printer_log.setMaximumHeight(150)
+        layout.addWidget(self.printer_log, 7, 0, 1, 3)
+
+        self._motion_logger = logging.getLogger("robocam.motion")
+        self._printer_log_handler = _QtLogHandler()
+        self._printer_log_handler.bridge.message.connect(self.printer_log.append)
 
         self._on_backend_changed(self.backend_combo.currentText())
         return grp
@@ -649,13 +706,28 @@ class SetupPanel(QWidget):
                 pass
         hw_state.set_motion(None)
 
-        try:
-            from robocam.motion import MotionController
-            mc = MotionController(simulate=self._simulate)
+        self.printer_log.clear()
+        self._motion_logger.addHandler(self._printer_log_handler)
+        self.printer_apply_btn.setEnabled(False)
+        self.printer_apply_btn.setText("Connecting…")
+
+        self._printer_connect_thread = _PrinterConnectThread(self._simulate, self)
+        self._printer_connect_thread.finished.connect(self._on_printer_connect_finished)
+        self._printer_connect_thread.start()
+
+    def _on_printer_connect_finished(self, success: bool, message: str, mc):
+        self._motion_logger.removeHandler(self._printer_log_handler)
+        self.printer_apply_btn.setEnabled(True)
+        self.printer_apply_btn.setText("Apply && Reconnect Printer")
+
+        if success:
             hw_state.set_motion(mc)
+            self.printer_log.append("<b style='color:green;'>Connected.</b>")
             self.motion_connected.emit()
-        except Exception as e:
-            logger.warning(f"[Setup] Printer reconnect failed: {e!r}", exc_info=True)
+        else:
+            logger.warning(f"[Setup] Printer reconnect failed: {message}")
+            self.printer_log.append(f"<b style='color:#b00020;'>Failed: {message}</b>")
+
         self._refresh_status()
 
     def _apply_laser(self):
