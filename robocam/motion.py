@@ -81,7 +81,11 @@ class MarlinBackend(MotionBackend):
             self.serial_conn = serial.Serial(port, self.baud_rate, timeout=self.timeout)
             logger.info("[MotionCtrl] Port opened. Waiting up to 2s for the firmware boot banner...")
             time.sleep(2)
-            boot_banner = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+            # Read exactly what's already buffered — in_waiting is 0 when no banner
+            # showed up, and read(0) returns immediately; forcing a min of 1 byte
+            # here would block for the full serial timeout waiting for a byte that
+            # never arrives, turning this into a much longer stall than 2s.
+            boot_banner = self.serial_conn.read(self.serial_conn.in_waiting)
             self.serial_conn.reset_input_buffer()
             banner_text = boot_banner.decode("utf-8", errors="replace").strip()
             if banner_text:
