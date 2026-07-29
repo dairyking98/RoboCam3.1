@@ -270,11 +270,14 @@ class SetupPanel(QWidget):
         root.setSpacing(10)
         root.setContentsMargins(10, 10, 10, 10)
 
+        top_row = QHBoxLayout()
+        top_row.addWidget(self._build_connection_group())
+        top_row.addWidget(self._build_status_group())
+        root.addLayout(top_row)
+
         root.addWidget(self._build_camera_group())
         root.addWidget(self._build_printer_group())
         root.addWidget(self._build_laser_group())
-        root.addWidget(self._build_status_group())
-        root.addWidget(self._build_connection_group())
         root.addStretch()
 
         self._load_from_config()
