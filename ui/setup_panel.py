@@ -270,11 +270,14 @@ class SetupPanel(QWidget):
         root.setSpacing(10)
         root.setContentsMargins(10, 10, 10, 10)
 
+        top_row = QHBoxLayout()
+        top_row.addWidget(self._build_connection_group())
+        top_row.addWidget(self._build_status_group())
+        root.addLayout(top_row)
+
         root.addWidget(self._build_camera_group())
         root.addWidget(self._build_printer_group())
         root.addWidget(self._build_laser_group())
-        root.addWidget(self._build_status_group())
-        root.addWidget(self._build_connection_group())
         root.addStretch()
 
         self._load_from_config()
@@ -507,6 +510,16 @@ class SetupPanel(QWidget):
         for dev in devices:
             self.cam_device_combo.addItem(dev[0])
         idx = self.cam_device_combo.findText(current)
+        if idx < 0:
+            # No selection made yet this session (e.g. first scan after
+            # launch) — fall back to whichever camera was last applied.
+            saved_backend = self._cfg.get("hardware.camera.backend")
+            saved_idx = self._cfg.get("hardware.camera.device_index")
+            if saved_backend is not None and saved_idx is not None:
+                for i, dev in enumerate(devices):
+                    if dev[1] == saved_backend and dev[2] == saved_idx:
+                        idx = i
+                        break
         if idx >= 0:
             self.cam_device_combo.setCurrentIndex(idx)
 
@@ -660,6 +673,8 @@ class SetupPanel(QWidget):
 
         # Update config
         self._cfg.set("hardware.camera.resolution", [w, h])
+        self._cfg.set("hardware.camera.backend", backend)
+        self._cfg.set("hardware.camera.device_index", dev_idx)
 
         # Reconnect after short delay to let OS release the device
         self._pending_cam_backend = backend
@@ -690,6 +705,7 @@ class SetupPanel(QWidget):
         if backend == "marlin":
             port = self.printer_port_combo.currentText() or "auto"
             baud = int(self.printer_baud_combo.currentData() or 115200)
+            self._cfg.set("hardware.printer.port", port)
             self._cfg.set("hardware.printer.baudrate", baud)
         else:
             host = self.klipper_host_edit.text() or "127.0.0.1"
@@ -823,6 +839,14 @@ class SetupPanel(QWidget):
 
         # Printer ports
         self._refresh_printer_ports()
+        saved_port = self._cfg.get("hardware.printer.port", "auto")
+        pidx = self.printer_port_combo.findText(saved_port)
+        if pidx >= 0:
+            self.printer_port_combo.setCurrentIndex(pidx)
+        else:
+            # Port not currently enumerated (e.g. device unplugged) — the
+            # combo is editable, so still show what was last used.
+            self.printer_port_combo.setCurrentText(saved_port)
         baud_str = str(self._cfg.get("hardware.printer.baudrate", 115200))
         bidx = self.printer_baud_combo.findText(baud_str)
         if bidx >= 0:
