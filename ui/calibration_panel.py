@@ -230,8 +230,12 @@ class CalibrationPanel(QWidget):
             self.pattern_combo.setCurrentIndex(pattern_idx)
         self.cal_name_edit.setText(s.get("cal_name", "calibration"))
         self._loading_calibration = False
-        self.exp_spin.setValue(int(s.get("exp_ms", 20)))
-        self.fps_spin.setValue(float(s.get("fps_target_hz", 1000.0 / self.exp_spin.value())))
+        self._programmatic_update = True
+        try:
+            self.exp_spin.setValue(int(s.get("exp_ms", 20)))
+            self.fps_spin.setValue(float(s.get("fps_target_hz", 1000.0 / self.exp_spin.value())))
+        finally:
+            self._programmatic_update = False
         self.gain_spin.setValue(int(s.get("gain", 100)))
         self.hqi_check.setChecked(bool(s.get("hqi_enabled", False)))
         self.usb_bw_spin.setValue(int(s.get("usb_bandwidth", 100)))
@@ -384,6 +388,15 @@ class CalibrationPanel(QWidget):
         grp = QGroupBox("Camera Controls")
         layout = QGridLayout(grp)
 
+        # Rectify prioritizes whichever of Exposure/Target FPS the user most
+        # recently edited by hand, adjusting the *other* field to resolve a
+        # conflict -- never the one just typed in. _programmatic_update
+        # guards setValue() calls made by code (session load, hardware
+        # refresh, Rectify's own corrective write) so those don't count as
+        # a user edit and steal priority.
+        self._last_edited_field = "exp"
+        self._programmatic_update = False
+
         layout.addWidget(QLabel("Exposure:"), 0, 0)
         self.exp_spin = QSpinBox()
         self.exp_spin.setRange(1, 2000)
@@ -406,8 +419,8 @@ class CalibrationPanel(QWidget):
         )
         self.fps_spin.setValue(1000.0 / self.exp_spin.value())
         layout.addWidget(self.fps_spin, 0, 3)
-        self.exp_spin.valueChanged.connect(self._check_fps_conflict)
-        self.fps_spin.valueChanged.connect(self._check_fps_conflict)
+        self.exp_spin.valueChanged.connect(self._on_exp_edited)
+        self.fps_spin.valueChanged.connect(self._on_fps_edited)
 
         # Conflict warning: shown only when Target FPS exceeds what the
         # current exposure can physically achieve (max ≈ 1000/exposure_ms).
@@ -421,7 +434,8 @@ class CalibrationPanel(QWidget):
 
         self.fps_rectify_btn = QPushButton("Rectify")
         self.fps_rectify_btn.setToolTip(
-            "Lower Target FPS to the maximum achievable at the current exposure."
+            "Adjusts whichever field you didn't just edit to resolve the "
+            "conflict -- your last-edited value is left as you set it."
         )
         self.fps_rectify_btn.clicked.connect(self._rectify_fps_conflict)
         self.fps_rectify_btn.hide()
@@ -674,6 +688,16 @@ class CalibrationPanel(QWidget):
         """Max fps the current Exposure value physically allows (fps ≈ 1000/exposure_ms)."""
         return 1000.0 / self.exp_spin.value()
 
+    def _on_exp_edited(self, _ms):
+        if not self._programmatic_update:
+            self._last_edited_field = "exp"
+        self._check_fps_conflict()
+
+    def _on_fps_edited(self, _fps):
+        if not self._programmatic_update:
+            self._last_edited_field = "fps"
+        self._check_fps_conflict()
+
     def _check_fps_conflict(self, *_args):
         """Exposure and Target FPS are independent -- neither is ever changed
         automatically. This only shows/hides a red warning (+ Rectify button)
@@ -697,10 +721,25 @@ class CalibrationPanel(QWidget):
             self.fps_rectify_btn.hide()
 
     def _rectify_fps_conflict(self):
-        """Snap Target FPS down to the auto-computed max achievable at the
-        current exposure. Only touches the field the user asked to fix --
-        Exposure is left exactly as set."""
-        self.fps_spin.setValue(self._max_achievable_fps())
+        """Resolve the conflict by adjusting whichever field the user did
+        NOT just edit -- the last-edited value is priority and is left
+        exactly as set."""
+        self._programmatic_update = True
+        try:
+            if self._last_edited_field == "fps":
+                # Target FPS is priority -- lower Exposure so its max
+                # achievable fps satisfies the requested Target FPS. Floor
+                # (not round) so the result never re-triggers the conflict.
+                new_exp_ms = int(1000.0 / self.fps_spin.value())
+                new_exp_ms = max(self.exp_spin.minimum(), min(self.exp_spin.maximum(), new_exp_ms))
+                self.exp_spin.setValue(new_exp_ms)
+            else:
+                # Exposure is priority -- lower Target FPS to the max the
+                # current exposure can achieve.
+                self.fps_spin.setValue(self._max_achievable_fps())
+        finally:
+            self._programmatic_update = False
+        self._check_fps_conflict()
 
     def _refresh_camera_controls(self):
         """Push last-used exposure/gain/etc from session into the camera and update UI."""
@@ -727,8 +766,12 @@ class CalibrationPanel(QWidget):
                 cam.set_target_fps(fps_target)
             except Exception:
                 pass
-            self.exp_spin.setValue(exp_ms)
-            self.fps_spin.setValue(fps_target)
+            self._programmatic_update = True
+            try:
+                self.exp_spin.setValue(exp_ms)
+                self.fps_spin.setValue(fps_target)
+            finally:
+                self._programmatic_update = False
             self.gain_spin.setValue(gain)
 
             if is_playerone:
