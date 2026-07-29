@@ -231,6 +231,7 @@ class CalibrationPanel(QWidget):
         self.cal_name_edit.setText(s.get("cal_name", "calibration"))
         self._loading_calibration = False
         self.exp_spin.setValue(int(s.get("exp_ms", 20)))
+        self.fps_spin.setValue(float(s.get("fps_target_hz", 1000.0 / self.exp_spin.value())))
         self.gain_spin.setValue(int(s.get("gain", 100)))
         self.hqi_check.setChecked(bool(s.get("hqi_enabled", False)))
         self.usb_bw_spin.setValue(int(s.get("usb_bandwidth", 100)))
@@ -273,6 +274,7 @@ class CalibrationPanel(QWidget):
             "pattern": self.pattern_combo.currentText(),
             "cal_name": self.cal_name_edit.text(),
             "exp_ms": self.exp_spin.value(),
+            "fps_target_hz": self.fps_spin.value(),
             "gain": self.gain_spin.value(),
             "hqi_enabled": self.hqi_check.isChecked(),
             "usb_bandwidth": self.usb_bw_spin.value(),
@@ -396,62 +398,83 @@ class CalibrationPanel(QWidget):
         self.fps_spin.setDecimals(1)
         self.fps_spin.setSuffix(" fps")
         self.fps_spin.setToolTip(
-            "Linked to Exposure (fps ≈ 1000 / exposure_ms) -- capture rate is "
-            "exposure-bound now that I/O overhead is negligible (see PROJECT_STATE.md "
-            "§ 9). Editing either field updates the other."
+            "Independent of Exposure -- set this below the exposure-derived max "
+            "to deliberately capture at a slower cadence than a short exposure "
+            "would allow (e.g. short exposure, slow fps). If Target FPS exceeds "
+            "what the current exposure can achieve, a conflict warning appears "
+            "below with a Rectify button."
         )
         self.fps_spin.setValue(1000.0 / self.exp_spin.value())
         layout.addWidget(self.fps_spin, 0, 3)
-        self.exp_spin.valueChanged.connect(self._on_exp_changed)
-        self.fps_spin.valueChanged.connect(self._on_fps_changed)
+        self.exp_spin.valueChanged.connect(self._check_fps_conflict)
+        self.fps_spin.valueChanged.connect(self._check_fps_conflict)
 
-        layout.addWidget(QLabel("Gain:"), 1, 0)
+        # Conflict warning: shown only when Target FPS exceeds what the
+        # current exposure can physically achieve (max ≈ 1000/exposure_ms).
+        # Values are never auto-changed on the user's behalf — this label
+        # plus the Rectify button are the only way either field moves.
+        self.fps_conflict_lbl = QLabel("")
+        self.fps_conflict_lbl.setStyleSheet("color: red; font-size: 10px;")
+        self.fps_conflict_lbl.setWordWrap(True)
+        self.fps_conflict_lbl.hide()
+        layout.addWidget(self.fps_conflict_lbl, 1, 0, 1, 3)
+
+        self.fps_rectify_btn = QPushButton("Rectify")
+        self.fps_rectify_btn.setToolTip(
+            "Lower Target FPS to the maximum achievable at the current exposure."
+        )
+        self.fps_rectify_btn.clicked.connect(self._rectify_fps_conflict)
+        self.fps_rectify_btn.hide()
+        layout.addWidget(self.fps_rectify_btn, 1, 3)
+
+        layout.addWidget(QLabel("Gain:"), 2, 0)
         self.gain_spin = QSpinBox()
         self.gain_spin.setRange(0, 500)
         self.gain_spin.setSingleStep(10)
         self.gain_spin.setValue(100)
-        layout.addWidget(self.gain_spin, 1, 1)
+        layout.addWidget(self.gain_spin, 2, 1)
 
         # PlayerOne-specific controls below — relevant to the fps-ceiling
         # investigation in PROJECT_STATE.md § 9. Hidden/disabled for non-
         # PlayerOne backends via _refresh_camera_controls().
-        layout.addWidget(QLabel("High Quality Image:"), 2, 0)
+        layout.addWidget(QLabel("High Quality Image:"), 3, 0)
         self.hqi_check = QCheckBox("Enabled (trades fps for image quality)")
-        layout.addWidget(self.hqi_check, 2, 1)
+        layout.addWidget(self.hqi_check, 3, 1)
 
-        layout.addWidget(QLabel("USB Bandwidth:"), 3, 0)
+        layout.addWidget(QLabel("USB Bandwidth:"), 4, 0)
         self.usb_bw_spin = QSpinBox()
         self.usb_bw_spin.setRange(35, 100)
         self.usb_bw_spin.setSingleStep(5)
         self.usb_bw_spin.setSuffix(" %")
         self.usb_bw_spin.setValue(100)
-        layout.addWidget(self.usb_bw_spin, 3, 1)
+        layout.addWidget(self.usb_bw_spin, 4, 1)
 
-        layout.addWidget(QLabel("Offset:"), 4, 0)
+        layout.addWidget(QLabel("Offset:"), 5, 0)
         self.offset_spin = QSpinBox()
         self.offset_spin.setRange(0, 1000)
         self.offset_spin.setValue(0)
-        layout.addWidget(self.offset_spin, 4, 1)
+        layout.addWidget(self.offset_spin, 5, 1)
 
-        layout.addWidget(QLabel("Sensor Mode:"), 5, 0)
+        layout.addWidget(QLabel("Sensor Mode:"), 6, 0)
         self.sensor_mode_combo = QComboBox()
-        layout.addWidget(self.sensor_mode_combo, 5, 1)
+        layout.addWidget(self.sensor_mode_combo, 6, 1)
 
         # Picamera2-specific control — off by default at connect (see
         # _init_picam2()'s note on why AE fights darkfield/high-fps capture).
         # Hidden/disabled for non-Picamera2 backends via _refresh_camera_controls().
-        layout.addWidget(QLabel("Auto Exposure:"), 6, 0)
+        layout.addWidget(QLabel("Auto Exposure:"), 7, 0)
         self.ae_check = QCheckBox("Enabled (off by default — see PROJECT_STATE.md § 9)")
-        layout.addWidget(self.ae_check, 6, 1)
+        layout.addWidget(self.ae_check, 7, 1)
 
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self._apply_camera_controls)
-        layout.addWidget(apply_btn, 7, 0)
+        layout.addWidget(apply_btn, 8, 0)
 
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._refresh_camera_controls)
-        layout.addWidget(refresh_btn, 7, 1)
+        layout.addWidget(refresh_btn, 8, 1)
 
+        self._check_fps_conflict()
         return grp
 
     def _build_crosshair_group(self) -> QGroupBox:
@@ -647,28 +670,37 @@ class CalibrationPanel(QWidget):
     # Refreshers (called from MainWindow on camera_connected signal)
     # ------------------------------------------------------------------
 
-    def _on_exp_changed(self, ms: int):
-        if getattr(self, "_syncing_exp_fps", False):
-            return
-        self._syncing_exp_fps = True
-        try:
-            self.fps_spin.setValue(1000.0 / ms)
-        finally:
-            self._syncing_exp_fps = False
+    def _max_achievable_fps(self) -> float:
+        """Max fps the current Exposure value physically allows (fps ≈ 1000/exposure_ms)."""
+        return 1000.0 / self.exp_spin.value()
 
-    def _on_fps_changed(self, fps: float):
-        if getattr(self, "_syncing_exp_fps", False):
-            return
-        self._syncing_exp_fps = True
-        try:
-            ms = round(1000.0 / fps)
-            ms = max(self.exp_spin.minimum(), min(self.exp_spin.maximum(), ms))
-            self.exp_spin.setValue(ms)
-            # Reflect the rounded exposure (ms is an int) back into the fps
-            # field so it doesn't keep showing an unattainable fractional fps.
-            self.fps_spin.setValue(1000.0 / ms)
-        finally:
-            self._syncing_exp_fps = False
+    def _check_fps_conflict(self, *_args):
+        """Exposure and Target FPS are independent -- neither is ever changed
+        automatically. This only shows/hides a red warning (+ Rectify button)
+        when the requested Target FPS exceeds what the current exposure can
+        achieve; a slower Target FPS than the exposure allows is the whole
+        point (short exposure, slow capture cadence) and is never a conflict.
+        """
+        max_fps = self._max_achievable_fps()
+        if self.fps_spin.value() > max_fps + 1e-6:
+            min_exp_ms = 1000.0 / self.fps_spin.value()
+            self.fps_conflict_lbl.setText(
+                f"⚠ Target FPS ({self.fps_spin.value():.1f}) exceeds the max "
+                f"achievable at {self.exp_spin.value()} ms exposure "
+                f"({max_fps:.1f} fps). Set Target FPS below {max_fps:.1f} fps, "
+                f"or Exposure below {min_exp_ms:.1f} ms, to satisfy."
+            )
+            self.fps_conflict_lbl.show()
+            self.fps_rectify_btn.show()
+        else:
+            self.fps_conflict_lbl.hide()
+            self.fps_rectify_btn.hide()
+
+    def _rectify_fps_conflict(self):
+        """Snap Target FPS down to the auto-computed max achievable at the
+        current exposure. Only touches the field the user asked to fix --
+        Exposure is left exactly as set."""
+        self.fps_spin.setValue(self._max_achievable_fps())
 
     def _refresh_camera_controls(self):
         """Push last-used exposure/gain/etc from session into the camera and update UI."""
@@ -682,6 +714,7 @@ class CalibrationPanel(QWidget):
             s = session_manager.get("calibration")
             exp_ms = int(s.get("exp_ms", 20))
             gain = int(s.get("gain", 100))
+            fps_target = float(s.get("fps_target_hz", 1000.0 / exp_ms))
             try:
                 # set_exposure()/set_gain() always force AE off as a side
                 # effect (see camera.py) -- apply them first, then restore
@@ -689,9 +722,13 @@ class CalibrationPanel(QWidget):
                 # that's what was saved.
                 cam.set_exposure(exp_ms * 1000)
                 cam.set_gain(gain)
+                # Target fps is a software pacing cap, independent of
+                # exposure -- see Camera.set_target_fps().
+                cam.set_target_fps(fps_target)
             except Exception:
                 pass
             self.exp_spin.setValue(exp_ms)
+            self.fps_spin.setValue(fps_target)
             self.gain_spin.setValue(gain)
 
             if is_playerone:
@@ -730,6 +767,7 @@ class CalibrationPanel(QWidget):
             try:
                 cam.set_exposure(self.exp_spin.value() * 1000)
                 cam.set_gain(self.gain_spin.value())
+                cam.set_target_fps(self.fps_spin.value())
                 if cam.backend == "playerone":
                     cam.set_hqi(self.hqi_check.isChecked())
                     cam.set_usb_bandwidth(self.usb_bw_spin.value())

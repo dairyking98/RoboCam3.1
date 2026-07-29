@@ -218,8 +218,17 @@ class ExperimentRunner:
         dtype = np.uint8 if bit_depth <= 8 else np.uint16
         exposure_us = self.camera.get_exposure()
         fps_ceiling_est = 1_000_000.0 / exposure_us
+
+        # Target fps is an independent software pacing cap (see
+        # Camera.set_target_fps()) — it can only ever slow capture down
+        # below the exposure-derived ceiling, never speed it up past it, so
+        # take whichever is lower for both pacing and buffer sizing.
+        target_fps = self.camera.get_target_fps()
+        paced_fps_est = min(fps_ceiling_est, target_fps) if target_fps else fps_ceiling_est
+        frame_interval_s = (1.0 / target_fps) if target_fps and target_fps < fps_ceiling_est else 0.0
+
         max_frames = (
-            int(total_duration_s * fps_ceiling_est * RAW_BURST_FPS_MARGIN)
+            int(total_duration_s * paced_fps_est * RAW_BURST_FPS_MARGIN)
             + RAW_BURST_FRAME_BUFFER
         )
         stack_filename = f"{label}_{timestamp}_stack.npy"
@@ -277,6 +286,8 @@ class ExperimentRunner:
         writer_thread = threading.Thread(target=_writer, daemon=True)
         writer_thread.start()
 
+        next_frame_due_s = 0.0
+
         try:
             consecutive_failures = 0
             while self.running:
@@ -300,6 +311,9 @@ class ExperimentRunner:
                         "frame_index": frame_idx,
                     })
                     last_laser_state = should_laser
+
+                if frame_interval_s > 0.0 and elapsed < next_frame_due_s:
+                    time.sleep(next_frame_due_s - elapsed)
 
                 raw = self.camera.get_raw_frame()
                 if raw is not None:
@@ -333,6 +347,8 @@ class ExperimentRunner:
                         stall_count += 1
                         stall_s_total += put_elapsed
                     frame_idx += 1
+                    if frame_interval_s > 0.0:
+                        next_frame_due_s += frame_interval_s
                 else:
                     consecutive_failures += 1
                     if consecutive_failures >= MAX_CONSECUTIVE_CAPTURE_FAILURES:
@@ -340,7 +356,8 @@ class ExperimentRunner:
                             f"Camera unresponsive: {consecutive_failures} consecutive "
                             f"failed frame grabs for well {label} — aborting burst."
                         )
-                # No sleep — capture as fast as possible
+                # Otherwise no sleep — capture as fast as exposure allows
+                # (frame_interval_s stays 0.0 unless a slower target fps was set)
 
             if writer_failed.is_set():
                 raise RuntimeError(

@@ -122,6 +122,11 @@ class Camera:
         self._device_index = device_index
         self._po_frame_buf: Optional[np.ndarray] = None
 
+        # Software pacing target for raw-burst capture, independent of
+        # exposure — see set_target_fps(). None means "capture as fast as
+        # exposure allows" (the historical, still-default behaviour).
+        self._target_fps: Optional[float] = None
+
         # Capture-failure counters for get_raw_frame(), reset per raw-burst
         self._stat_lock_timeout = 0
         self._stat_sdk_timeout_or_error = 0
@@ -312,6 +317,19 @@ class Camera:
         with self._sdk_lock:
             val = int(round(float(us)))
             self._poa.SetExp(self._camera_id, val, False)
+
+    def get_target_fps(self) -> Optional[float]:
+        """Get the software capture-pacing target, or None if uncapped
+        (capture as fast as exposure allows). Not a hardware/SDK control —
+        exposure/gain are the only settings actually pushed to the sensor;
+        this is consumed by ExperimentRunner._write_raw_burst() to throttle
+        the raw-burst capture loop when the caller wants a slower frame rate
+        than the current exposure would otherwise allow."""
+        return self._target_fps
+
+    def set_target_fps(self, fps: Optional[float]) -> None:
+        """Set (or clear, with None) the software capture-pacing target."""
+        self._target_fps = float(fps) if fps else None
 
     def get_gain(self) -> int:
         """Get gain; for picamera2 returns analogue gain * 100 to match PlayerOne scale."""
