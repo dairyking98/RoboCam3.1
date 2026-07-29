@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QLabel, QPushButton, QSpinBox, QComboBox,
     QLineEdit, QButtonGroup, QRadioButton, QSplitter,
     QFileDialog, QMessageBox, QScrollArea, QSizePolicy,
-    QDoubleSpinBox, QCheckBox,
+    QDoubleSpinBox, QCheckBox, QColorDialog,
 )
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
 
@@ -147,6 +147,7 @@ class CalibrationPanel(QWidget):
         col2_layout.setContentsMargins(4, 4, 4, 4)
         col2_layout.addWidget(self._build_movement_group())
         col2_layout.addWidget(self._build_camera_controls_group())
+        col2_layout.addWidget(self._build_crosshair_group())
         col2_layout.addWidget(self._build_calibration_group())
         col2_layout.addWidget(self._build_dimensions_group())
         col2_layout.addWidget(self._build_save_load_group())
@@ -235,6 +236,12 @@ class CalibrationPanel(QWidget):
         self.usb_bw_spin.setValue(int(s.get("usb_bandwidth", 100)))
         self.offset_spin.setValue(int(s.get("offset", 0)))
         self.ae_check.setChecked(bool(s.get("ae_enabled", False)))
+        self.xhair_check.setChecked(bool(s.get("xhair_enabled", True)))
+        self.xhair_radius_spin.setValue(int(s.get("xhair_radius", 60)))
+        self.xhair_thickness_spin.setValue(int(s.get("xhair_thickness", 1)))
+        self._xhair_color = QColor(s.get("xhair_color", "#ff0000"))
+        self._update_xhair_color_btn()
+        self._apply_crosshair()
         # Step size — match preset button or fall back to custom
         step = s.get("step", "1.0")
         matched = False
@@ -272,6 +279,10 @@ class CalibrationPanel(QWidget):
             "offset": self.offset_spin.value(),
             "sensor_mode_index": self.sensor_mode_combo.currentIndex() if self.sensor_mode_combo.count() else int(session_manager.get("calibration").get("sensor_mode_index", 0)),
             "ae_enabled": self.ae_check.isChecked(),
+            "xhair_enabled": self.xhair_check.isChecked(),
+            "xhair_radius": self.xhair_radius_spin.value(),
+            "xhair_thickness": self.xhair_thickness_spin.value(),
+            "xhair_color": self._xhair_color.name(),
             "step": self.step_input.text(),
             "qc_format": self.qc_fmt_combo.currentText(),
             "qc_duration": self.qc_video_spin.value(),
@@ -442,6 +453,61 @@ class CalibrationPanel(QWidget):
         layout.addWidget(refresh_btn, 7, 1)
 
         return grp
+
+    def _build_crosshair_group(self) -> QGroupBox:
+        grp = QGroupBox("Crosshair Overlay")
+        layout = QGridLayout(grp)
+        layout.setSpacing(4)
+
+        self.xhair_check = QCheckBox("Show Crosshair (for centering wells)")
+        self.xhair_check.setChecked(True)
+        layout.addWidget(self.xhair_check, 0, 0, 1, 4)
+
+        layout.addWidget(QLabel("Radius:"), 1, 0)
+        self.xhair_radius_spin = QSpinBox()
+        self.xhair_radius_spin.setRange(2, 2000)
+        self.xhair_radius_spin.setSingleStep(5)
+        self.xhair_radius_spin.setValue(60)
+        self.xhair_radius_spin.setSuffix(" px")
+        layout.addWidget(self.xhair_radius_spin, 1, 1)
+
+        layout.addWidget(QLabel("Thickness:"), 1, 2)
+        self.xhair_thickness_spin = QSpinBox()
+        self.xhair_thickness_spin.setRange(1, 10)
+        self.xhair_thickness_spin.setValue(1)
+        layout.addWidget(self.xhair_thickness_spin, 1, 3)
+
+        layout.addWidget(QLabel("Color:"), 2, 0)
+        self._xhair_color = QColor(255, 0, 0)
+        self.xhair_color_btn = QPushButton()
+        self.xhair_color_btn.setFixedWidth(40)
+        self._update_xhair_color_btn()
+        self.xhair_color_btn.clicked.connect(self._choose_xhair_color)
+        layout.addWidget(self.xhair_color_btn, 2, 1)
+
+        self.xhair_check.toggled.connect(self._apply_crosshair)
+        self.xhair_radius_spin.valueChanged.connect(self._apply_crosshair)
+        self.xhair_thickness_spin.valueChanged.connect(self._apply_crosshair)
+
+        return grp
+
+    def _update_xhair_color_btn(self):
+        self.xhair_color_btn.setStyleSheet(f"background-color: {self._xhair_color.name()};")
+
+    def _choose_xhair_color(self):
+        color = QColorDialog.getColor(self._xhair_color, self, "Crosshair Color")
+        if color.isValid():
+            self._xhair_color = color
+            self._update_xhair_color_btn()
+            self._apply_crosshair()
+
+    def _apply_crosshair(self, *_args):
+        self._preview.set_crosshair(
+            enabled=self.xhair_check.isChecked(),
+            radius=self.xhair_radius_spin.value(),
+            thickness=self.xhair_thickness_spin.value(),
+            color=self._xhair_color,
+        )
 
     def _build_calibration_group(self) -> QGroupBox:
         grp = QGroupBox("Well-Plate Corner Calibration")

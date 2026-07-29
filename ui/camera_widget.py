@@ -10,8 +10,8 @@ from __future__ import annotations
 import cv2
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QFont
+from PySide6.QtCore import Qt, QThread, Signal, QPointF
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QPen
 from PySide6.QtWidgets import QWidget
 
 from robocam.hw_state import get_camera
@@ -86,7 +86,22 @@ class _LivePreview(QWidget):
         self._pixmap: Optional[QPixmap] = None
         self._offline = True
         self._experiment_running = False
+        self._crosshair_enabled = False
+        self._crosshair_radius = 60
+        self._crosshair_thickness = 1
+        self._crosshair_color = QColor(255, 0, 0)
         self.setMinimumSize(320, 240)
+
+    def set_crosshair(self, enabled: bool, radius: int = None, thickness: int = None, color: QColor = None):
+        """Show/configure a center crosshair (lines + circle) for centering wells under the camera."""
+        self._crosshair_enabled = enabled
+        if radius is not None:
+            self._crosshair_radius = max(int(radius), 1)
+        if thickness is not None:
+            self._crosshair_thickness = max(int(thickness), 1)
+        if color is not None:
+            self._crosshair_color = color
+        self.update()
 
     def update_frame(self, qimg: QImage):
         self._pixmap = QPixmap.fromImage(qimg)
@@ -119,6 +134,16 @@ class _LivePreview(QWidget):
             x_off = (w - scaled.width()) // 2
             y_off = (h - scaled.height()) // 2
             painter.drawPixmap(x_off, y_off, scaled)
+
+            if self._crosshair_enabled:
+                cx = x_off + scaled.width() / 2.0
+                cy = y_off + scaled.height() / 2.0
+                pen = QPen(self._crosshair_color)
+                pen.setWidth(self._crosshair_thickness)
+                painter.setPen(pen)
+                painter.drawLine(x_off, int(cy), x_off + scaled.width(), int(cy))
+                painter.drawLine(int(cx), y_off, int(cx), y_off + scaled.height())
+                painter.drawEllipse(QPointF(cx, cy), self._crosshair_radius, self._crosshair_radius)
 
         if self._experiment_running:
             painter.fillRect(0, 0, w, h, QColor(0, 0, 0, 170))
