@@ -522,6 +522,18 @@ class MotionController:
         """Send a raw G-code command directly to the backend (e.g. M18, M84)."""
         with self._lock:
             self.backend.send_gcode(command)
+            # A manually-issued M18/M84 (e.g. the Manual Control panel's
+            # "Disable Steppers" button) cuts holding torque, so the axes
+            # can drift and the firmware's position can no longer be
+            # trusted — same reasoning as the idle-timeout case M18 S0
+            # exists to prevent, just user-triggered instead of automatic.
+            # (The M18 S0 sent on connect to suppress that idle timeout
+            # goes straight through backend.send_gcode(), not this method,
+            # so it never hits this check.)
+            if re.match(r"\s*M(18|84)\b", command, re.IGNORECASE):
+                if self._homed:
+                    logger.info("[MotionCtrl] Steppers disabled via raw command — clearing homed state.")
+                self._homed = False
 
     @property
     def supports_profiles(self) -> bool:
