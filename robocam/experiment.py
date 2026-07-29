@@ -84,6 +84,21 @@ DISK_CHECK_EVERY_N_FRAMES = 30
 # for other writer failures, instead of crashing the whole process.
 MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 
+
+def _check_disk_space(path: str) -> Optional[str]:
+    """Return an error message if free space at `path` is below
+    MIN_FREE_DISK_BYTES, else None. Shared by the raw-burst writer's
+    per-flush check and run_loop()'s per-cycle check — still-image loops
+    (growth imaging) have no other disk-space guard at all, since the
+    raw-burst check below never runs for them."""
+    free = shutil.disk_usage(path).free
+    if free < MIN_FREE_DISK_BYTES:
+        return (
+            f"Only {free} bytes free in {path}, below the "
+            f"{MIN_FREE_DISK_BYTES}-byte safety floor."
+        )
+    return None
+
 # Per-well overhead for still-image capture (Image mode has no fixed
 # recording duration like raw bursts do — this covers exposure + camera
 # readback + cv2.imwrite() encode/write), used only for the pre-run ETA
@@ -464,6 +479,26 @@ class ExperimentRunner:
         # estimate from. The UI polls this directly (rather than a callback)
         # to keep a live countdown ticking between stage-change callbacks.
         self.eta_finish_time: Optional[datetime] = None
+        # Same estimate as eta_finish_time, kept as a plain duration rather
+        # than an absolute time so run_loop() can compare it against a
+        # configured cycle interval (see run_loop() below) without redoing
+        # the motion-profile math itself — a single source of truth for
+        # "how long is a cycle expected to take" that both this run() and
+        # run_loop() share.
+        self.last_cycle_estimate_s: Optional[float] = None
+
+        # --- Loop-mode state, set by run_loop() only; read by the UI ---
+        self.looping: bool = False
+        self.current_cycle: int = 0
+        self.next_cycle_time: Optional[datetime] = None
+        self.loop_dir: Optional[str] = None
+        # Tri-state outcome of the most recent run() call: True (completed
+        # normally), False (raised/caught an error), or None (stopped by the
+        # user, or no call has completed yet) — run() swallows its own
+        # exceptions internally, so this is the only reliable way run_loop()
+        # can distinguish those three outcomes without string-matching
+        # status_msg.
+        self.last_run_ok: Optional[bool] = None
 
     # ------------------------------------------------------------------
     # Internal: max-rate raw burst writer
@@ -569,12 +604,10 @@ class ExperimentRunner:
                         if n_written % DISK_CHECK_EVERY_N_FRAMES == 0:
                             # No periodic stack.flush() here anymore — see
                             # DISK_CHECK_EVERY_N_FRAMES above for why.
-                            free = shutil.disk_usage(output_dir).free
-                            if free < MIN_FREE_DISK_BYTES:
+                            disk_err = _check_disk_space(output_dir)
+                            if disk_err:
                                 raise OSError(
-                                    f"Only {free} bytes free in {output_dir}, "
-                                    f"below the {MIN_FREE_DISK_BYTES}-byte safety floor "
-                                    f"— aborting before a memmap write can hit ENOSPC."
+                                    f"{disk_err} — aborting before a memmap write can hit ENOSPC."
                                 )
             except Exception as e:
                 # Record the failure and switch to drain-only mode — the
@@ -789,6 +822,8 @@ class ExperimentRunner:
         self.last_written_image_path = None
         self.last_written_video_path = None
         self.eta_finish_time = None
+        self.last_cycle_estimate_s = None
+        self.last_run_ok = None
 
         if not self.motion.is_homed:
             self.status_msg = "Not homed — homing before experiment start..."
@@ -860,6 +895,7 @@ class ExperimentRunner:
                 bit_depth = int(self.camera.get_camera_meta().get("bit_depth", 8))
                 total_estimate_s += _estimate_finalize_time_s(self.camera, total_duration, bit_depth)
             self.eta_finish_time = datetime.now() + timedelta(seconds=total_estimate_s)
+            self.last_cycle_estimate_s = total_estimate_s
             self.status_msg = (
                 f"Estimated duration {total_estimate_s:.0f}s for {len(positions)} wells "
                 f"— ETA finish {self.eta_finish_time.strftime('%H:%M:%S')}"
@@ -1102,12 +1138,14 @@ class ExperimentRunner:
                 )
                 if callback:
                     callback(self.status_msg)
+                self.last_run_ok = True
 
         except Exception as e:
             self.status_msg = f"Experiment error: {e}"
             logger.error(self.status_msg, exc_info=True)
             if callback:
                 callback(self.status_msg)
+            self.last_run_ok = False
         finally:
             # The experiment isn't really done until the last well's raw
             # burst is actually flushed and trimmed to disk, even though
@@ -1124,9 +1162,201 @@ class ExperimentRunner:
 
     def stop(self):
         self.running = False
+        self.looping = False
 
     def pause(self):
         self.paused = True
 
     def resume(self):
         self.paused = False
+
+    # ------------------------------------------------------------------
+    # Loop mode: repeat run() with an inter-cycle interval (0 = habituation,
+    # back-to-back; N minutes = growth imaging) until a wall-clock duration
+    # elapses. An in-flight cycle always finishes rather than being aborted
+    # mid-well; only the *next* cycle/sleep is what stop() or the deadline
+    # can prevent.
+    # ------------------------------------------------------------------
+    def run_loop(
+        self,
+        name: str,
+        positions: List[Tuple[float, float, float]],
+        labels: List[str],
+        delay_per_well: float = 1.0,
+        callback=None,
+        mode: str = "image",
+        image_format: str = "jpg",
+        use_laser: bool = False,
+        pre_duration: float = 5.0,
+        laser_on_duration: float = 1.0,
+        post_duration: float = 2.0,
+        interval_minutes: float = 0.0,
+        duration_minutes: float = 60.0,
+        growth_imaging: bool = False,
+    ):
+        mode = (mode or "image").lower()
+        if growth_imaging and mode == "raw":
+            # Primary enforcement is the UI guard in experiment_panel.py
+            # (blocks this combination before a thread is ever started) —
+            # this is a defensive second layer so run_loop() is safe to call
+            # directly (e.g. a future script) even if that guard is bypassed.
+            raise ValueError(
+                "Growth imaging is still-image only; Raw Burst mode is not supported."
+            )
+
+        self.looping = True
+        self.current_cycle = 0
+        self.next_cycle_time = None
+
+        loop_start_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.loop_dir = os.path.join(self.out_dir, f"{loop_start_ts}_{name}_loop")
+        os.makedirs(self.loop_dir, exist_ok=True)
+        manifest_path = os.path.join(self.loop_dir, "loop_manifest.jsonl")
+
+        original_out_dir = self.out_dir
+        deadline = datetime.now() + timedelta(minutes=duration_minutes)
+        interval_s = float(interval_minutes) * 60.0
+
+        def _write_manifest_record(mf, record: dict) -> None:
+            mf.write(json.dumps(record) + "\n")
+            mf.flush()
+
+        try:
+            with open(manifest_path, "a", encoding="utf-8") as mf:
+                while self.looping and datetime.now() < deadline:
+                    disk_err = _check_disk_space(self.loop_dir)
+                    if disk_err:
+                        logger.error(f"[Loop] {disk_err}")
+                        self.status_msg = f"Loop aborted: {disk_err}"
+                        if callback:
+                            callback(self.status_msg)
+                        _write_manifest_record(mf, {
+                            "cycle": self.current_cycle + 1,
+                            "status": "aborted_disk_full",
+                            "error": disk_err,
+                            "time": datetime.now().isoformat(),
+                        })
+                        self.looping = False
+                        break
+
+                    self.current_cycle += 1
+                    cycle_num = self.current_cycle
+                    self.out_dir = self.loop_dir
+
+                    # run()'s own exp_dir name is only second-resolution
+                    # (timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")),
+                    # so back-to-back habituation cycles that each finish in
+                    # under a second would otherwise collide on the same
+                    # folder and silently overwrite each other. Suffixing
+                    # the cycle number onto `name` guarantees a distinct
+                    # exp_dir per cycle regardless of how fast cycles run,
+                    # with zero changes needed to run() itself.
+                    attempt = 1
+                    cycle_name = f"{name}_cycle{cycle_num:04d}"
+                    cycle_start = datetime.now()
+                    self.run(
+                        name=cycle_name, positions=positions, labels=labels,
+                        delay_per_well=delay_per_well, callback=callback,
+                        mode=mode, image_format=image_format, use_laser=use_laser,
+                        pre_duration=pre_duration, laser_on_duration=laser_on_duration,
+                        post_duration=post_duration,
+                    )
+                    cycle_end = datetime.now()
+                    outcome = self.last_run_ok
+                    estimate_s = self.last_cycle_estimate_s
+
+                    if outcome is False:
+                        _write_manifest_record(mf, {
+                            "cycle": cycle_num, "attempt": attempt,
+                            "start": cycle_start.isoformat(), "end": cycle_end.isoformat(),
+                            "status": "error_retrying", "error": self.status_msg,
+                            "well_count": len(positions),
+                        })
+                        logger.warning(f"[Loop] Cycle {cycle_num} failed ({self.status_msg}); retrying once.")
+                        attempt = 2
+                        # _retry suffix keeps this distinct from the failed
+                        # attempt's folder even if the retry also completes
+                        # within the same wall-clock second.
+                        cycle_name = f"{name}_cycle{cycle_num:04d}_retry"
+                        cycle_start = datetime.now()
+                        self.run(
+                            name=cycle_name, positions=positions, labels=labels,
+                            delay_per_well=delay_per_well, callback=callback,
+                            mode=mode, image_format=image_format, use_laser=use_laser,
+                            pre_duration=pre_duration, laser_on_duration=laser_on_duration,
+                            post_duration=post_duration,
+                        )
+                        cycle_end = datetime.now()
+                        outcome = self.last_run_ok
+                        estimate_s = self.last_cycle_estimate_s
+
+                    if outcome is True:
+                        _write_manifest_record(mf, {
+                            "cycle": cycle_num, "attempt": attempt,
+                            "start": cycle_start.isoformat(), "end": cycle_end.isoformat(),
+                            "status": "ok" if attempt == 1 else "ok_after_retry",
+                            "well_count": len(positions),
+                            "estimated_s": estimate_s,
+                            "actual_s": (cycle_end - cycle_start).total_seconds(),
+                        })
+                    elif outcome is None:
+                        _write_manifest_record(mf, {
+                            "cycle": cycle_num, "attempt": attempt,
+                            "start": cycle_start.isoformat(), "end": cycle_end.isoformat(),
+                            "status": "stopped", "well_count": len(positions),
+                        })
+                        self.looping = False
+                        break
+                    else:
+                        _write_manifest_record(mf, {
+                            "cycle": cycle_num, "attempt": attempt,
+                            "start": cycle_start.isoformat(), "end": cycle_end.isoformat(),
+                            "status": "aborted_after_retry_failure", "error": self.status_msg,
+                            "well_count": len(positions),
+                        })
+                        logger.error(
+                            f"[Loop] Cycle {cycle_num} failed twice in a row "
+                            f"({self.status_msg}); aborting loop."
+                        )
+                        self.status_msg = f"Loop aborted after cycle {cycle_num} failed twice: {self.status_msg}"
+                        if callback:
+                            callback(self.status_msg)
+                        self.looping = False
+                        break
+
+                    if not self.looping or datetime.now() >= deadline:
+                        break
+
+                    elapsed = (cycle_end - cycle_start).total_seconds()
+                    sleep_s = max(0.0, interval_s - elapsed)
+                    if interval_s > 0.0 and elapsed > interval_s:
+                        logger.warning(
+                            f"[Loop] Cycle {cycle_num} took {elapsed:.1f}s, longer than the "
+                            f"{interval_s:.1f}s configured interval — starting next cycle immediately."
+                        )
+                    if (
+                        estimate_s is not None
+                        and interval_s > 0.0
+                        and estimate_s > interval_s
+                    ):
+                        logger.warning(
+                            f"[Loop] Cycle {cycle_num}'s estimated duration ({estimate_s:.1f}s) "
+                            f"already exceeds the configured interval ({interval_s:.1f}s)."
+                        )
+
+                    self.next_cycle_time = datetime.now() + timedelta(seconds=sleep_s) if sleep_s > 0 else None
+                    while sleep_s > 0 and self.looping:
+                        chunk = min(0.5, sleep_s)
+                        time.sleep(chunk)
+                        sleep_s -= chunk
+                    self.next_cycle_time = None
+
+            if self.looping:
+                self.status_msg = f"Loop finished: {self.current_cycle} cycles completed."
+            self.looping = False
+            if callback and not self.status_msg.startswith("Loop aborted"):
+                callback(self.status_msg)
+            logger.info(f"[Loop] {self.status_msg}")
+        finally:
+            self.out_dir = original_out_dir
+            self.next_cycle_time = None

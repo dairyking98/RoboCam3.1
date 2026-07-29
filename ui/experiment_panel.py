@@ -56,9 +56,12 @@ class _ExperimentThread(QThread):
 
     def __init__(self, runner, name, positions, labels, delay,
                  mode, image_format, use_laser,
-                 pre_duration, laser_on_duration, post_duration, parent=None):
+                 pre_duration, laser_on_duration, post_duration,
+                 loop_enabled=False, interval_minutes=0.0,
+                 duration_minutes=60.0, growth_imaging=False, parent=None):
         super().__init__(parent)
         self._runner = runner
+        self._loop_enabled = loop_enabled
         self._kwargs = dict(
             name=name, positions=positions, labels=labels,
             delay_per_well=delay, callback=self._on_status,
@@ -66,12 +69,21 @@ class _ExperimentThread(QThread):
             pre_duration=pre_duration, laser_on_duration=laser_on_duration,
             post_duration=post_duration,
         )
+        if loop_enabled:
+            self._kwargs.update(
+                interval_minutes=interval_minutes,
+                duration_minutes=duration_minutes,
+                growth_imaging=growth_imaging,
+            )
 
     def _on_status(self, msg: str):
         self.status_update.emit(msg)
 
     def run(self):
-        self._runner.run(**self._kwargs)
+        if self._loop_enabled:
+            self._runner.run_loop(**self._kwargs)
+        else:
+            self._runner.run(**self._kwargs)
         self.finished.emit()
 
     def stop(self):
@@ -131,6 +143,7 @@ class ExperimentPanel(QWidget):
         col2_layout.setSpacing(6)
         col2_layout.setContentsMargins(4, 4, 4, 4)
         col2_layout.addWidget(self._build_settings_group())
+        col2_layout.addWidget(self._build_loop_group())
         col2_layout.addWidget(self._build_presets_group())
         col2_layout.addWidget(self._build_control_group())
         col2_layout.addStretch()
@@ -174,6 +187,10 @@ class ExperimentPanel(QWidget):
         self.duration_spin.valueChanged.connect(self._autosave)
         self.laser_on_spin.valueChanged.connect(self._autosave)
         self.post_spin.valueChanged.connect(self._autosave)
+        self.loop_enabled_chk.toggled.connect(self._autosave)
+        self.loop_interval_spin.valueChanged.connect(self._autosave)
+        self.loop_duration_spin.valueChanged.connect(self._autosave)
+        self.growth_imaging_chk.toggled.connect(self._autosave)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -299,6 +316,42 @@ class ExperimentPanel(QWidget):
         out_row.addWidget(browse_btn)
         layout.addLayout(out_row, row, 1)
 
+        return grp
+
+    def _build_loop_group(self) -> QGroupBox:
+        grp = QGroupBox("Loop Mode")
+        layout = QGridLayout(grp)
+
+        self.loop_enabled_chk = QCheckBox("Enable Loop Mode")
+        self.loop_enabled_chk.toggled.connect(self._update_loop_visibility)
+        layout.addWidget(self.loop_enabled_chk, 0, 0, 1, 2)
+
+        row = 1
+        self.lbl_loop_interval = QLabel("Interval (min, 0 = back-to-back):")
+        layout.addWidget(self.lbl_loop_interval, row, 0)
+        self.loop_interval_spin = QDoubleSpinBox()
+        self.loop_interval_spin.setRange(0.0, 10080.0)  # up to 1 week
+        self.loop_interval_spin.setValue(0.0)
+        self.loop_interval_spin.setSingleStep(1.0)
+        layout.addWidget(self.loop_interval_spin, row, 1); row += 1
+
+        self.lbl_loop_duration = QLabel("Total duration (min):")
+        layout.addWidget(self.lbl_loop_duration, row, 0)
+        self.loop_duration_spin = QDoubleSpinBox()
+        self.loop_duration_spin.setRange(1.0, 20160.0)  # up to 2 weeks
+        self.loop_duration_spin.setValue(60.0)
+        self.loop_duration_spin.setSingleStep(5.0)
+        layout.addWidget(self.loop_duration_spin, row, 1); row += 1
+
+        self.growth_imaging_chk = QCheckBox("Growth Imaging (still-image only)")
+        self.growth_imaging_chk.toggled.connect(self._on_growth_imaging_toggled)
+        layout.addWidget(self.growth_imaging_chk, row, 0, 1, 2); row += 1
+
+        self.loop_status_lbl = QLabel("")
+        self.loop_status_lbl.setStyleSheet("font-style: italic; color: #555;")
+        layout.addWidget(self.loop_status_lbl, row, 0, 1, 2)
+
+        self._update_loop_visibility()
         return grp
 
     def _build_presets_group(self) -> QGroupBox:
@@ -443,6 +496,28 @@ class ExperimentPanel(QWidget):
         self.lbl_post.setVisible(use_laser)
         self.post_spin.setVisible(use_laser)
 
+    def _update_loop_visibility(self):
+        enabled = self.loop_enabled_chk.isChecked()
+        self.lbl_loop_interval.setVisible(enabled)
+        self.loop_interval_spin.setVisible(enabled)
+        self.lbl_loop_duration.setVisible(enabled)
+        self.loop_duration_spin.setVisible(enabled)
+        self.growth_imaging_chk.setVisible(enabled)
+
+    def _on_growth_imaging_toggled(self, checked: bool):
+        # Growth imaging is still-image only (see robocam/experiment.py
+        # run_loop()'s ValueError guard) — disable Raw Burst in the combo
+        # so the illegal combination can't even be selected through the UI.
+        # Index 1 is "Raw Burst" per addItems(["Image", "Raw Burst"]) above;
+        # disabling (not removing) the item preserves index stability for
+        # preset/session findText() lookups.
+        raw_item = self.mode_combo.model().item(1)
+        if raw_item is not None:
+            raw_item.setEnabled(not checked)
+        if checked and self.mode_combo.currentText() == "Raw Burst":
+            self.mode_combo.setCurrentText("Image")
+        self._update_mode_visibility()
+
     def _update_sel_count(self):
         sel = self.well_grid.selected_count()
         tot = self.well_grid.total_count()
@@ -525,6 +600,10 @@ class ExperimentPanel(QWidget):
             "laser_on": self.laser_on_spin.value(),
             "post": self.post_spin.value(),
             "cal_file": self.cal_combo.currentText(),
+            "loop_enabled": self.loop_enabled_chk.isChecked(),
+            "loop_interval": self.loop_interval_spin.value(),
+            "loop_duration": self.loop_duration_spin.value(),
+            "growth_imaging": self.growth_imaging_chk.isChecked(),
         }
 
     def _apply_preset_data(self, data: dict):
@@ -545,6 +624,16 @@ class ExperimentPanel(QWidget):
             cal_idx = self.cal_combo.findText(cal)
             if cal_idx >= 0:
                 self.cal_combo.setCurrentIndex(cal_idx)
+        self.loop_enabled_chk.setChecked(bool(data.get("loop_enabled", False)))
+        self.loop_interval_spin.setValue(float(data.get("loop_interval", 0.0)))
+        self.loop_duration_spin.setValue(float(data.get("loop_duration", 60.0)))
+        self.growth_imaging_chk.setChecked(bool(data.get("growth_imaging", False)))
+        self._update_loop_visibility()
+        # Re-applies the raw-item-disable and any forced mode switch, in case
+        # a saved preset/session combination would otherwise reload into the
+        # illegal growth-imaging + raw-mode state the guard in
+        # _start_experiment() exists to catch.
+        self._on_growth_imaging_toggled(self.growth_imaging_chk.isChecked())
         self._update_mode_visibility()
 
     def _refresh_presets(self):
@@ -607,6 +696,12 @@ class ExperimentPanel(QWidget):
             if cal_idx >= 0:
                 self.cal_combo.setCurrentIndex(cal_idx)
         self.override_cal_chk.setChecked(bool(s.get("use_cal_override", False)))
+        self.loop_enabled_chk.setChecked(bool(s.get("loop_enabled", False)))
+        self.loop_interval_spin.setValue(float(s.get("loop_interval", 0.0)))
+        self.loop_duration_spin.setValue(float(s.get("loop_duration", 60.0)))
+        self.growth_imaging_chk.setChecked(bool(s.get("growth_imaging", False)))
+        self._update_loop_visibility()
+        self._on_growth_imaging_toggled(self.growth_imaging_chk.isChecked())
 
     def _autosave(self, *_):
         self._save_session()
@@ -624,6 +719,10 @@ class ExperimentPanel(QWidget):
             "post": self.post_spin.value(),
             "cal_file": self.cal_combo.currentText(),
             "use_cal_override": self.override_cal_chk.isChecked(),
+            "loop_enabled": self.loop_enabled_chk.isChecked(),
+            "loop_interval": self.loop_interval_spin.value(),
+            "loop_duration": self.loop_duration_spin.value(),
+            "growth_imaging": self.growth_imaging_chk.isChecked(),
         })
 
     # ------------------------------------------------------------------
@@ -739,6 +838,19 @@ class ExperimentPanel(QWidget):
             QMessageBox.critical(self, "Error", "No wells selected.")
             return
 
+        if (self.loop_enabled_chk.isChecked() and self.growth_imaging_chk.isChecked()
+                and self.mode_combo.currentText() == "Raw Burst"):
+            logger.warning(
+                "Start Experiment blocked: growth imaging requires still-image mode, "
+                "but Raw Burst is selected."
+            )
+            QMessageBox.critical(
+                self, "Error",
+                "Growth Imaging only supports still-image capture.\n"
+                "Switch Mode to Image, or disable Growth Imaging."
+            )
+            return
+
         filtered_pos    = [positions[i] for i in selected if i < len(positions)]
         filtered_labels = [labels[i]    for i in selected if i < len(labels)]
 
@@ -768,6 +880,10 @@ class ExperimentPanel(QWidget):
             pre_duration=self.duration_spin.value(),
             laser_on_duration=self.laser_on_spin.value(),
             post_duration=self.post_spin.value(),
+            loop_enabled=self.loop_enabled_chk.isChecked(),
+            interval_minutes=self.loop_interval_spin.value(),
+            duration_minutes=self.loop_duration_spin.value(),
+            growth_imaging=self.growth_imaging_chk.isChecked(),
         )
         self._exp_thread.status_update.connect(
             lambda msg: self.status_lbl.setText(f"Status: {msg}")
@@ -824,13 +940,24 @@ class ExperimentPanel(QWidget):
 
     def _update_eta_label(self):
         runner = hw_state.get_runner()
-        if runner is None or runner.eta_finish_time is None:
+        if runner is None:
             return
-        remaining = (runner.eta_finish_time - datetime.now()).total_seconds()
-        sign = "-" if remaining < 0 else ""
-        mm, ss = divmod(int(abs(remaining)), 60)
-        self.eta_lbl.setText(f"ETA: {sign}{mm:02d}:{ss:02d}")
-        self.eta_lbl.setStyleSheet(
-            "font-style: italic; color: #b00020;" if remaining < 0
-            else "font-style: italic; color: #555;"
-        )
+
+        if runner.eta_finish_time is not None:
+            remaining = (runner.eta_finish_time - datetime.now()).total_seconds()
+            sign = "-" if remaining < 0 else ""
+            mm, ss = divmod(int(abs(remaining)), 60)
+            self.eta_lbl.setText(f"ETA: {sign}{mm:02d}:{ss:02d}")
+            self.eta_lbl.setStyleSheet(
+                "font-style: italic; color: #b00020;" if remaining < 0
+                else "font-style: italic; color: #555;"
+            )
+
+        if runner.looping:
+            next_str = (
+                runner.next_cycle_time.strftime("%H:%M:%S")
+                if runner.next_cycle_time else "now"
+            )
+            self.loop_status_lbl.setText(f"Cycle {runner.current_cycle} — next cycle at {next_str}")
+        else:
+            self.loop_status_lbl.setText("")

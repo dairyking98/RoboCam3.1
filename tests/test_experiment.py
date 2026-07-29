@@ -1,5 +1,8 @@
-"""Tests for the raw-burst .npy stack trim helper and fps pacing."""
+"""Tests for the raw-burst .npy stack trim helper, fps pacing, and loop mode."""
+import json
+import threading
 import time
+from datetime import datetime
 
 import numpy as np
 import pytest
@@ -16,6 +19,18 @@ class _FakeCamera:
         self.resolution = resolution
         self._exposure_us = exposure_us
         self._target_fps = target_fps
+        self.backend = "generic"
+
+    def get_frame(self):
+        # Still-image path (loop mode / growth imaging) -- unlike
+        # get_raw_frame(), no exposure-length sleep here since these frames
+        # aren't used for fps-pacing assertions, just for run()/run_loop()
+        # integration tests that need a valid cv2.imwrite()-able array.
+        w, h = self.resolution  # resolution is (w, h), matching _write_raw_burst's unpacking
+        return np.zeros((h, w), dtype=np.uint8)
+
+    def get_camera_meta(self):
+        return {"bit_depth": 8}
 
     def get_exposure(self):
         return self._exposure_us
@@ -42,6 +57,25 @@ class _FakeCamera:
         # per second regardless of exposure.
         time.sleep(self._exposure_us / 1_000_000.0)
         return np.zeros(self.resolution, dtype=np.uint8)
+
+
+class _FakeMotion:
+    """Minimal stand-in for the Marlin motion controller -- just enough
+    surface for ExperimentRunner.run()/run_loop() to run end-to-end without
+    real hardware. supports_profiles=False skips the ETA-estimate branch
+    entirely (the simplest path; ETA estimation itself is exercised by other
+    tests/hardware verification, not by loop-mode mechanics)."""
+
+    def __init__(self):
+        self.is_homed = True
+        self.supports_profiles = False
+        self.X = self.Y = self.Z = 0.0
+
+    def home(self):
+        self.is_homed = True
+
+    def move_absolute(self, X, Y, Z):
+        self.X, self.Y, self.Z = X, Y, Z
 
 
 def _make_stack(path, ceiling, real, h=8, w=10, dtype=np.uint8, fill=None):
@@ -155,3 +189,143 @@ class TestTargetFpsPacing:
         camera = _FakeCamera(exposure_us=10_000, target_fps=5_000.0)
         result = self._run_burst(tmp_path, monkeypatch, camera)
         assert result["fps_average"] < 150
+
+
+def _make_runner(tmp_path, camera=None):
+    runner = ExperimentRunner(motion_controller=_FakeMotion(), camera=camera or _FakeCamera())
+    runner.out_dir = str(tmp_path)
+    return runner
+
+
+def _manifest_records(loop_dir):
+    manifest = loop_dir / "loop_manifest.jsonl"
+    if not manifest.exists():
+        return []
+    return [json.loads(line) for line in manifest.read_text().splitlines() if line.strip()]
+
+
+class TestRunLoop:
+    """Loop mode: repeat run() with an inter-cycle interval (habituation:
+    0 = back-to-back; growth imaging: N minutes) until a wall-clock
+    duration elapses."""
+
+    def test_habituation_back_to_back_nested_folders(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        runner.run_loop(
+            name="hab", positions=[(0, 0, 0), (1, 1, 0)], labels=["A1", "A2"],
+            delay_per_well=0.1, mode="image",
+            interval_minutes=0.0, duration_minutes=1.0 / 60.0,  # 1s wall-clock budget
+        )
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_hab_loop")]
+        assert len(loop_dirs) == 1
+        loop_dir = loop_dirs[0]
+
+        records = _manifest_records(loop_dir)
+        ok_records = [r for r in records if r["status"] == "ok"]
+        assert len(ok_records) >= 2, "expected at least 2 back-to-back cycles in 1s"
+
+        cycle_dirs = sorted(d for d in loop_dir.iterdir() if d.is_dir())
+        assert len(cycle_dirs) == len(ok_records)
+        for d in cycle_dirs:
+            assert list(d.glob("*_points.csv")), f"{d} missing points.csv -- not a normal experiment dir"
+
+    def test_growth_imaging_interval_spacing(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        interval_s = 2.0
+        runner.run_loop(
+            name="growth", positions=[(0, 0, 0)], labels=["A1"],
+            delay_per_well=0.0, mode="image",
+            interval_minutes=interval_s / 60.0, duration_minutes=3.5 / 60.0,
+        )
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_growth_loop")]
+        loop_dir = loop_dirs[0]
+        ok_records = [r for r in _manifest_records(loop_dir) if r["status"] == "ok"]
+        assert len(ok_records) >= 2
+
+        starts = [datetime.fromisoformat(r["start"]) for r in ok_records[:2]]
+        gap = (starts[1] - starts[0]).total_seconds()
+        # Cycle work itself is near-instant (1 well, no dwell), so the gap
+        # should track the configured interval, not be back-to-back.
+        assert interval_s - 1.0 < gap < interval_s + 1.5
+
+    def test_growth_imaging_rejects_raw_mode(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        with pytest.raises(ValueError):
+            runner.run_loop(
+                name="growth", positions=[(0, 0, 0)], labels=["A1"],
+                mode="raw", growth_imaging=True,
+                interval_minutes=1.0, duration_minutes=1.0,
+            )
+        assert list(tmp_path.iterdir()) == []
+
+    def test_retry_once_then_abort(self, tmp_path, monkeypatch):
+        runner = _make_runner(tmp_path)
+        call_count = {"n": 0}
+
+        def fake_run(**kwargs):
+            call_count["n"] += 1
+            runner.status_msg = "Experiment error: forced failure"
+            runner.last_run_ok = False
+            runner.last_cycle_estimate_s = None
+
+        monkeypatch.setattr(runner, "run", fake_run)
+        runner.run_loop(
+            name="fail", positions=[(0, 0, 0)], labels=["A1"],
+            interval_minutes=0.0, duration_minutes=1.0,
+        )
+
+        assert call_count["n"] == 2, "should retry exactly once, not loop forever"
+        assert runner.looping is False
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_fail_loop")]
+        records = _manifest_records(loop_dirs[0])
+        statuses = [r["status"] for r in records]
+        assert statuses == ["error_retrying", "aborted_after_retry_failure"]
+
+    def test_stop_during_inter_cycle_sleep_is_immediate(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        thread = threading.Thread(
+            target=runner.run_loop,
+            kwargs=dict(
+                name="stopme", positions=[(0, 0, 0)], labels=["A1"],
+                delay_per_well=0.0, mode="image",
+                interval_minutes=10.0, duration_minutes=10.0,
+            ),
+        )
+        thread.start()
+        # Wait for cycle 1 to complete and enter the (long) inter-cycle sleep.
+        deadline = time.time() + 5.0
+        while time.time() < deadline and runner.current_cycle < 1:
+            time.sleep(0.02)
+        time.sleep(0.1)  # let it settle into the sleep loop
+
+        runner.stop()
+        thread.join(timeout=3.0)
+        assert not thread.is_alive(), "stop() during inter-cycle sleep must not wait out the interval"
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_stopme_loop")]
+        ok_records = [r for r in _manifest_records(loop_dirs[0]) if r["status"] == "ok"]
+        assert len(ok_records) == 1
+
+    def test_disk_space_check_aborts_before_new_cycle(self, tmp_path, monkeypatch):
+        runner = _make_runner(tmp_path)
+
+        class _FakeUsage:
+            free = 1  # far below MIN_FREE_DISK_BYTES
+
+        monkeypatch.setattr(
+            "robocam.experiment.shutil.disk_usage", lambda path: _FakeUsage()
+        )
+        runner.run_loop(
+            name="full", positions=[(0, 0, 0)], labels=["A1"],
+            interval_minutes=0.0, duration_minutes=1.0,
+        )
+
+        assert runner.current_cycle == 0
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_full_loop")]
+        records = _manifest_records(loop_dirs[0])
+        assert len(records) == 1
+        assert records[0]["status"] == "aborted_disk_full"
+        assert [d for d in loop_dirs[0].iterdir() if d.is_dir()] == []
