@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import zipfile
 from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Optional
@@ -125,6 +126,17 @@ def parse_meta_name(meta_path: Path) -> tuple[str, str]:
     return well, exp_ts
 
 
+def open_export_zip(exp_dir: Path, fmt: str) -> zipfile.ZipFile:
+    """
+    Open exp_dir/images_<fmt>.zip for streaming frame writes, one archive per
+    experiment (all wells share it — call once before the well loop and close
+    after). ZIP_STORED (no re-compression): PNG/JPEG bytes are already
+    compressed, so DEFLATE would just burn CPU for no size benefit.
+    """
+    return zipfile.ZipFile(exp_dir / f"images_{fmt}.zip", mode="w",
+                            compression=zipfile.ZIP_STORED)
+
+
 # ---------------------------------------------------------------------------
 # Core pipeline
 # ---------------------------------------------------------------------------
@@ -132,20 +144,34 @@ def parse_meta_name(meta_path: Path) -> tuple[str, str]:
 def process_well(
     meta_path: Path,
     exp_dir: Path,
-    codec: str = "libx264",
+    codec: str = "ffv1",
     crf: int = 18,
     mono: bool = False,
-    do_images: bool = True,
-    do_video: bool = True,
+    do_png: bool = True,
+    do_jpeg: bool = False,
+    do_mp4: bool = True,
+    do_vfr: bool = True,
+    jpeg_quality: int = 95,
+    zip_png: Optional[zipfile.ZipFile] = None,
+    zip_jpeg: Optional[zipfile.ZipFile] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     """
-    Process one well: .npy burst → PNG images and/or VFR MKV + display MP4.
+    Process one well: .npy burst → PNG and/or JPEG image sequence, and/or
+    VFR MKV / display MP4 video. Each output format gets its own directory
+    (images_png/, images_jpeg/, videos_mp4/, videos_vfr/) — formats are never
+    mixed into the same folder.
+
+    zip_png/zip_jpeg: pass an already-open zipfile.ZipFile (see
+    open_export_zip) to stream that format's frames straight into a
+    per-experiment .zip instead of writing loose files — the caller owns the
+    zip's lifetime since it spans every well in the experiment, not just this
+    one. Leave as None for loose-file output.
 
     progress_callback(current_frame, total_frames) is called periodically
     during the frame loop.
     """
-    if do_video and not AV_AVAILABLE:
+    if (do_mp4 or do_vfr) and not AV_AVAILABLE:
         raise RuntimeError("PyAV not installed — cannot encode video. "
                            "Install with: pip install av")
 
@@ -172,6 +198,16 @@ def process_well(
     well, exp_ts = parse_meta_name(meta_path)
     duration     = meta.get("duration_actual_s", 0)
     fps_avg      = meta.get("fps_average", meta.get("fps_actual", 0))
+
+    # Mono sensors (e.g. PlayerOne Mars 662M) have no real color data.
+    # Encoding the display MP4 as true single-channel (pix_fmt "gray") was
+    # tried and reverted — Fiji's video importer decodes it back to RGB
+    # anyway (decoders resynthesize chroma for generic playback
+    # compatibility) and it bloated file size ~50x on real hardware footage.
+    # PNGs don't have that problem (color-type metadata isn't decoded away),
+    # so is_mono is only used below to write a true single grayscale channel
+    # for the image-sequence output, not the video.
+    is_mono = mono or camera_meta.get("bayer_pattern", "RGGB") == "mono"
 
     print(f"  {n} frames  |  {duration:.3f}s  |  {fps_avg:.2f} fps avg")
     for ev in laser_events:
@@ -200,30 +236,48 @@ def process_well(
 
     # After debayering, pixel dimensions are the same (cv2 Bayer → BGR preserves h×w)
 
-    img_dir = exp_dir / "images" / well
-    vid_dir = exp_dir / "videos"
-    if do_images:
-        img_dir.mkdir(parents=True, exist_ok=True)
-    if do_video:
-        vid_dir.mkdir(parents=True, exist_ok=True)
+    img_png_dir  = exp_dir / "images_png" / well
+    img_jpeg_dir = exp_dir / "images_jpeg" / well
+    mp4_dir      = exp_dir / "videos_mp4"
+    vfr_dir      = exp_dir / "videos_vfr"
+    if do_png and zip_png is None:
+        img_png_dir.mkdir(parents=True, exist_ok=True)
+    if do_jpeg and zip_jpeg is None:
+        img_jpeg_dir.mkdir(parents=True, exist_ok=True)
+    if do_mp4:
+        mp4_dir.mkdir(parents=True, exist_ok=True)
+    if do_vfr:
+        vfr_dir.mkdir(parents=True, exist_ok=True)
 
-    mkv_path = str(vid_dir / f"{well}_{exp_ts}_vfr.mkv")
-    mp4_path = str(vid_dir / f"{well}_{exp_ts}.mp4")
+    mkv_path = str(vfr_dir / f"{well}_{exp_ts}_vfr.mkv")
+    mp4_path = str(mp4_dir / f"{well}_{exp_ts}.mp4")
 
     display_fps = (Fraction(n, 1) / Fraction(round(duration * 1000), 1000)
                    if duration > 0 else Fraction(30))
 
     mkv_con = mkv_s = mp4_con = mp4_s = None
-    if do_video:
+    if do_vfr:
         mkv_con        = av.open(mkv_path, "w")
-        mkv_s          = mkv_con.add_stream(codec, rate=90_000)
+        # `rate=` here must be the real average fps (metadata only — it's what
+        # players/tools read as avg_frame_rate). Passing the 90kHz PTS clock
+        # here instead (as this used to) makes add_stream() advertise a
+        # 90000fps stream; readers that compute frame count as
+        # duration * avg_frame_rate (Fiji, some VLC builds) then report
+        # wildly wrong frame counts / a garbled scrub bar. codec_context.time_base
+        # is set separately so the encoder's own internal clock actually
+        # matches the 90kHz PTS values we feed it below — setting only
+        # stream.time_base leaves the codec context's clock desynced from the
+        # container's, which silently corrupts the muxed duration instead.
+        mkv_s          = mkv_con.add_stream(codec, rate=display_fps)
         mkv_s.width    = w
         mkv_s.height   = h
         mkv_s.pix_fmt  = "yuv420p"
+        mkv_s.codec_context.time_base = _TIME_BASE
         mkv_s.time_base = _TIME_BASE
         if codec in ("libx264", "libx265"):
             mkv_s.options = {"crf": str(crf), "preset": "medium", "bframes": "0"}
 
+    if do_mp4:
         mp4_con        = av.open(mp4_path, "w")
         mp4_s          = mp4_con.add_stream("libx264", rate=display_fps)
         mp4_s.width    = w
@@ -238,40 +292,66 @@ def process_well(
             bgr    = npy_to_bgr(arr, mono, camera_meta)
             is_on  = laser_on_at(fi["time_offset_s"], laser_events)
 
-            if do_images:
+            if do_png or do_jpeg:
                 t_ms      = int(fi["time_offset_s"] * 1_000)
                 laser_str = "laser-on" if is_on else "laser-off"
-                img_name  = f"{well}_{fi['frame_index']:05d}_{t_ms:06d}ms_{laser_str}.png"
-                cv2.imwrite(str(img_dir / img_name), bgr)
+                base_name = f"{well}_{fi['frame_index']:05d}_{t_ms:06d}ms_{laser_str}"
+                # PNG color-type metadata is unambiguous (unlike H.264 chroma
+                # flags, which decoders resynthesize to RGB on playback) — so
+                # this is what actually makes Fiji's Image Sequence importer
+                # produce an 8-bit stack for mono sensors, not the mp4 fix above.
+                img_out = bgr[:, :, 0] if is_mono else bgr
 
-            if do_video:
+            if do_png:
+                png_name = f"{base_name}.png"
+                if zip_png is not None:
+                    ok, buf = cv2.imencode(".png", img_out)
+                    zip_png.writestr(f"{well}/{png_name}", buf.tobytes())
+                else:
+                    cv2.imwrite(str(img_png_dir / png_name), img_out)
+
+            if do_jpeg:
+                jpg_name = f"{base_name}.jpg"
+                jpg_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+                if zip_jpeg is not None:
+                    ok, buf = cv2.imencode(".jpg", img_out, jpg_params)
+                    zip_jpeg.writestr(f"{well}/{jpg_name}", buf.tobytes())
+                else:
+                    cv2.imwrite(str(img_jpeg_dir / jpg_name), img_out, jpg_params)
+
+            if do_mp4 or do_vfr:
                 vid_frame = bgr.copy()
                 if is_on:
                     draw_laser_indicator(vid_frame)
 
-                mkv_frame     = av.VideoFrame.from_ndarray(vid_frame, format="bgr24")
-                mkv_frame     = mkv_frame.reformat(format="yuv420p")
-                mkv_frame.pts = int(fi["time_offset_s"] * 90_000)
-                for packet in mkv_s.encode(mkv_frame):
-                    mkv_con.mux(packet)
+                if do_vfr:
+                    mkv_frame     = av.VideoFrame.from_ndarray(vid_frame, format="bgr24")
+                    mkv_frame     = mkv_frame.reformat(format="yuv420p")
+                    mkv_frame.pts = int(fi["time_offset_s"] * 90_000)
+                    for packet in mkv_s.encode(mkv_frame):
+                        mkv_con.mux(packet)
 
-                mp4_frame     = av.VideoFrame.from_ndarray(vid_frame, format="bgr24")
-                mp4_frame     = mp4_frame.reformat(format="yuv420p")
-                mp4_frame.pts = i
-                for packet in mp4_s.encode(mp4_frame):
-                    mp4_con.mux(packet)
+                if do_mp4:
+                    mp4_frame     = av.VideoFrame.from_ndarray(vid_frame, format="bgr24")
+                    mp4_frame     = mp4_frame.reformat(format="yuv420p")
+                    mp4_frame.pts = i
+                    for packet in mp4_s.encode(mp4_frame):
+                        mp4_con.mux(packet)
 
             if progress_callback:
                 progress_callback(i + 1, n)
             elif (i + 1) % 50 == 0 or (i + 1) == n:
                 tags = "/".join(filter(None, [
-                    "images" if do_images else "",
-                    "video"  if do_video  else "",
+                    "png"  if do_png  else "",
+                    "jpeg" if do_jpeg else "",
+                    "mp4"  if do_mp4  else "",
+                    "vfr"  if do_vfr  else "",
                 ]))
                 print(f"  [{tags}] {i + 1}/{n}", end="\r", flush=True)
 
-        if do_video:
+        if do_vfr:
             for packet in mkv_s.encode(): mkv_con.mux(packet)
+        if do_mp4:
             for packet in mp4_s.encode(): mp4_con.mux(packet)
 
     finally:
@@ -279,11 +359,21 @@ def process_well(
         if mp4_con: mp4_con.close()
 
     print()
-    if do_images:
-        count = sum(1 for _ in img_dir.glob("*.png"))
-        print(f"  images → {img_dir.relative_to(exp_dir)}  ({count} PNGs)")
-    if do_video:
+    if do_png:
+        if zip_png is not None:
+            print(f"  png   → {Path(zip_png.filename).name}  [{well}/]  ({n} frames, zipped)")
+        else:
+            count = sum(1 for _ in img_png_dir.glob("*.png"))
+            print(f"  png   → {img_png_dir.relative_to(exp_dir)}  ({count} PNGs)")
+    if do_jpeg:
+        if zip_jpeg is not None:
+            print(f"  jpeg  → {Path(zip_jpeg.filename).name}  [{well}/]  ({n} frames, zipped)")
+        else:
+            count = sum(1 for _ in img_jpeg_dir.glob("*.jpg"))
+            print(f"  jpeg  → {img_jpeg_dir.relative_to(exp_dir)}  ({count} JPEGs)")
+    if do_vfr:
         mkv_mb = os.path.getsize(mkv_path) / 1_048_576
+        print(f"  vfr   → {Path(mkv_path).relative_to(exp_dir)}  ({mkv_mb:.1f} MB)  — VFR archival")
+    if do_mp4:
         mp4_mb = os.path.getsize(mp4_path) / 1_048_576
-        print(f"  videos/  {Path(mkv_path).name}  ({mkv_mb:.1f} MB)  — VFR archival")
-        print(f"           {Path(mp4_path).name}  ({mp4_mb:.1f} MB)  — {float(display_fps):.1f} fps display")
+        print(f"  mp4   → {Path(mp4_path).relative_to(exp_dir)}  ({mp4_mb:.1f} MB)  — {float(display_fps):.1f} fps display")

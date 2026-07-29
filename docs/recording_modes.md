@@ -113,7 +113,7 @@ Shared by both the CLI (`scripts/reconstruct_vfr.py`) and the GUI (Processing ta
 
 `ui/processing_panel.py` provides:
 - Folder list: add/remove one or more experiment output folders
-- Output options: PNG image sequence, MP4 (constant fps, presentation), VFR MKV (accurate timing, archival) — independently toggleable
+- Output options (as of 2026-07-29, each independently toggleable, never mixed into one folder): PNG, JPEG, MP4 (constant fps, presentation), VFR MKV (accurate timing, archival). Images can optionally be packaged into one `.zip` per experiment instead of loose files, streamed directly into the archive rather than written loose then zipped.
 - **Auto-process after experiment** checkbox in the Experiment tab, which queues and starts processing automatically the moment a run finishes
 - Per-well and overall progress bars, scrolling log
 
@@ -121,8 +121,57 @@ Shared by both the CLI (`scripts/reconstruct_vfr.py`) and the GUI (Processing ta
 1. Load `camera_meta.json` and the well's `*_metadata.json`. If `frames_file` is present, open that one stacked array with `mmap_mode="r"` (current format); otherwise fall back to opening each frame's individual `.npy` file named in `frames[].file` (pre-2026-07-06 data).
 2. Index into the stack (or load the per-frame file) for each frame
 3. Debayer using the pattern/bit-depth from `camera_meta.json` (same code path for both backends; correctness for Picamera2 raw data is under investigation — see Known Issues)
-4. Write PNG files to `images/<well>/`
-5. Encode MP4 and/or VFR MKV using per-frame timestamps
+4. Write PNG/JPEG files to `images_png/<well>/` and/or `images_jpeg/<well>/` — or straight into `images_png.zip`/`images_jpeg.zip` (one archive per experiment, all wells) if zip packaging is enabled
+5. Encode MP4 to `videos_mp4/` and/or VFR MKV to `videos_vfr/` using per-frame timestamps. VFR's codec defaults to **ffv1** (lossless) as of 2026-07-29 — see size comparison below; MP4 always uses `libx264` regardless, for small/universally-playable presentation output.
+
+**Note on the video path vs. raw content**: `draw_laser_indicator()` burns a white asterisk overlay directly into the frame for any laser-on timestamp, but only on the copy fed to the video encoders — the PNG/JPEG path never sees it. So VFR/MP4 frames captured during a laser-on window are not bit-identical to the source `.npy`/PNG even when the video codec itself is lossless; PNG/JPEG are the ones that preserve the frame content unmodified (aside from the >8-bit-down-to-uint8 rescale in `npy_to_bgr` when the sensor exceeds 8-bit).
+
+### Export format size comparison (2026-07-29)
+
+Measured on real hardware data — `20260728_121408_Jul27_test1` on RoboCam
+(`/mnt/nvme/RoboCam3.1/output/`), 3 wells (A1, B3, C5), Mars 662M mono, 8-bit,
+1280×960, 908 frames total. This experiment happened to get processed once
+before and once after the format-split/ffv1 change landed, on identical raw
+data, so every format below is a true apples-to-apples comparison (confirmed
+PNG bytes are bit-identical whether loose or zipped, as expected from
+`ZIP_STORED`).
+
+| Format | Total size (3 wells) | % of raw | Lossless? |
+|---|---|---|---|
+| Raw `.npy` | 1,064.0 MiB | 100% | — |
+| PNG stack (loose or zipped — identical bytes) | 743.6 MiB | 69.9% | Yes |
+| **VFR ffv1 (new default)** | **673.6 MiB** | **63.3%** | **Yes** |
+| JPEG stack (q95, zipped) | 469.8 MiB | 44.2% | No |
+| MP4 display (libx264) | 225.9 MiB | 21.2% | No |
+| VFR libx264 crf18 (old default) | 213.8 MiB | 20.1% | No |
+
+Takeaways:
+- **ffv1 beats a zipped PNG stack on real sensor footage** (~9.4% smaller)
+  while staying fully lossless — a synthetic blob+noise test earlier
+  predicted ~14%; real sensor noise gives somewhat less compression headroom
+  but the direction holds.
+- PNG only buys ~30% off raw size here — real sensor noise doesn't compress
+  well under plain deflate, unlike synthetic gradient content.
+- The old libx264-crf18 "VFR" and the MP4 display stream land almost
+  identically (213.8 vs 225.9 MiB) since they're the same codec/CRF, just a
+  different container — the old VFR default wasn't buying any fidelity over
+  the display MP4, only more-accurate timestamps.
+- See the note above: none of the video formats (old or new codec) are
+  bit-identical to raw for laser-on frames, because of the burned-in laser
+  overlay — this is independent of codec losslessness.
+
+**2026-07-29 correction**: both VFR files measured above (ffv1 and the old
+libx264-crf18 one) were produced before a bug fix to
+`mkv_s.codec_context.time_base` (see the `f4de2c8` commit). The bug corrupted
+the muxed container's *duration and avg_frame_rate metadata* only — a
+303-frame/~10s file was reporting itself as ~90,000fps and 300,330 frames to
+any reader that trusts that metadata (confirmed via Fiji reporting exactly
+that on real footage, and likely the cause of VLC's scrub-bar glitches on VFR
+files too). It did **not** touch the encoded pixel data, the actual per-frame
+PTS values used internally, or the file size — so every number in the table
+above is still accurate. Only the container-level duration/frame-count a tool
+reports was wrong; the sizes and the lossless/lossy classification stand as
+measured.
 
 ---
 

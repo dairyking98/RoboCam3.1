@@ -35,59 +35,89 @@ class _ProcessWorker(QThread):
     log_line      = Signal(str)
     finished      = Signal(int, int)         # wells_ok, wells_failed
 
-    def __init__(self, folders: list[str], do_images: bool, do_video: bool, parent=None):
+    def __init__(self, folders: list[str], do_png: bool, do_jpeg: bool,
+                 do_mp4: bool, do_vfr: bool, zip_images: bool, parent=None):
         super().__init__(parent)
-        self._folders  = folders
-        self._do_images = do_images
-        self._do_video  = do_video
-        self._stop      = False
+        self._folders    = folders
+        self._do_png     = do_png
+        self._do_jpeg    = do_jpeg
+        self._do_mp4     = do_mp4
+        self._do_vfr     = do_vfr
+        self._zip_images = zip_images
+        self._stop       = False
 
     def stop(self):
         self._stop = True
 
     def run(self):
-        from robocam.postprocess import find_metadata_files, parse_meta_name, process_well
+        from robocam.postprocess import (
+            find_metadata_files, parse_meta_name, process_well, open_export_zip,
+        )
 
-        # Gather all wells across all selected folders
-        all_jobs: list[tuple[Path, Path]] = []  # (meta_path, exp_dir)
+        # Gather all wells across all selected folders, grouped by experiment
+        # directory — a zip archive (when enabled) spans every well in one
+        # experiment, so it has to be opened/closed once per exp_dir, not per well.
+        jobs_by_exp: dict[Path, list[Path]] = {}
         for folder in self._folders:
             try:
                 metas, exp_dir = find_metadata_files(folder)
-                for m in metas:
-                    all_jobs.append((m, exp_dir))
+                jobs_by_exp.setdefault(exp_dir, []).extend(metas)
             except ValueError as e:
                 self.log_line.emit(f"[skip] {folder}: {e}")
 
-        total  = len(all_jobs)
+        total  = sum(len(metas) for metas in jobs_by_exp.values())
+        done   = 0
         ok     = 0
         failed = 0
 
-        for i, (meta_path, exp_dir) in enumerate(all_jobs):
+        for exp_dir, metas in jobs_by_exp.items():
             if self._stop:
-                self.log_line.emit("Cancelled.")
                 break
 
-            well, _ = parse_meta_name(meta_path)
-            self.well_started.emit(well, i + 1, total)
-            self.log_line.emit(f"\n[{well}]  {meta_path.name}")
-
-            def _frame_cb(cur: int, tot: int):
-                self.frame_progress.emit(cur, tot)
+            zip_png  = (open_export_zip(exp_dir, "png")
+                        if self._do_png and self._zip_images else None)
+            zip_jpeg = (open_export_zip(exp_dir, "jpeg")
+                        if self._do_jpeg and self._zip_images else None)
 
             try:
-                process_well(
-                    meta_path, exp_dir,
-                    do_images=self._do_images,
-                    do_video=self._do_video,
-                    progress_callback=_frame_cb,
-                )
-                self.well_done.emit(well, True, "")
-                ok += 1
-                self.log_line.emit(f"  done.")
-            except Exception as e:
-                self.well_done.emit(well, False, str(e))
-                failed += 1
-                self.log_line.emit(f"  ERROR: {e}")
+                for meta_path in metas:
+                    if self._stop:
+                        self.log_line.emit("Cancelled.")
+                        break
+
+                    well, _ = parse_meta_name(meta_path)
+                    done += 1
+                    self.well_started.emit(well, done, total)
+                    self.log_line.emit(f"\n[{well}]  {meta_path.name}")
+
+                    def _frame_cb(cur: int, tot: int):
+                        self.frame_progress.emit(cur, tot)
+
+                    try:
+                        process_well(
+                            meta_path, exp_dir,
+                            do_png=self._do_png,
+                            do_jpeg=self._do_jpeg,
+                            do_mp4=self._do_mp4,
+                            do_vfr=self._do_vfr,
+                            zip_png=zip_png,
+                            zip_jpeg=zip_jpeg,
+                            progress_callback=_frame_cb,
+                        )
+                        self.well_done.emit(well, True, "")
+                        ok += 1
+                        self.log_line.emit(f"  done.")
+                    except Exception as e:
+                        self.well_done.emit(well, False, str(e))
+                        failed += 1
+                        self.log_line.emit(f"  ERROR: {e}")
+            finally:
+                if zip_png is not None:
+                    zip_png.close()
+                    self.log_line.emit(f"\n[zip] {zip_png.filename}")
+                if zip_jpeg is not None:
+                    zip_jpeg.close()
+                    self.log_line.emit(f"[zip] {zip_jpeg.filename}")
 
         self.finished.emit(ok, failed)
 
@@ -142,29 +172,76 @@ class ProcessingPanel(QWidget):
 
     def _build_options_group(self) -> QGroupBox:
         grp = QGroupBox("Output Options")
-        layout = QHBoxLayout(grp)
+        outer = QVBoxLayout(grp)
 
-        self._do_images_chk = QCheckBox("PNG image sequence")
-        self._do_images_chk.setChecked(True)
-        layout.addWidget(self._do_images_chk)
+        # Formats are never mixed into one folder — each gets its own
+        # images_png/, images_jpeg/, videos_mp4/, videos_vfr/ directory.
+        img_row = QHBoxLayout()
+        img_row.addWidget(QLabel("Images:"))
 
-        self._do_video_chk = QCheckBox("Video (MP4 + VFR MKV)")
-        self._do_video_chk.setChecked(True)
-        layout.addWidget(self._do_video_chk)
+        # Percentages are approximate output-size-vs-raw-.npy ratios, measured
+        # on a real 3-well mono-sensor burst (see docs/recording_modes.md,
+        # "Export format size comparison") — actual ratio depends on sensor
+        # noise/content, treat these as ballpark, not a guarantee.
+        size_note = ("Approximate output size vs. the raw .npy burst, measured "
+                     "on a real 3-well mono-sensor capture (see "
+                     "docs/recording_modes.md, \"Export format size "
+                     "comparison\"). Actual ratio depends on sensor noise and "
+                     "image content — treat as ballpark, not a guarantee.")
 
-        layout.addStretch()
+        self._do_png_chk = QCheckBox("PNG (~70% of raw)")
+        self._do_png_chk.setChecked(True)
+        self._do_png_chk.setToolTip("Lossless.\n" + size_note)
+        img_row.addWidget(self._do_png_chk)
+
+        self._do_jpeg_chk = QCheckBox("JPEG (~44% of raw)")
+        self._do_jpeg_chk.setChecked(False)
+        self._do_jpeg_chk.setToolTip("Lossy (quality 95).\n" + size_note)
+        img_row.addWidget(self._do_jpeg_chk)
+
+        self._zip_images_chk = QCheckBox("Package as .zip (one archive per experiment, easier to transfer)")
+        self._zip_images_chk.setChecked(True)
+        self._zip_images_chk.setToolTip(
+            "Streams PNG/JPEG frames straight into one .zip per experiment "
+            "instead of writing loose files — same total size (ZIP_STORED, "
+            "no re-compression), just packaged as a single file for transfer."
+        )
+        img_row.addWidget(self._zip_images_chk)
+
+        img_row.addStretch()
+        outer.addLayout(img_row)
+
+        vid_row = QHBoxLayout()
+        vid_row.addWidget(QLabel("Video:"))
+
+        self._do_mp4_chk = QCheckBox("MP4 (display, ~21% of raw)")
+        self._do_mp4_chk.setChecked(True)
+        self._do_mp4_chk.setToolTip(
+            "Lossy (libx264), constant frame rate — for quick viewing, not analysis.\n" + size_note)
+        vid_row.addWidget(self._do_mp4_chk)
+
+        self._do_vfr_chk = QCheckBox("VFR MKV (archival, lossless, ~63% of raw)")
+        self._do_vfr_chk.setChecked(False)
+        self._do_vfr_chk.setToolTip(
+            "Lossless (ffv1), real per-frame timestamps — for analysis, not "
+            "quick viewing (larger than MP4, and true VFR content can look odd "
+            "scrubbing in some players).\n" + size_note)
+        vid_row.addWidget(self._do_vfr_chk)
+
+        vid_row.addStretch()
 
         self._process_btn = QPushButton("Process Folders")
         self._process_btn.setFixedHeight(32)
         self._process_btn.clicked.connect(self._start_processing)
-        layout.addWidget(self._process_btn)
+        vid_row.addWidget(self._process_btn)
 
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setFixedHeight(32)
         self._cancel_btn.setEnabled(False)
         self._cancel_btn.clicked.connect(self._cancel_processing)
-        layout.addWidget(self._cancel_btn)
+        vid_row.addWidget(self._cancel_btn)
 
+        outer.addLayout(vid_row)
         return grp
 
     def _build_progress_group(self) -> QGroupBox:
@@ -264,7 +341,11 @@ class ProcessingPanel(QWidget):
             self._log.append("No folders queued.")
             return
 
-        if not self._do_images_chk.isChecked() and not self._do_video_chk.isChecked():
+        do_png  = self._do_png_chk.isChecked()
+        do_jpeg = self._do_jpeg_chk.isChecked()
+        do_mp4  = self._do_mp4_chk.isChecked()
+        do_vfr  = self._do_vfr_chk.isChecked()
+        if not any([do_png, do_jpeg, do_mp4, do_vfr]):
             self._log.append("Select at least one output option.")
             return
 
@@ -276,8 +357,11 @@ class ProcessingPanel(QWidget):
 
         self._worker = _ProcessWorker(
             folders=folders,
-            do_images=self._do_images_chk.isChecked(),
-            do_video=self._do_video_chk.isChecked(),
+            do_png=do_png,
+            do_jpeg=do_jpeg,
+            do_mp4=do_mp4,
+            do_vfr=do_vfr,
+            zip_images=self._zip_images_chk.isChecked(),
         )
         self._worker.well_started.connect(self._on_well_started)
         self._worker.frame_progress.connect(self._on_frame_progress)
