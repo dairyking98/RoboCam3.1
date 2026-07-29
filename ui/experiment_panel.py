@@ -91,7 +91,6 @@ class _ExperimentThread(QThread):
 class ExperimentPanel(QWidget):
     experiment_started  = Signal()
     experiment_finished = Signal()
-    experiment_data_ready = Signal(str)  # emitted with exp_dir when auto-process is on
 
     def __init__(self, calibration_panel=None, parent=None):
         super().__init__(parent)
@@ -368,13 +367,6 @@ class ExperimentPanel(QWidget):
         self._eta_timer = QTimer(self)
         self._eta_timer.setInterval(1000)
         self._eta_timer.timeout.connect(self._update_eta_label)
-
-        self.auto_process_chk = QCheckBox("Auto-process after experiment")
-        self.auto_process_chk.setToolTip(
-            "When checked, the Processing tab will automatically convert\n"
-            ".npy frames to PNG images and video after each experiment."
-        )
-        layout.addWidget(self.auto_process_chk)
 
         return grp
 
@@ -805,12 +797,6 @@ class ExperimentPanel(QWidget):
         self.status_lbl.setText("Status: Finished")
         self.experiment_finished.emit()
         self._exp_thread = None
-
-        if self.auto_process_chk.isChecked():
-            import robocam.hw_state as _hw
-            runner = _hw.get_runner()
-            if runner and runner.last_exp_dir:
-                self.experiment_data_ready.emit(runner.last_exp_dir)
 
     def _update_eta_label(self):
         runner = hw_state.get_runner()

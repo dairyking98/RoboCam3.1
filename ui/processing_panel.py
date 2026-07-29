@@ -326,11 +326,6 @@ class ProcessingPanel(QWidget):
     # Processing control
     # ------------------------------------------------------------------
 
-    def queue_folder(self, path: str):
-        """Add a folder and start processing immediately (called from experiment auto-process)."""
-        self._add_path(path)
-        self._start_processing()
-
     def _start_processing(self):
         if self._worker and self._worker.isRunning():
             return

@@ -91,13 +91,6 @@ class MainWindow(QMainWindow):
             self.motion_profiles_panel._on_printer_connected
         )
 
-        # Auto-process: switch to Processing tab and queue the experiment folder
-        def _auto_process(exp_dir: str):
-            self.processing_panel.queue_folder(exp_dir)
-            self.tabs.setCurrentWidget(self.processing_panel)
-
-        self.experiment_panel.experiment_data_ready.connect(_auto_process)
-
         # Auto initial sync after panels have loaded
         QTimer.singleShot(500, self.experiment_panel.sync_from_calibration)
 
