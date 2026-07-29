@@ -14,17 +14,19 @@ import glob
 import json
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QPushButton, QComboBox, QLineEdit,
     QDoubleSpinBox, QCheckBox, QSplitter, QScrollArea,
-    QMessageBox, QFileDialog,
+    QMessageBox, QFileDialog, QTextEdit,
 )
 
 from robocam.calibration import WellPlate
@@ -32,6 +34,7 @@ from robocam.config import get_config
 import robocam.hw_state as hw_state
 from robocam.session import session_manager
 from ui.camera_widget import _FrameGrabber, _LivePreview
+from ui.setup_panel import _QtLogHandler
 from ui.well_grid import WellGrid
 
 CORNER_NAMES = ["Upper-Left", "Lower-Left", "Upper-Right", "Lower-Right"]
@@ -88,7 +91,6 @@ class _ExperimentThread(QThread):
 class ExperimentPanel(QWidget):
     experiment_started  = Signal()
     experiment_finished = Signal()
-    experiment_data_ready = Signal(str)  # emitted with exp_dir when auto-process is on
 
     def __init__(self, calibration_panel=None, parent=None):
         super().__init__(parent)
@@ -346,12 +348,25 @@ class ExperimentPanel(QWidget):
         self.status_lbl.setStyleSheet("font-style: italic; color: #555;")
         layout.addWidget(self.status_lbl)
 
-        self.auto_process_chk = QCheckBox("Auto-process after experiment")
-        self.auto_process_chk.setToolTip(
-            "When checked, the Processing tab will automatically convert\n"
-            ".npy frames to PNG images and video after each experiment."
-        )
-        layout.addWidget(self.auto_process_chk)
+        self.eta_lbl = QLabel("ETA: —")
+        self.eta_lbl.setStyleSheet("font-style: italic; color: #555;")
+        layout.addWidget(self.eta_lbl)
+
+        layout.addWidget(QLabel("Experiment log:"))
+        self.exp_log = QTextEdit()
+        self.exp_log.setReadOnly(True)
+        self.exp_log.setFont(QFont("Courier New", 9))
+        self.exp_log.setMinimumHeight(90)
+        self.exp_log.setMaximumHeight(180)
+        layout.addWidget(self.exp_log)
+
+        self._experiment_logger = logging.getLogger("robocam.experiment")
+        self._exp_log_handler = _QtLogHandler()
+        self._exp_log_handler.bridge.message.connect(self.exp_log.append)
+
+        self._eta_timer = QTimer(self)
+        self._eta_timer.setInterval(1000)
+        self._eta_timer.timeout.connect(self._update_eta_label)
 
         return grp
 
@@ -674,16 +689,6 @@ class ExperimentPanel(QWidget):
             QMessageBox.critical(self, "Error", "Motion controller not connected.")
             return
 
-        motion = hw_state.get_motion()
-        if motion is not None and not motion.is_homed:
-            logger.warning("Start Experiment blocked: printer has not been homed this session.")
-            QMessageBox.warning(
-                self, "Home Required",
-                "The printer has not been homed this session.\n\n"
-                "Please go to the Setup tab and click 'Home All Axes' before running an experiment."
-            )
-            return
-
         if self.override_cal_chk.isChecked():
             cal_file = self.cal_combo.currentText()
             if not cal_file:
@@ -736,6 +741,12 @@ class ExperimentPanel(QWidget):
         # this panel emits — see ui/main_window.py's _set_grabbers_paused.
         self._preview.set_experiment_running(True)
 
+        self.exp_log.clear()
+        self._experiment_logger.addHandler(self._exp_log_handler)
+        self.eta_lbl.setText("ETA: —")
+        self.eta_lbl.setStyleSheet("font-style: italic; color: #555;")
+        self._eta_timer.start()
+
         self._exp_thread = _ExperimentThread(
             runner=runner,
             name=self.name_edit.text(),
@@ -776,6 +787,8 @@ class ExperimentPanel(QWidget):
             self.pause_btn.setText("Resume")
 
     def _on_experiment_finished(self):
+        self._eta_timer.stop()
+        self._experiment_logger.removeHandler(self._exp_log_handler)
         self._preview.set_experiment_running(False)
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -785,8 +798,15 @@ class ExperimentPanel(QWidget):
         self.experiment_finished.emit()
         self._exp_thread = None
 
-        if self.auto_process_chk.isChecked():
-            import robocam.hw_state as _hw
-            runner = _hw.get_runner()
-            if runner and runner.last_exp_dir:
-                self.experiment_data_ready.emit(runner.last_exp_dir)
+    def _update_eta_label(self):
+        runner = hw_state.get_runner()
+        if runner is None or runner.eta_finish_time is None:
+            return
+        remaining = (runner.eta_finish_time - datetime.now()).total_seconds()
+        sign = "-" if remaining < 0 else ""
+        mm, ss = divmod(int(abs(remaining)), 60)
+        self.eta_lbl.setText(f"ETA: {sign}{mm:02d}:{ss:02d}")
+        self.eta_lbl.setStyleSheet(
+            "font-style: italic; color: #b00020;" if remaining < 0
+            else "font-style: italic; color: #555;"
+        )

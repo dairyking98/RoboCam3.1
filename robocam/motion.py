@@ -111,6 +111,18 @@ class MarlinBackend(MotionBackend):
         except Exception as e:
             logger.warning(f"[MotionCtrl] Could not sync position on connect: {e}")
 
+        try:
+            # Marlin's default inactivity timeout de-energizes the steppers
+            # after a period of no motion (DEFAULT_STEPPER_DEACTIVE_TIME).
+            # With no holding torque, X/Y can drift if bumped or vibrated,
+            # silently invalidating the firmware's position without it ever
+            # losing homed state. S0 disables that timeout so steppers stay
+            # energized (and holding position) for the life of this connection.
+            self.send_gcode("M18 S0", timeout=5.0)
+            logger.info("[MotionCtrl] Disabled stepper idle timeout (M18 S0).")
+        except Exception as e:
+            logger.warning(f"[MotionCtrl] Could not disable stepper idle timeout: {e}")
+
     def disconnect(self):
         if self.is_connected:
             self.serial_conn.close()
@@ -510,6 +522,18 @@ class MotionController:
         """Send a raw G-code command directly to the backend (e.g. M18, M84)."""
         with self._lock:
             self.backend.send_gcode(command)
+            # A manually-issued M18/M84 (e.g. the Manual Control panel's
+            # "Disable Steppers" button) cuts holding torque, so the axes
+            # can drift and the firmware's position can no longer be
+            # trusted — same reasoning as the idle-timeout case M18 S0
+            # exists to prevent, just user-triggered instead of automatic.
+            # (The M18 S0 sent on connect to suppress that idle timeout
+            # goes straight through backend.send_gcode(), not this method,
+            # so it never hits this check.)
+            if re.match(r"\s*M(18|84)\b", command, re.IGNORECASE):
+                if self._homed:
+                    logger.info("[MotionCtrl] Steppers disabled via raw command — clearing homed state.")
+                self._homed = False
 
     @property
     def supports_profiles(self) -> bool:

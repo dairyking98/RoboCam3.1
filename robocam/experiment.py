@@ -1,4 +1,5 @@
 import ast
+import math
 import os
 import time
 import csv
@@ -9,7 +10,7 @@ import queue
 import shutil
 import threading
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from .config import get_config
 from .peripherals import LaserController
@@ -70,6 +71,47 @@ MEMMAP_FLUSH_EVERY_N_FRAMES = 30
 # path already built for other writer failures, instead of crashing the
 # whole process.
 MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
+
+# Rough per-well overhead for still-image capture (Image mode has no fixed
+# recording duration like raw bursts do — this covers exposure + camera
+# readback + disk write) used only for the pre-run ETA estimate below.
+IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.3
+
+
+def _axis_move_time_s(distance_mm: float, max_feed: Optional[float], max_accel: Optional[float]) -> float:
+    """Trapezoidal-profile time estimate for one axis covering `distance_mm`,
+    given its configured max feed rate (mm/s) and max acceleration (mm/s^2)
+    from the motion profile (M203/M201). Falls back to a constant-velocity
+    estimate if accel is unknown, and to 0 if feed rate is unknown."""
+    distance_mm = abs(distance_mm)
+    if distance_mm <= 0 or not max_feed:
+        return 0.0
+    if not max_accel:
+        return distance_mm / max_feed
+
+    accel_dist = (max_feed ** 2) / (2.0 * max_accel)
+    if 2 * accel_dist >= distance_mm:
+        # Never reaches max_feed before needing to decelerate again (triangular profile).
+        return 2.0 * math.sqrt(distance_mm / max_accel)
+
+    cruise_dist = distance_mm - 2 * accel_dist
+    return 2.0 * (max_feed / max_accel) + (cruise_dist / max_feed)
+
+
+def _estimate_move_time_s(
+    start: Tuple[float, float, float], end: Tuple[float, float, float], profile: dict
+) -> float:
+    """Estimate a coordinated G0 XYZ move's duration from the motion profile.
+
+    Axes move simultaneously to the same target, so this approximates
+    Marlin's planner by taking the slowest of the three independent
+    per-axis trapezoidal estimates rather than replicating its exact
+    multi-axis feed-rate scaling — good enough for an ETA, not a substitute
+    for the firmware's own timing."""
+    tx = _axis_move_time_s(end[0] - start[0], profile.get("max_feed_x"), profile.get("max_accel_x"))
+    ty = _axis_move_time_s(end[1] - start[1], profile.get("max_feed_y"), profile.get("max_accel_y"))
+    tz = _axis_move_time_s(end[2] - start[2], profile.get("max_feed_z"), profile.get("max_accel_z"))
+    return max(tx, ty, tz)
 
 
 def _trim_raw_stack(stack_path: str, frames_captured: int) -> None:
@@ -160,6 +202,11 @@ class ExperimentRunner:
         self.last_written_image_path = None
         self.last_written_video_path = None
         self.last_exp_dir: Optional[str] = None
+        # Estimated wall-clock finish time, set once after homing at the
+        # start of run(). None if a motion profile isn't available to
+        # estimate from. The UI polls this directly (rather than a callback)
+        # to keep a live countdown ticking between stage-change callbacks.
+        self.eta_finish_time: Optional[datetime] = None
 
     # ------------------------------------------------------------------
     # Internal: max-rate raw burst writer
@@ -305,6 +352,10 @@ class ExperimentRunner:
                 )
                 if should_laser != last_laser_state and laser_controller:
                     laser_controller.set_laser(should_laser)
+                    logger.info(
+                        f"[{label}] Laser (GPIO) {'ON' if should_laser else 'OFF'} "
+                        f"at t={elapsed:.2f}s"
+                    )
                     laser_events.append({
                         "time_offset_s": round(elapsed, 6),
                         "state": "ON" if should_laser else "OFF",
@@ -367,6 +418,7 @@ class ExperimentRunner:
         finally:
             if laser_controller and last_laser_state:
                 laser_controller.set_laser(False)
+                logger.info(f"[{label}] Laser (GPIO) OFF (forced at burst end)")
                 laser_events.append({
                     "time_offset_s": round(time.perf_counter() - start, 6),
                     "state": "OFF",
@@ -425,7 +477,21 @@ class ExperimentRunner:
         self.is_raw_mode = mode == "raw"
         self.last_written_image_path = None
         self.last_written_video_path = None
+        self.eta_finish_time = None
+
+        if not self.motion.is_homed:
+            self.status_msg = "Not homed — homing before experiment start..."
+            logger.info(self.status_msg)
+            if callback:
+                callback(self.status_msg)
+            self.motion.home()
+            self.status_msg = "Homed."
+            logger.info(self.status_msg)
+            if callback:
+                callback(self.status_msg)
+
         self.status_msg = "Starting experiment..."
+        logger.info(self.status_msg)
         if callback:
             callback(self.status_msg)
 
@@ -445,6 +511,36 @@ class ExperimentRunner:
             total_duration = float(pre_duration)
             laser_start = 0.0
             laser_on_duration = 0.0
+
+        # Time estimate, computed once now that the stage is at a known
+        # (just-homed or already-homed) position — move times come from the
+        # motion profile (M203 feed / M201 accel), dwell and capture times
+        # are exact from the settings above.
+        try:
+            profile = self.motion.read_profiles() if self.motion.supports_profiles else {}
+        except Exception as e:
+            logger.warning(f"[Experiment] Could not read motion profile for time estimate: {e}")
+            profile = {}
+
+        if profile:
+            capture_time_est = total_duration if mode == "raw" else IMAGE_CAPTURE_TIME_ESTIMATE_S
+            cur_pos = (self.motion.X, self.motion.Y, self.motion.Z)
+            total_estimate_s = 0.0
+            for pos in positions:
+                total_estimate_s += _estimate_move_time_s(cur_pos, pos, profile)
+                total_estimate_s += float(delay_per_well)
+                total_estimate_s += capture_time_est
+                cur_pos = pos
+            self.eta_finish_time = datetime.now() + timedelta(seconds=total_estimate_s)
+            self.status_msg = (
+                f"Estimated duration {total_estimate_s:.0f}s for {len(positions)} wells "
+                f"— ETA finish {self.eta_finish_time.strftime('%H:%M:%S')}"
+            )
+        else:
+            self.status_msg = "Time estimate unavailable (no motion profile from this backend)."
+        logger.info(self.status_msg)
+        if callback:
+            callback(self.status_msg)
 
         try:
             # Write camera metadata once for the whole experiment so the
@@ -504,7 +600,8 @@ class ExperimentRunner:
 
                     self.motion.move_absolute(X=x, Y=y, Z=z)
 
-                    self.status_msg = f"Stabilising at {label}..."
+                    self.status_msg = f"Dwelling at {label} ({delay_per_well:.1f}s)..."
+                    logger.info(self.status_msg)
                     if callback:
                         callback(self.status_msg)
                     time.sleep(delay_per_well)
@@ -531,7 +628,14 @@ class ExperimentRunner:
                         if time.perf_counter() - discard_start >= exposure_s * 0.5:
                             break
 
-                    self.status_msg = f"Capturing {label} ({i + 1}/{len(positions)})..."
+                    if mode == "raw":
+                        self.status_msg = (
+                            f"Recording {label} ({i + 1}/{len(positions)}) — "
+                            f"{total_duration:.1f}s burst"
+                            f"{' with laser' if use_laser else ''}..."
+                        )
+                    else:
+                        self.status_msg = f"Capturing {label} ({i + 1}/{len(positions)})..."
                     logger.info(self.status_msg)
                     if callback:
                         callback(self.status_msg)
