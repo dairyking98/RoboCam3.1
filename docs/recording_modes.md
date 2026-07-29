@@ -160,6 +160,19 @@ Takeaways:
   bit-identical to raw for laser-on frames, because of the burned-in laser
   overlay — this is independent of codec losslessness.
 
+**2026-07-29 correction**: both VFR files measured above (ffv1 and the old
+libx264-crf18 one) were produced before a bug fix to
+`mkv_s.codec_context.time_base` (see the `f4de2c8` commit). The bug corrupted
+the muxed container's *duration and avg_frame_rate metadata* only — a
+303-frame/~10s file was reporting itself as ~90,000fps and 300,330 frames to
+any reader that trusts that metadata (confirmed via Fiji reporting exactly
+that on real footage, and likely the cause of VLC's scrub-bar glitches on VFR
+files too). It did **not** touch the encoded pixel data, the actual per-frame
+PTS values used internally, or the file size — so every number in the table
+above is still accurate. Only the container-level duration/frame-count a tool
+reports was wrong; the sizes and the lossless/lossy classification stand as
+measured.
+
 ---
 
 ## Known Issues
