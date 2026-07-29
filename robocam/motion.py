@@ -111,6 +111,18 @@ class MarlinBackend(MotionBackend):
         except Exception as e:
             logger.warning(f"[MotionCtrl] Could not sync position on connect: {e}")
 
+        try:
+            # Marlin's default inactivity timeout de-energizes the steppers
+            # after a period of no motion (DEFAULT_STEPPER_DEACTIVE_TIME).
+            # With no holding torque, X/Y can drift if bumped or vibrated,
+            # silently invalidating the firmware's position without it ever
+            # losing homed state. S0 disables that timeout so steppers stay
+            # energized (and holding position) for the life of this connection.
+            self.send_gcode("M18 S0", timeout=5.0)
+            logger.info("[MotionCtrl] Disabled stepper idle timeout (M18 S0).")
+        except Exception as e:
+            logger.warning(f"[MotionCtrl] Could not disable stepper idle timeout: {e}")
+
     def disconnect(self):
         if self.is_connected:
             self.serial_conn.close()

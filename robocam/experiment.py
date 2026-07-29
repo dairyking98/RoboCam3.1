@@ -425,6 +425,13 @@ class ExperimentRunner:
         self.is_raw_mode = mode == "raw"
         self.last_written_image_path = None
         self.last_written_video_path = None
+
+        if not self.motion.is_homed:
+            self.status_msg = "Not homed — homing before experiment start..."
+            if callback:
+                callback(self.status_msg)
+            self.motion.home()
+
         self.status_msg = "Starting experiment..."
         if callback:
             callback(self.status_msg)
