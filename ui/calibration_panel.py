@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QLabel, QPushButton, QSpinBox, QComboBox,
     QLineEdit, QButtonGroup, QRadioButton, QSplitter,
     QFileDialog, QMessageBox, QScrollArea, QSizePolicy,
-    QDoubleSpinBox, QCheckBox, QColorDialog,
+    QDoubleSpinBox, QCheckBox, QColorDialog, QSlider,
 )
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
 
@@ -501,6 +501,11 @@ class CalibrationPanel(QWidget):
         layout.addWidget(self.xhair_check, 0, 0, 1, 4)
 
         layout.addWidget(QLabel("Radius:"), 1, 0)
+        self.xhair_radius_slider = QSlider(Qt.Horizontal)
+        self.xhair_radius_slider.setRange(1, 100)
+        self.xhair_radius_slider.setValue(15)
+        layout.addWidget(self.xhair_radius_slider, 1, 1, 1, 2)
+
         self.xhair_radius_spin = QDoubleSpinBox()
         self.xhair_radius_spin.setRange(0.5, 100.0)
         self.xhair_radius_spin.setSingleStep(1.0)
@@ -512,24 +517,25 @@ class CalibrationPanel(QWidget):
             "same relative size regardless of camera resolution or preview "
             "window size."
         )
-        layout.addWidget(self.xhair_radius_spin, 1, 1)
+        layout.addWidget(self.xhair_radius_spin, 1, 3)
 
-        layout.addWidget(QLabel("Thickness:"), 1, 2)
+        layout.addWidget(QLabel("Thickness:"), 2, 0)
         self.xhair_thickness_spin = QSpinBox()
         self.xhair_thickness_spin.setRange(1, 10)
         self.xhair_thickness_spin.setValue(1)
-        layout.addWidget(self.xhair_thickness_spin, 1, 3)
+        layout.addWidget(self.xhair_thickness_spin, 2, 1)
 
-        layout.addWidget(QLabel("Color:"), 2, 0)
+        layout.addWidget(QLabel("Color:"), 3, 0)
         self._xhair_color = QColor(255, 0, 0)
         self.xhair_color_btn = QPushButton()
         self.xhair_color_btn.setFixedWidth(40)
         self._update_xhair_color_btn()
         self.xhair_color_btn.clicked.connect(self._choose_xhair_color)
-        layout.addWidget(self.xhair_color_btn, 2, 1)
+        layout.addWidget(self.xhair_color_btn, 3, 1)
 
         self.xhair_check.toggled.connect(self._apply_crosshair)
-        self.xhair_radius_spin.valueChanged.connect(self._apply_crosshair)
+        self.xhair_radius_slider.valueChanged.connect(self._on_xhair_radius_slider_changed)
+        self.xhair_radius_spin.valueChanged.connect(self._on_xhair_radius_spin_changed)
         self.xhair_thickness_spin.valueChanged.connect(self._apply_crosshair)
 
         return grp
@@ -543,6 +549,18 @@ class CalibrationPanel(QWidget):
             self._xhair_color = color
             self._update_xhair_color_btn()
             self._apply_crosshair()
+
+    def _on_xhair_radius_slider_changed(self, value: int):
+        self.xhair_radius_spin.blockSignals(True)
+        self.xhair_radius_spin.setValue(float(value))
+        self.xhair_radius_spin.blockSignals(False)
+        self._apply_crosshair()
+
+    def _on_xhair_radius_spin_changed(self, value: float):
+        self.xhair_radius_slider.blockSignals(True)
+        self.xhair_radius_slider.setValue(round(value))
+        self.xhair_radius_slider.blockSignals(False)
+        self._apply_crosshair()
 
     def _apply_crosshair(self, *_args):
         self._preview.set_crosshair(
