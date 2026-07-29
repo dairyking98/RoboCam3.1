@@ -258,10 +258,21 @@ def process_well(
     mkv_con = mkv_s = mp4_con = mp4_s = None
     if do_vfr:
         mkv_con        = av.open(mkv_path, "w")
-        mkv_s          = mkv_con.add_stream(codec, rate=90_000)
+        # `rate=` here must be the real average fps (metadata only — it's what
+        # players/tools read as avg_frame_rate). Passing the 90kHz PTS clock
+        # here instead (as this used to) makes add_stream() advertise a
+        # 90000fps stream; readers that compute frame count as
+        # duration * avg_frame_rate (Fiji, some VLC builds) then report
+        # wildly wrong frame counts / a garbled scrub bar. codec_context.time_base
+        # is set separately so the encoder's own internal clock actually
+        # matches the 90kHz PTS values we feed it below — setting only
+        # stream.time_base leaves the codec context's clock desynced from the
+        # container's, which silently corrupts the muxed duration instead.
+        mkv_s          = mkv_con.add_stream(codec, rate=display_fps)
         mkv_s.width    = w
         mkv_s.height   = h
         mkv_s.pix_fmt  = "yuv420p"
+        mkv_s.codec_context.time_base = _TIME_BASE
         mkv_s.time_base = _TIME_BASE
         if codec in ("libx264", "libx265"):
             mkv_s.options = {"crf": str(crf), "preset": "medium", "bframes": "0"}
