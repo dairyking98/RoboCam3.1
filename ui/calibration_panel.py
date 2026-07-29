@@ -733,6 +733,14 @@ class CalibrationPanel(QWidget):
                 new_exp_ms = int(1000.0 / self.fps_spin.value())
                 new_exp_ms = max(self.exp_spin.minimum(), min(self.exp_spin.maximum(), new_exp_ms))
                 self.exp_spin.setValue(new_exp_ms)
+                # Exposure is a whole-ms integer, so it can only ever land on
+                # the requested fps exactly by coincidence -- e.g. a 30fps
+                # request floors to 33ms, whose true max is 30.3fps, not an
+                # exact 30. Snap Target FPS to that exact achievable value
+                # (displayed to 1 decimal) instead of leaving it showing an
+                # unreachable round number that doesn't match what a run
+                # will actually capture at.
+                self.fps_spin.setValue(self._max_achievable_fps())
             else:
                 # Exposure is priority -- lower Target FPS to the max the
                 # current exposure can achieve.
