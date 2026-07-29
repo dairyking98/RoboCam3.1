@@ -522,12 +522,22 @@ class ExperimentRunner:
             logger.warning(f"[Experiment] Could not read motion profile for time estimate: {e}")
             profile = {}
 
+        # Per-well move-time estimates, kept around (not just summed) so the
+        # well loop below can log each move's actual time next to the
+        # estimate that predicted it — needed to empirically pin down where
+        # real-hardware runs diverge from the estimate (see PROJECT_STATE.md
+        # / robustness_log.md: a 24-well hardware run overshot the total
+        # estimate by ~1.08s/well and the cause wasn't obvious from theory
+        # alone).
+        move_time_estimates: List[float] = []
         if profile:
             capture_time_est = total_duration if mode == "raw" else IMAGE_CAPTURE_TIME_ESTIMATE_S
             cur_pos = (self.motion.X, self.motion.Y, self.motion.Z)
             total_estimate_s = 0.0
             for pos in positions:
-                total_estimate_s += _estimate_move_time_s(cur_pos, pos, profile)
+                move_est = _estimate_move_time_s(cur_pos, pos, profile)
+                move_time_estimates.append(move_est)
+                total_estimate_s += move_est
                 total_estimate_s += float(delay_per_well)
                 total_estimate_s += capture_time_est
                 cur_pos = pos
@@ -598,13 +608,22 @@ class ExperimentRunner:
                     if callback:
                         callback(self.status_msg)
 
+                    move_start = time.perf_counter()
                     self.motion.move_absolute(X=x, Y=y, Z=z)
+                    move_actual_s = time.perf_counter() - move_start
+                    move_est_s = move_time_estimates[i] if i < len(move_time_estimates) else None
+                    logger.info(
+                        f"[{label}] Move took {move_actual_s:.3f}s"
+                        + (f" (estimated {move_est_s:.3f}s)" if move_est_s is not None else " (no estimate)")
+                    )
 
                     self.status_msg = f"Dwelling at {label} ({delay_per_well:.1f}s)..."
                     logger.info(self.status_msg)
                     if callback:
                         callback(self.status_msg)
+                    dwell_start = time.perf_counter()
                     time.sleep(delay_per_well)
+                    logger.info(f"[{label}] Dwell took {time.perf_counter() - dwell_start:.3f}s")
 
                     # Cameras run in continuous free-running exposure, so the SDK
                     # can have a small backlog of already-completed frames queued
@@ -618,15 +637,22 @@ class ExperimentRunner:
                     # left up to 2 stale pre-dwell frames at the start of the
                     # burst on hardware. Bounded so a genuinely fast sensor with
                     # no backlog can't loop forever.
+                    priming_start = time.perf_counter()
                     exposure_s = self.camera.get_exposure() / 1_000_000.0
+                    priming_reads = 0
                     for _ in range(STALE_FRAME_MAX_DISCARDS):
                         discard_start = time.perf_counter()
                         if mode == "raw":
                             self.camera.get_raw_frame()
                         else:
                             self.camera.get_frame()
+                        priming_reads += 1
                         if time.perf_counter() - discard_start >= exposure_s * 0.5:
                             break
+                    logger.info(
+                        f"[{label}] Frame priming took {time.perf_counter() - priming_start:.3f}s "
+                        f"({priming_reads} discard reads)"
+                    )
 
                     if mode == "raw":
                         self.status_msg = (
@@ -642,6 +668,7 @@ class ExperimentRunner:
 
                     capture_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     capture_name = ""
+                    capture_call_start = time.perf_counter()
 
                     if mode == "raw":
                         # Burst of raw frames stacked into one .npy array in raw/ subdir
@@ -651,6 +678,17 @@ class ExperimentRunner:
                             laser_on_s=float(laser_on_duration),
                             laser_start_s=laser_start,
                             bit_depth=int(cam_meta.get("bit_depth", 8)),
+                        )
+                        capture_call_s = time.perf_counter() - capture_call_start
+                        # duration_actual_s covers only up to when the recording loop
+                        # itself decides it's done — the gap to capture_call_s is
+                        # everything after: writer-thread drain/join, memmap flush
+                        # and close, and _trim_raw_stack()'s truncate.
+                        finalize_s = capture_call_s - burst_meta["duration_actual_s"]
+                        logger.info(
+                            f"[{label}] Capture took {capture_call_s:.3f}s total "
+                            f"(recording {burst_meta['duration_actual_s']:.3f}s, "
+                            f"finalize {finalize_s:.3f}s)"
                         )
                         capture_name = f"raw/{burst_meta['frames_file']} ({burst_meta['frames_captured']} frames)"
                         meta_path = os.path.join(raw_dir, f"{label}_{timestamp}_metadata.json")
@@ -691,6 +729,9 @@ class ExperimentRunner:
                             logger.debug(f"{label} capture summary: wrote {img_path}")
                         else:
                             logger.warning(f"Failed to capture frame for {label}")
+                        logger.info(
+                            f"[{label}] Capture took {time.perf_counter() - capture_call_start:.3f}s"
+                        )
 
                     writer.writerow([label, x, y, z, capture_name, mode,
                                      "yes" if use_laser else "no", capture_time])
