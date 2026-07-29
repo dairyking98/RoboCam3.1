@@ -58,6 +58,10 @@ class MarlinBackend(MotionBackend):
         self.X, self.Y, self.Z = 0.0, 0.0, 0.0
         self.serial_conn = None
         self._m400_supported = None
+        # Motion-profile values (M203 max feed / M201 accel / M205 jerk),
+        # cached on connect and refreshed on apply_profiles() so _move() can
+        # use them as the actual travel speed (see there for why).
+        self._cached_profile: dict = {}
         
     @property
     def is_connected(self) -> bool:
@@ -122,6 +126,11 @@ class MarlinBackend(MotionBackend):
             logger.info("[MotionCtrl] Disabled stepper idle timeout (M18 S0).")
         except Exception as e:
             logger.warning(f"[MotionCtrl] Could not disable stepper idle timeout: {e}")
+
+        try:
+            self._cached_profile = self.read_profiles()
+        except Exception as e:
+            logger.warning(f"[MotionCtrl] Could not read motion profile on connect: {e}")
 
     def disconnect(self):
         if self.is_connected:
@@ -229,19 +238,38 @@ class MarlinBackend(MotionBackend):
 
     def move_relative(self, X=None, Y=None, Z=None, speed=None):
         self.send_gcode('G91')
-        self._move(X, Y, Z, speed)
-        
+        self._move(X, Y, Z, speed, relative=True)
+
     def move_absolute(self, X=None, Y=None, Z=None, speed=None):
         self.send_gcode('G90')
-        self._move(X, Y, Z, speed)
-        
-    def _move(self, X, Y, Z, speed):
+        self._move(X, Y, Z, speed, relative=False)
+
+    def _move(self, X, Y, Z, speed, relative=False):
         cmd = "G0"
-        if X is not None: cmd += f" X{X:.4f}"
-        if Y is not None: cmd += f" Y{Y:.4f}"
-        if Z is not None: cmd += f" Z{Z:.4f}"
-        if speed is not None: cmd += f" F{speed:.1f}"
-        
+        # Marlin doesn't default a bare G0/G1 to the M203 max feedrate — with
+        # no F it just keeps using whatever feed rate was last active (often
+        # far below the configured profile), so real moves silently crawl
+        # well under the speed the Motion Profiles tab configured. Explicit
+        # F here is what actually makes that tab's numbers the travel speed.
+        feeds = []
+        for axis, val, profile_key in (("X", X, "max_feed_x"), ("Y", Y, "max_feed_y"), ("Z", Z, "max_feed_z")):
+            if val is None:
+                continue
+            cmd += f" {axis}{val:.4f}"
+            displacement = val if relative else (val - getattr(self, axis))
+            if abs(displacement) > 1e-6:
+                feed = self._cached_profile.get(profile_key)
+                if feed:
+                    feeds.append(feed)
+
+        if speed is not None:
+            cmd += f" F{speed:.1f}"
+        elif feeds:
+            # G-code F is mm/min; M203 (and our cached profile) is mm/s.
+            # min() across the axes actually moving keeps the coordinated
+            # move within every involved axis's own configured ceiling.
+            cmd += f" F{min(feeds) * 60:.1f}"
+
         self.send_gcode(cmd)
         self._wait_movement()
         self.update_position()
@@ -288,6 +316,11 @@ class MarlinBackend(MotionBackend):
         _cmd("M201", [("X", "max_accel_x"), ("Y", "max_accel_y"), ("Z", "max_accel_z")])
         _cmd("M205", [("X", "jerk_x"), ("Y", "jerk_y"), ("Z", "jerk_z")])
         self.send_gcode("M500")
+
+        try:
+            self._cached_profile = self.read_profiles()
+        except Exception as e:
+            logger.warning(f"[MotionCtrl] Could not refresh cached motion profile after apply: {e}")
 
 
 class KlipperBackend(MotionBackend):
