@@ -237,7 +237,7 @@ class CalibrationPanel(QWidget):
         self.offset_spin.setValue(int(s.get("offset", 0)))
         self.ae_check.setChecked(bool(s.get("ae_enabled", False)))
         self.xhair_check.setChecked(bool(s.get("xhair_enabled", True)))
-        self.xhair_radius_spin.setValue(int(s.get("xhair_radius", 60)))
+        self.xhair_radius_spin.setValue(float(s.get("xhair_radius_pct", 15.0)))
         self.xhair_thickness_spin.setValue(int(s.get("xhair_thickness", 1)))
         self._xhair_color = QColor(s.get("xhair_color", "#ff0000"))
         self._update_xhair_color_btn()
@@ -280,7 +280,7 @@ class CalibrationPanel(QWidget):
             "sensor_mode_index": self.sensor_mode_combo.currentIndex() if self.sensor_mode_combo.count() else int(session_manager.get("calibration").get("sensor_mode_index", 0)),
             "ae_enabled": self.ae_check.isChecked(),
             "xhair_enabled": self.xhair_check.isChecked(),
-            "xhair_radius": self.xhair_radius_spin.value(),
+            "xhair_radius_pct": self.xhair_radius_spin.value(),
             "xhair_thickness": self.xhair_thickness_spin.value(),
             "xhair_color": self._xhair_color.name(),
             "step": self.step_input.text(),
@@ -464,11 +464,17 @@ class CalibrationPanel(QWidget):
         layout.addWidget(self.xhair_check, 0, 0, 1, 4)
 
         layout.addWidget(QLabel("Radius:"), 1, 0)
-        self.xhair_radius_spin = QSpinBox()
-        self.xhair_radius_spin.setRange(2, 2000)
-        self.xhair_radius_spin.setSingleStep(5)
-        self.xhair_radius_spin.setValue(60)
-        self.xhair_radius_spin.setSuffix(" px")
+        self.xhair_radius_spin = QDoubleSpinBox()
+        self.xhair_radius_spin.setRange(0.5, 100.0)
+        self.xhair_radius_spin.setSingleStep(1.0)
+        self.xhair_radius_spin.setDecimals(1)
+        self.xhair_radius_spin.setValue(15.0)
+        self.xhair_radius_spin.setSuffix(" % of frame height")
+        self.xhair_radius_spin.setToolTip(
+            "Sized as a percentage of frame height so the circle stays the "
+            "same relative size regardless of camera resolution or preview "
+            "window size."
+        )
         layout.addWidget(self.xhair_radius_spin, 1, 1)
 
         layout.addWidget(QLabel("Thickness:"), 1, 2)
@@ -504,7 +510,7 @@ class CalibrationPanel(QWidget):
     def _apply_crosshair(self, *_args):
         self._preview.set_crosshair(
             enabled=self.xhair_check.isChecked(),
-            radius=self.xhair_radius_spin.value(),
+            radius_pct=self.xhair_radius_spin.value(),
             thickness=self.xhair_thickness_spin.value(),
             color=self._xhair_color,
         )

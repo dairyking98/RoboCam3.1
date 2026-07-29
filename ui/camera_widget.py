@@ -87,16 +87,22 @@ class _LivePreview(QWidget):
         self._offline = True
         self._experiment_running = False
         self._crosshair_enabled = False
-        self._crosshair_radius = 60
+        # Radius as % of the displayed frame height rather than raw pixels,
+        # so the circle covers the same fraction of the field of view
+        # regardless of camera resolution or how large the preview widget is.
+        self._crosshair_radius_pct = 15.0
         self._crosshair_thickness = 1
         self._crosshair_color = QColor(255, 0, 0)
         self.setMinimumSize(320, 240)
 
-    def set_crosshair(self, enabled: bool, radius: int = None, thickness: int = None, color: QColor = None):
-        """Show/configure a center crosshair (lines + circle) for centering wells under the camera."""
+    def set_crosshair(self, enabled: bool, radius_pct: float = None, thickness: int = None, color: QColor = None):
+        """Show/configure a center crosshair (lines + circle) for centering wells under the camera.
+
+        radius_pct: circle radius as a percentage of the displayed frame height.
+        """
         self._crosshair_enabled = enabled
-        if radius is not None:
-            self._crosshair_radius = max(int(radius), 1)
+        if radius_pct is not None:
+            self._crosshair_radius_pct = max(float(radius_pct), 0.5)
         if thickness is not None:
             self._crosshair_thickness = max(int(thickness), 1)
         if color is not None:
@@ -143,7 +149,8 @@ class _LivePreview(QWidget):
                 painter.setPen(pen)
                 painter.drawLine(x_off, int(cy), x_off + scaled.width(), int(cy))
                 painter.drawLine(int(cx), y_off, int(cx), y_off + scaled.height())
-                painter.drawEllipse(QPointF(cx, cy), self._crosshair_radius, self._crosshair_radius)
+                radius_px = (self._crosshair_radius_pct / 100.0) * scaled.height()
+                painter.drawEllipse(QPointF(cx, cy), radius_px, radius_px)
 
         if self._experiment_running:
             painter.fillRect(0, 0, w, h, QColor(0, 0, 0, 170))
