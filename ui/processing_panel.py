@@ -179,16 +179,33 @@ class ProcessingPanel(QWidget):
         img_row = QHBoxLayout()
         img_row.addWidget(QLabel("Images:"))
 
-        self._do_png_chk = QCheckBox("PNG")
+        # Percentages are approximate output-size-vs-raw-.npy ratios, measured
+        # on a real 3-well mono-sensor burst (see docs/recording_modes.md,
+        # "Export format size comparison") — actual ratio depends on sensor
+        # noise/content, treat these as ballpark, not a guarantee.
+        size_note = ("Approximate output size vs. the raw .npy burst, measured "
+                     "on a real 3-well mono-sensor capture (see "
+                     "docs/recording_modes.md, \"Export format size "
+                     "comparison\"). Actual ratio depends on sensor noise and "
+                     "image content — treat as ballpark, not a guarantee.")
+
+        self._do_png_chk = QCheckBox("PNG (~70% of raw)")
         self._do_png_chk.setChecked(True)
+        self._do_png_chk.setToolTip("Lossless.\n" + size_note)
         img_row.addWidget(self._do_png_chk)
 
-        self._do_jpeg_chk = QCheckBox("JPEG")
+        self._do_jpeg_chk = QCheckBox("JPEG (~44% of raw)")
         self._do_jpeg_chk.setChecked(False)
+        self._do_jpeg_chk.setToolTip("Lossy (quality 95).\n" + size_note)
         img_row.addWidget(self._do_jpeg_chk)
 
         self._zip_images_chk = QCheckBox("Package as .zip (one archive per experiment, easier to transfer)")
         self._zip_images_chk.setChecked(True)
+        self._zip_images_chk.setToolTip(
+            "Streams PNG/JPEG frames straight into one .zip per experiment "
+            "instead of writing loose files — same total size (ZIP_STORED, "
+            "no re-compression), just packaged as a single file for transfer."
+        )
         img_row.addWidget(self._zip_images_chk)
 
         img_row.addStretch()
@@ -197,12 +214,18 @@ class ProcessingPanel(QWidget):
         vid_row = QHBoxLayout()
         vid_row.addWidget(QLabel("Video:"))
 
-        self._do_mp4_chk = QCheckBox("MP4 (display)")
+        self._do_mp4_chk = QCheckBox("MP4 (display, ~21% of raw)")
         self._do_mp4_chk.setChecked(True)
+        self._do_mp4_chk.setToolTip(
+            "Lossy (libx264), constant frame rate — for quick viewing, not analysis.\n" + size_note)
         vid_row.addWidget(self._do_mp4_chk)
 
-        self._do_vfr_chk = QCheckBox("VFR MKV (archival)")
+        self._do_vfr_chk = QCheckBox("VFR MKV (archival, lossless, ~63% of raw)")
         self._do_vfr_chk.setChecked(False)
+        self._do_vfr_chk.setToolTip(
+            "Lossless (ffv1), real per-frame timestamps — for analysis, not "
+            "quick viewing (larger than MP4, and true VFR content can look odd "
+            "scrubbing in some players).\n" + size_note)
         vid_row.addWidget(self._do_vfr_chk)
 
         vid_row.addStretch()
