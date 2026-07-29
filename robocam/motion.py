@@ -66,13 +66,20 @@ class MarlinBackend(MotionBackend):
     def connect(self):
         if self.is_connected:
             return
-            
+
+        logger.info("[MotionCtrl] Scanning serial ports for a Marlin printer...")
         port = self._find_port()
         if not port:
+            logger.warning(
+                "[MotionCtrl] No matching serial port found (looked for USB/CH340/CH341/"
+                "Arduino/Marlin/FTDI in the port description)."
+            )
             raise ConnectionError("No serial port found for Marlin backend.")
-            
+        logger.info(f"[MotionCtrl] Found port {port}. Opening at {self.baud_rate} baud...")
+
         try:
             self.serial_conn = serial.Serial(port, self.baud_rate, timeout=self.timeout)
+            logger.info("[MotionCtrl] Port opened. Waiting up to 2s for the firmware boot banner...")
             time.sleep(2)
             boot_banner = self.serial_conn.read(self.serial_conn.in_waiting or 1)
             self.serial_conn.reset_input_buffer()
@@ -92,9 +99,11 @@ class MarlinBackend(MotionBackend):
             logger.info(f"[MotionCtrl] Connected to printer on {port}.")
         except serial.SerialException as e:
             raise ConnectionError(f"Failed to connect to motion controller on {port}: {e}")
-            
+
         try:
+            logger.info("[MotionCtrl] Querying initial position (M114)...")
             self.update_position()
+            logger.info(f"[MotionCtrl] Initial position: X={self.X:.2f} Y={self.Y:.2f} Z={self.Z:.2f}")
         except Exception as e:
             logger.warning(f"[MotionCtrl] Could not sync position on connect: {e}")
 
