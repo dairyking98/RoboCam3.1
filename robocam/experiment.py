@@ -60,7 +60,18 @@ RAW_BURST_FRAME_BUFFER = 50
 # How often (in frames) the writer thread flushes the memmap to disk and
 # checks free space. Piggybacks one cadence for both instead of a separate
 # timer.
-MEMMAP_FLUSH_EVERY_N_FRAMES = 30
+#
+# DIAGNOSTIC PROBE (temporary): a high-fps/high-res hardware run showed a
+# ~140-155ms stall recurring at *exactly* every 30th frame — 13 stalls
+# totaling ~1.85s of a 5.13s recording (~36% of capture time), with
+# queue_full_stalls staying 0 throughout (so it's not simple producer
+# backpressure from a full queue). The period matching this constant is
+# circumstantial, not confirmed — bumped 30 -> 100 to test directly: if
+# the stall period shifts to every ~100 frames on the next high-fps run,
+# this flush cadence is the cause; if it stays at 30, something else
+# (GIL contention elsewhere, or the SDK's own internal buffering) is
+# responsible instead. Revert to 30 (or tune otherwise) once confirmed.
+MEMMAP_FLUSH_EVERY_N_FRAMES = 100
 
 # Safety floor checked against shutil.disk_usage(...).free on the same
 # cadence as the periodic flush above. A memory-mapped write that runs out
