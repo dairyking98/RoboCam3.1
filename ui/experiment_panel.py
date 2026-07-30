@@ -352,6 +352,15 @@ class ExperimentPanel(QWidget):
         self.eta_lbl.setStyleSheet("font-style: italic; color: #555;")
         layout.addWidget(self.eta_lbl)
 
+        self.dump_log_chk = QCheckBox("Save experiment log to output folder on completion")
+        self.dump_log_chk.setToolTip(
+            "When checked, writes the full experiment log shown below\n"
+            "(every stage message: homing, moves, dwells, captures,\n"
+            "laser GPIO events) to a text file in this experiment's\n"
+            "output folder once it finishes."
+        )
+        layout.addWidget(self.dump_log_chk)
+
         layout.addWidget(QLabel("Experiment log:"))
         self.exp_log = QTextEdit()
         self.exp_log.setReadOnly(True)
@@ -789,6 +798,8 @@ class ExperimentPanel(QWidget):
     def _on_experiment_finished(self):
         self._eta_timer.stop()
         self._experiment_logger.removeHandler(self._exp_log_handler)
+        if self.dump_log_chk.isChecked():
+            self._dump_experiment_log()
         self._preview.set_experiment_running(False)
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -797,6 +808,19 @@ class ExperimentPanel(QWidget):
         self.status_lbl.setText("Status: Finished")
         self.experiment_finished.emit()
         self._exp_thread = None
+
+    def _dump_experiment_log(self):
+        runner = hw_state.get_runner()
+        exp_dir = runner.last_exp_dir if runner else None
+        if not exp_dir:
+            logger.warning("Could not save experiment log: no output folder recorded for this run.")
+            return
+        log_path = os.path.join(exp_dir, "experiment_log.txt")
+        try:
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(self.exp_log.toPlainText())
+        except Exception as e:
+            logger.warning(f"Could not save experiment log to {log_path!r}: {e!r}", exc_info=True)
 
     def _update_eta_label(self):
         runner = hw_state.get_runner()

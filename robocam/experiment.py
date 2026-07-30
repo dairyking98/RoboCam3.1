@@ -704,9 +704,11 @@ class ExperimentRunner:
                         priming_reads += 1
                         if time.perf_counter() - discard_start >= exposure_s * 0.5:
                             break
+                    priming_total_s = time.perf_counter() - priming_start
                     logger.info(
-                        f"[{label}] Frame priming took {time.perf_counter() - priming_start:.3f}s "
-                        f"({priming_reads} discard reads)"
+                        f"[{label}] Frame priming took {priming_total_s:.3f}s "
+                        f"({priming_reads} discard reads, "
+                        f"{priming_total_s / priming_reads:.3f}s avg/read)"
                     )
 
                     if mode == "raw":
