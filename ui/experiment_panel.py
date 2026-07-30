@@ -902,6 +902,19 @@ class ExperimentPanel(QWidget):
 
         if self.loop_enabled_chk.isChecked():
             interval_s = self._loop_interval_seconds()
+            duration_s = self._loop_duration_seconds()
+            if interval_s > duration_s:
+                logger.warning(
+                    f"Start Experiment blocked: interval ({self._format_hms(interval_s)}) "
+                    f"exceeds total duration ({self._format_hms(duration_s)})."
+                )
+                QMessageBox.critical(
+                    self, "Error",
+                    f"Interval ({self._format_hms(interval_s)}) exceeds the total duration "
+                    f"({self._format_hms(duration_s)}) -- at most one cycle could ever run.\n"
+                    f"Reduce the interval or increase the duration."
+                )
+                return
             if interval_s > 0:
                 estimate = runner.estimate_cycle_duration_s(
                     filtered_pos, self.dwell_spin.value(), mode,

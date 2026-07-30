@@ -454,18 +454,20 @@ def estimate_loop_cycle_count(pass_s: float, interval_s: float, duration_s: floa
 
 def estimate_loop_finish_s(pass_s: float, interval_s: float, duration_s: float) -> float:
     """A more realistic total-loop-runtime estimate than duration_s alone.
-    The loop is *guaranteed* to run past duration_s by some amount -- the
-    last cycle it starts always runs to completion rather than being
-    aborted mid-well -- so counting down to duration_s itself would always
-    read as an overrun near the end, for something already predictable
-    ahead of time. This instead estimates when the last cycle will
-    actually finish: (n_cycles - 1) whole periods, plus one more pass.
+    Always at least duration_s -- run_loop() only stops *starting* new
+    cycles once duration_s elapses, but after the last cycle it still
+    sleeps out the rest of the configured interval capped at that same
+    deadline (see the inter-cycle sleep loop), so elapsed time reaches
+    duration_s regardless of how the interval divides into it. Can be
+    *more* than duration_s only when the last cycle's own capture time
+    (pass_s) alone would push past the deadline -- unavoidable, since a
+    cycle always runs to completion rather than being aborted mid-well.
     """
     n_cycles = estimate_loop_cycle_count(pass_s, interval_s, duration_s)
     if n_cycles <= 0:
         return duration_s
     period_s = max(pass_s, interval_s)
-    return (n_cycles - 1) * period_s + pass_s
+    return max(duration_s, (n_cycles - 1) * period_s + pass_s)
 
 
 class ExperimentRunner:
@@ -1474,7 +1476,12 @@ class ExperimentRunner:
                         logger.info(f"[Loop] Next cycle at {self.next_cycle_time.strftime('%H:%M:%S')}.")
                     else:
                         logger.info("[Loop] Starting next cycle now.")
-                    while sleep_s > 0 and self.looping:
+                    # Also bail out of the sleep early once the deadline
+                    # passes -- not just on stop() -- so a long interval
+                    # near/after the end of the configured duration doesn't
+                    # sleep out its full length pointlessly before the
+                    # outer while loop gets a chance to notice time is up.
+                    while sleep_s > 0 and self.looping and datetime.now() < deadline:
                         chunk = min(0.5, sleep_s)
                         time.sleep(chunk)
                         sleep_s -= chunk

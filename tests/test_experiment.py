@@ -405,6 +405,25 @@ class TestRunLoop:
         ok_records = [r for r in _manifest_records(loop_dirs[0]) if r["status"] == "ok"]
         assert len(ok_records) == 1
 
+    def test_deadline_passing_during_sleep_ends_the_loop_promptly(self, tmp_path):
+        # interval_s (10s) >> duration_s (1s): cycle 1 finishes fast, then
+        # computes a ~10s sleep -- but the deadline has already passed by
+        # then, so the loop must not sleep out the full interval waiting
+        # for a cycle 2 that will never be allowed to start.
+        runner = _make_runner(tmp_path)
+        start = time.time()
+        runner.run_loop(
+            name="deadlinesleep", positions=[(0, 0, 0)], labels=["A1"],
+            delay_per_well=0.0, mode="image",
+            interval_s=10.0, duration_s=1.0,
+        )
+        elapsed = time.time() - start
+        assert elapsed < 3.0, f"run_loop() took {elapsed:.1f}s -- slept out the interval instead of respecting duration_s"
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_deadlinesleep_loop")]
+        ok_records = [r for r in _manifest_records(loop_dirs[0]) if r["status"] == "ok"]
+        assert len(ok_records) == 1
+
     def test_disk_space_check_aborts_before_new_cycle(self, tmp_path, monkeypatch):
         runner = _make_runner(tmp_path)
 
@@ -511,25 +530,48 @@ class TestEstimateLoopCycleCount:
 
 
 class TestEstimateLoopFinishS:
-    """The loop always runs past duration_s by some amount (the last
-    cycle it starts always finishes rather than aborting mid-well) -- this
-    is meant to be a more realistic countdown target than duration_s
-    itself, which is guaranteed to under-count by a predictable amount."""
+    """The loop's actual total runtime is always at least duration_s --
+    run_loop() only stops *starting* new cycles once duration_s elapses,
+    but the inter-cycle sleep after the last cycle still runs out (capped
+    at that same deadline), so elapsed time reaches duration_s regardless
+    of how the interval divides into it. It can be *more* than duration_s
+    only when the last cycle's own pass_s alone pushes past the deadline
+    (pass-bound case) -- unavoidable, a cycle always finishes rather than
+    aborting mid-well."""
 
     def test_back_to_back_extends_past_duration_by_the_final_pass(self):
         # 10 cycles of 10s each = 100s actual, vs. the 95s configured.
         assert estimate_loop_finish_s(pass_s=10.0, interval_s=0.0, duration_s=95.0) == 100.0
 
-    def test_interval_bound_extends_past_duration_to_the_last_scheduled_start_plus_one_pass(self):
+    def test_interval_bound_clamps_to_duration_even_though_the_last_cycle_finishes_earlier(self):
+        # Regression case for the exact scenario reported live: 4 cycles at
+        # a 30s period (start at 0/30/60/90), each a 14s pass -- the last
+        # one's own capture finishes at 90+14=104s, well under the
+        # configured 120s, but the trailing inter-cycle sleep (capped at
+        # the deadline) still runs the loop out to the full 120s. Before
+        # this fix, the formula returned the too-short 104s.
+        assert estimate_loop_finish_s(pass_s=14.0, interval_s=30.0, duration_s=120.0) == 120.0
+
+    def test_interval_bound_lines_up_exactly_with_duration(self):
         # 4 cycles at a 30s period (start at 0/30/60/90), last one
-        # finishes at 90 + 5s pass = 95... period dominates the spacing,
-        # pass_s dominates how long that last cycle actually takes.
+        # finishes at 90 + 5s pass = 95, which happens to equal the
+        # configured duration exactly here.
         assert estimate_loop_finish_s(pass_s=5.0, interval_s=30.0, duration_s=95.0) == 95.0
 
     def test_pass_bound_extends_past_duration_by_the_full_last_pass(self):
         # 4 cycles at a 30s period (pass_s dominates the period too here),
-        # start at 0/30/60/90, last one finishes at 90 + 30 = 120.
+        # start at 0/30/60/90, last one finishes at 90 + 30 = 120 -- a
+        # genuine overrun past the 95s configured duration.
         assert estimate_loop_finish_s(pass_s=30.0, interval_s=5.0, duration_s=95.0) == 120.0
 
     def test_falls_back_to_duration_when_no_cycles_expected(self):
         assert estimate_loop_finish_s(pass_s=0.0, interval_s=0.0, duration_s=60.0) == 60.0
+
+    def test_never_returns_less_than_duration(self):
+        import random
+        rng = random.Random(0)
+        for _ in range(200):
+            pass_s = rng.uniform(0.1, 50.0)
+            interval_s = rng.uniform(0.0, 50.0)
+            duration_s = rng.uniform(1.0, 200.0)
+            assert estimate_loop_finish_s(pass_s, interval_s, duration_s) >= duration_s
