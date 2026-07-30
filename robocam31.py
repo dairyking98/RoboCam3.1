@@ -8,18 +8,6 @@ import sys
 # near-white highlighted-text that makes dropdown items invisible).
 os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 
-_verbose = "--verbose" in sys.argv or "-v" in sys.argv
-_simulate = "--simulate" in sys.argv or "-s" in sys.argv
-
-logging.basicConfig(
-    level=logging.DEBUG if _verbose else logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "robocam.log"), mode="w"),
-    ],
-)
-
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QStyleFactory
@@ -62,6 +50,29 @@ def _apply_palette(app: QApplication) -> None:
 
 
 def main():
+    # Guarded behind __name__ == "__main__" deliberately, not at module top
+    # level: robocam.experiment spawns background subprocesses (see
+    # _finalize_raw_burst_process) using multiprocessing's "spawn" start
+    # method, which re-imports this entry script in every child to
+    # reconstruct its state — Python's own documented reason scripts using
+    # spawn must guard their real work this way. Top-level code here used
+    # to include this exact logging.basicConfig(..., FileHandler(mode="w"))
+    # call, which truncates robocam.log — with that unguarded, every single
+    # spawned finalize subprocess re-truncated the log from scratch,
+    # repeatedly wiping out everything already written (confirmed on
+    # hardware: a 24-well experiment left exactly one surviving log line,
+    # each subprocess's truncate-then-append cycle erasing all before it).
+    verbose = "--verbose" in sys.argv or "-v" in sys.argv
+    simulate = "--simulate" in sys.argv or "-s" in sys.argv
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "robocam.log"), mode="w"),
+        ],
+    )
+
     app = QApplication(sys.argv)
     app.setApplicationName("RoboCam 3.1")
     _apply_palette(app)
@@ -74,7 +85,7 @@ def main():
     _sigint_timer.start(200)
     _sigint_timer.timeout.connect(lambda: None)
 
-    window = MainWindow(simulate=_simulate)
+    window = MainWindow(simulate=simulate)
     window.show()
     sys.exit(app.exec())
 
