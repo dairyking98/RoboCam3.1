@@ -704,6 +704,20 @@ class ExperimentRunner:
                         priming_reads += 1
                         if time.perf_counter() - discard_start >= exposure_s * 0.5:
                             break
+                    else:
+                        # Loop ran out of reads without ever catching up to
+                        # real-time (the "for" completed all iterations without
+                        # hitting the break above) — at a higher fps than this
+                        # was tuned against, the camera's backlog may be deeper
+                        # than STALE_FRAME_MAX_DISCARDS can drain, so the
+                        # recording could still be starting on a stale pre-dwell
+                        # frame. Distinct from merely using the last iteration
+                        # to genuinely catch up, which for/else does not flag.
+                        logger.warning(
+                            f"[{label}] Frame priming hit the {STALE_FRAME_MAX_DISCARDS}-read cap "
+                            f"without catching up to real-time — backlog may not be "
+                            f"fully drained; consider raising STALE_FRAME_MAX_DISCARDS."
+                        )
                     priming_total_s = time.perf_counter() - priming_start
                     logger.info(
                         f"[{label}] Frame priming took {priming_total_s:.3f}s "
