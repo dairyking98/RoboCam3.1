@@ -18,7 +18,7 @@ DEFAULT_SESSION: Dict[str, Any] = {
         "name": "my_experiment",
         "mode": "Image",
         "dwell": 1.0,
-        "image_format": "jpg",
+        "image_format": "png",
         "duration": 5.0,
         "use_laser": False,
         "laser_on": 1.0,

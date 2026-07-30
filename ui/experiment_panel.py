@@ -251,7 +251,7 @@ class ExperimentPanel(QWidget):
         self.lbl_img_fmt = QLabel("Image format:")
         layout.addWidget(self.lbl_img_fmt, row, 0)
         self.img_fmt_combo = QComboBox()
-        self.img_fmt_combo.addItems(["jpg", "png", "tif"])
+        self.img_fmt_combo.addItems(["png", "jpg", "tif"])
         layout.addWidget(self.img_fmt_combo, row, 1); row += 1
 
         # Duration (Raw/Video modes)
@@ -533,7 +533,7 @@ class ExperimentPanel(QWidget):
         if idx >= 0:
             self.mode_combo.setCurrentIndex(idx)
         self.dwell_spin.setValue(float(data.get("dwell", 1.0)))
-        fmt_idx = self.img_fmt_combo.findText(data.get("image_format", "jpg"))
+        fmt_idx = self.img_fmt_combo.findText(data.get("image_format", "png"))
         if fmt_idx >= 0:
             self.img_fmt_combo.setCurrentIndex(fmt_idx)
         self.duration_spin.setValue(float(data.get("duration", 5.0)))
@@ -594,7 +594,7 @@ class ExperimentPanel(QWidget):
         if idx >= 0:
             self.mode_combo.setCurrentIndex(idx)
         self.dwell_spin.setValue(float(s.get("dwell", 1.0)))
-        fmt_idx = self.img_fmt_combo.findText(s.get("image_format", "jpg"))
+        fmt_idx = self.img_fmt_combo.findText(s.get("image_format", "png"))
         if fmt_idx >= 0:
             self.img_fmt_combo.setCurrentIndex(fmt_idx)
         self.duration_spin.setValue(float(s.get("duration", 5.0)))

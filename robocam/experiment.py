@@ -733,7 +733,7 @@ class ExperimentRunner:
         delay_per_well: float = 1.0,
         callback=None,
         mode: str = "image",
-        image_format: str = "jpg",
+        image_format: str = "png",
         use_laser: bool = False,
         pre_duration: float = 5.0,
         laser_on_duration: float = 1.0,
@@ -1027,7 +1027,7 @@ class ExperimentRunner:
 
                     else:
                         # Standard still image
-                        fmt = (image_format or "jpg").lower().lstrip(".")
+                        fmt = (image_format or "png").lower().lstrip(".")
                         capture_name = f"{label}_{timestamp}.{fmt}"
                         img_path = os.path.join(exp_dir, capture_name)
                         frame = self.camera.get_frame()
