@@ -504,6 +504,21 @@ class ExperimentRunner:
                 # Otherwise no sleep — capture as fast as exposure allows
                 # (frame_interval_s stays 0.0 unless a slower target fps was set)
 
+            # Diagnostic timing (temporary): stack.flush()+trim is confirmed
+            # fast now (moved to _finalize_raw_burst, logged separately) and
+            # jf.flush() benchmarks at ~0.01ms/call on this hardware — both
+            # ruled out — yet duration_actual_s still showed a ~1.6s gap
+            # after the last captured frame on a real hardware run. This
+            # narrows down whether that gap is the producer loop taking a
+            # while to notice elapsed >= total_duration_s, or the writer
+            # thread taking a while to drain its backlog after being
+            # signaled, instead of continuing to guess between them.
+            loop_exit_t = time.perf_counter() - start
+            logger.info(
+                f"[{label}] Producer loop exited at t={loop_exit_t:.3f}s "
+                f"(target {total_duration_s:.1f}s, {frame_idx} frames sent to writer)"
+            )
+
             if writer_failed.is_set():
                 raise RuntimeError(
                     f"Raw-burst writer thread failed for well {label}: {writer_exc['error']}"
@@ -527,8 +542,15 @@ class ExperimentRunner:
             # periodic stack.flush() left in the writer's loop to slow it
             # down, and burst_meta below needs frames_saved/frame_idx to be
             # fully complete, not whatever's landed so far.
+            drain_start = time.perf_counter()
+            queue_backlog = frame_queue.qsize()
             frame_queue.put(None)
             writer_thread.join()
+            drain_s = time.perf_counter() - drain_start
+            logger.info(
+                f"[{label}] Writer drain (sentinel + join) took {drain_s:.3f}s "
+                f"({queue_backlog} frames queued but unwritten at signal time)"
+            )
 
         duration_actual = time.perf_counter() - start
         capture_stats = self.camera.get_capture_stats()
