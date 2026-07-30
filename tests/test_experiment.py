@@ -2,7 +2,7 @@
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pytest
@@ -240,6 +240,27 @@ class TestRunLoop:
         assert len(cycle_dirs) == len(ok_records)
         for d in cycle_dirs:
             assert list(d.glob("*_points.csv")), f"{d} missing points.csv -- not a normal experiment dir"
+
+    def test_loop_deadline_set_during_run_and_cleared_after(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        seen_deadline = {}
+
+        def _capture_deadline(msg):
+            if runner.loop_deadline is not None and "deadline" not in seen_deadline:
+                seen_deadline["deadline"] = runner.loop_deadline
+
+        before = datetime.now()
+        runner.run_loop(
+            name="deadline", positions=[(0, 0, 0)], labels=["A1"],
+            delay_per_well=0.0, mode="image", callback=_capture_deadline,
+            interval_s=0.0, duration_s=1.0,
+        )
+        after = datetime.now()
+
+        assert "deadline" in seen_deadline, "loop_deadline should be set while looping"
+        # Deadline should be ~1s (duration_s) after the loop started.
+        assert before <= seen_deadline["deadline"] <= after + timedelta(seconds=1.0)
+        assert runner.loop_deadline is None, "loop_deadline should be cleared once the loop ends"
 
     def test_interval_spacing(self, tmp_path):
         runner = _make_runner(tmp_path)

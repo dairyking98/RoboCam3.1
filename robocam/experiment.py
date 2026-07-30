@@ -492,6 +492,16 @@ class ExperimentRunner:
         self.current_cycle: int = 0
         self.next_cycle_time: Optional[datetime] = None
         self.loop_dir: Optional[str] = None
+        # Wall-clock time the loop's configured duration_s runs out, set
+        # once at the start of run_loop(). The UI counts down to this
+        # directly rather than showing run()'s own per-cycle move/capture
+        # estimate while looping -- that per-cycle number resets every
+        # cycle and isn't what matters when watching an hours/days-long
+        # loop; the overall budget is. Goes negative (UI shows red,
+        # counting up in magnitude) if the final in-flight cycle runs past
+        # it -- expected, since a cycle always finishes rather than being
+        # aborted mid-well.
+        self.loop_deadline: Optional[datetime] = None
         # Tri-state outcome of the most recent run() call: True (completed
         # normally), False (raised/caught an error), or None (stopped by the
         # user, or no call has completed yet) — run() swallows its own
@@ -1245,6 +1255,7 @@ class ExperimentRunner:
 
         original_out_dir = self.out_dir
         deadline = datetime.now() + timedelta(seconds=float(duration_s))
+        self.loop_deadline = deadline
         interval_s = float(interval_s)
 
         def _write_manifest_record(mf, record: dict) -> None:
@@ -1390,3 +1401,4 @@ class ExperimentRunner:
         finally:
             self.out_dir = original_out_dir
             self.next_cycle_time = None
+            self.loop_deadline = None

@@ -965,7 +965,24 @@ class ExperimentPanel(QWidget):
         if runner is None:
             return
 
-        if runner.eta_finish_time is not None:
+        if runner.looping and runner.loop_deadline is not None:
+            # While looping, the per-cycle move/capture estimate (below)
+            # resets every cycle and isn't what matters for an hours/days
+            # long run -- count down against the configured duration budget
+            # instead. Goes negative (red, counting up) once the final
+            # in-flight cycle runs past it -- expected, a cycle always
+            # finishes rather than aborting mid-well.
+            remaining = (runner.loop_deadline - datetime.now()).total_seconds()
+            sign = "-" if remaining < 0 else ""
+            total = int(abs(remaining))
+            hh, rem = divmod(total, 3600)
+            mm, ss = divmod(rem, 60)
+            self.eta_lbl.setText(f"ETA: {sign}{hh:02d}:{mm:02d}:{ss:02d}")
+            self.eta_lbl.setStyleSheet(
+                "font-style: italic; color: #b00020;" if remaining < 0
+                else "font-style: italic; color: #555;"
+            )
+        elif runner.eta_finish_time is not None:
             remaining = (runner.eta_finish_time - datetime.now()).total_seconds()
             sign = "-" if remaining < 0 else ""
             mm, ss = divmod(int(abs(remaining)), 60)
