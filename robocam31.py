@@ -64,12 +64,33 @@ def main():
     # each subprocess's truncate-then-append cycle erasing all before it).
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     simulate = "--simulate" in sys.argv or "-s" in sys.argv
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "robocam.log")
+    # Truncate once, then attach the real handler in append mode -- opening
+    # with mode="w" and keeping that same handle open for the whole session
+    # does NOT set O_APPEND, so this process's file position only ever
+    # advances by what it itself has written. Every _finalize_raw_burst_process
+    # subprocess appends via its own O_APPEND-mode handle (always writes to
+    # the file's true current end, atomically, regardless of what any other
+    # process's fd position thinks), but this process has no way to notice
+    # that the file grew out from under it -- so its next write lands at its
+    # own stale position, which is exactly where the subprocess's line just
+    # went, silently overwriting it. Confirmed on hardware: a finalize
+    # subprocess's "took X.XXXs" line was present in robocam.log right after
+    # its well finished, then vanished once the next experiment's "Starting
+    # experiment..." lines were written past that same byte offset.
+    # Reproduced in isolation too: a long-lived mode="w" parent handle
+    # interleaved with spawned children's mode="a" handles lost 29 of 30
+    # child log lines -- only ever the very last write survives, since
+    # nothing comes after it to overwrite. Opening this handler in mode="a"
+    # instead makes every writer O_APPEND-consistent, so the kernel handles
+    # the ordering atomically and nobody's writes get clobbered.
+    open(log_path, "w").close()
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "robocam.log"), mode="w"),
+            logging.FileHandler(log_path, mode="a"),
         ],
     )
 
