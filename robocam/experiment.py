@@ -84,10 +84,26 @@ DISK_CHECK_EVERY_N_FRAMES = 30
 # for other writer failures, instead of crashing the whole process.
 MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 
-# Rough per-well overhead for still-image capture (Image mode has no fixed
+# Per-well overhead for still-image capture (Image mode has no fixed
 # recording duration like raw bursts do — this covers exposure + camera
-# readback + disk write) used only for the pre-run ETA estimate below.
-IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.3
+# readback + cv2.imwrite() encode/write), used only for the pre-run ETA
+# estimate below. Was a pure guess (0.3) until a 24-well hardware run at
+# 1936x1100 JPEG logged "[label] Capture took X.XXXs" averaging ~0.054s
+# per well (0.047-0.062s range; the very first capture of the run ran
+# 0.079s -- a one-time warm-up, not a per-well cost, folded into this
+# average rather than split out as its own constant since it's only
+# ~26ms against everything else here). The old 0.3 guess was responsible
+# for the entire estimate/actual gap on that run: 44s estimated vs.
+# 38.1s actual, and 24 wells x (0.3 - 0.054) ~= 5.9s matches exactly.
+#
+# JPEG-specific: cv2.imwrite()'s cost is format-dependent (PNG's deflate
+# compression is typically 5-10x slower than JPEG at the same resolution;
+# TIFF is disk-write-bound instead of CPU-bound) and this is only measured
+# against JPEG so far -- if PNG/TIFF turn out to matter in practice, this
+# will need to become format-aware the same way RAW_BURST_FINALIZE_BYTES_PER_S
+# had to become resolution/fps-aware instead of staying a flat number
+# measured at one setting.
+IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.055
 
 # Stale-frame discard loop (see the priming loop in run()) is never zero —
 # even catching up in the minimum "4 discard reads" case seen on hardware
