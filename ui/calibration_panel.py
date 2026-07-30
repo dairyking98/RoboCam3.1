@@ -866,7 +866,6 @@ class CalibrationPanel(QWidget):
         step = self._get_step()
         def task():
             mc.move_relative(**{axis.upper(): direction * step})
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     def _home(self):
@@ -903,7 +902,6 @@ class CalibrationPanel(QWidget):
             return
         def task():
             mc.move_absolute(X=x, Y=y, Z=z)
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     def _update_position_display(self):

@@ -295,7 +295,6 @@ class _DemoWindow(QWidget):
 
         def task():
             mc.move_absolute(X=x, Y=y, Z=z)
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -664,7 +663,6 @@ class ManualControlPanel(QWidget):
         step = self._get_step()
         def task():
             mc.move_relative(**{axis: direction * step})
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     def _home(self):
@@ -708,7 +706,6 @@ class ManualControlPanel(QWidget):
 
         def task():
             mc.move_absolute(X=x, Y=y, Z=z)
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     def _set_laser(self, state: bool):
