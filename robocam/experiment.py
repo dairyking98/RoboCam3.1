@@ -87,23 +87,30 @@ MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 # Per-well overhead for still-image capture (Image mode has no fixed
 # recording duration like raw bursts do — this covers exposure + camera
 # readback + cv2.imwrite() encode/write), used only for the pre-run ETA
-# estimate below. Was a pure guess (0.3) until a 24-well hardware run at
-# 1936x1100 JPEG logged "[label] Capture took X.XXXs" averaging ~0.054s
-# per well (0.047-0.062s range; the very first capture of the run ran
-# 0.079s -- a one-time warm-up, not a per-well cost, folded into this
-# average rather than split out as its own constant since it's only
-# ~26ms against everything else here). The old 0.3 guess was responsible
-# for the entire estimate/actual gap on that run: 44s estimated vs.
-# 38.1s actual, and 24 wells x (0.3 - 0.054) ~= 5.9s matches exactly.
-#
-# JPEG-specific: cv2.imwrite()'s cost is format-dependent (PNG's deflate
-# compression is typically 5-10x slower than JPEG at the same resolution;
-# TIFF is disk-write-bound instead of CPU-bound) and this is only measured
-# against JPEG so far -- if PNG/TIFF turn out to matter in practice, this
-# will need to become format-aware the same way RAW_BURST_FINALIZE_BYTES_PER_S
-# had to become resolution/fps-aware instead of staying a flat number
-# measured at one setting.
-IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.055
+# estimate below. Was a single flat guess (0.3) until real hardware numbers
+# existed at all, then a single flat JPEG-only measurement -- now
+# format-aware, since cv2.imwrite()'s cost turned out to genuinely differ
+# by format, not just in theory:
+#   jpg: ~0.054s/well (24-well hardware run, 1936x1100, 0.047-0.062s range;
+#        one early one-time warm-up read at 0.079s folded into the average)
+#   tif: ~0.110s/well (6-well hardware run, 1936x1100, 0.102-0.121s range) --
+#        uncompressed, disk-write-bound rather than CPU-bound, ~2x jpg
+#   png: ~0.140s/well (6-well hardware run, 1936x1100, 0.130-0.171s range) --
+#        deflate compression is CPU-bound, ~2.6x jpg (less than the ~5-10x
+#        first guessed before real PNG numbers existed -- don't trust a
+#        format-cost ratio that hasn't itself been measured, same lesson as
+#        every other constant in this file)
+# The original flat-0.3 guess was responsible for an entire run's
+# estimate/actual gap (44s estimated vs. 38.1s actual on the jpg run) --
+# same shape of bug RAW_BURST_FINALIZE_BYTES_PER_S had before it became
+# resolution/fps-aware instead of a flat number measured at one setting.
+IMAGE_CAPTURE_TIME_ESTIMATE_S_BY_FORMAT = {
+    "jpg": 0.055,
+    "jpeg": 0.055,
+    "tif": 0.110,
+    "tiff": 0.110,
+    "png": 0.140,
+}
 
 # Stale-frame discard loop (see the priming loop in run()) is never zero —
 # even catching up in the minimum "4 discard reads" case seen on hardware
@@ -799,8 +806,12 @@ class ExperimentRunner:
         # alone).
         move_time_estimates: List[float] = []
         if profile:
+            image_capture_time_est = IMAGE_CAPTURE_TIME_ESTIMATE_S_BY_FORMAT.get(
+                (image_format or "png").lower().lstrip("."),
+                IMAGE_CAPTURE_TIME_ESTIMATE_S_BY_FORMAT["png"],
+            )
             capture_time_est = FRAME_PRIMING_ESTIMATE_S + (
-                total_duration + RAW_BURST_OVERRUN_S if mode == "raw" else IMAGE_CAPTURE_TIME_ESTIMATE_S
+                total_duration + RAW_BURST_OVERRUN_S if mode == "raw" else image_capture_time_est
             )
             move_overhead_s = _move_overhead_s(self.motion)
             cur_pos = (self.motion.X, self.motion.Y, self.motion.Z)
