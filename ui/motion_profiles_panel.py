@@ -39,11 +39,15 @@ printer, not merely populated into the sliders.
 
 Three bundled starting-point presets ship at fast/medium/slow speed
 tiers, all biased toward low vibration (see _DEFAULT_PRESET_NAME below
-for sourcing). "Slow" is treated as *the* default: it's what the combo
-box defaults to on first load, and what gets applied on the very first
-printer connect of a session when nothing else is known yet — safer
-to start conservative than to trust whatever the firmware happened to
-boot with.
+for sourcing). "Slow" is treated as *the* fallback default: it's what
+the combo box defaults to when nothing else has ever been loaded, and
+what gets applied on connect only if there's no profile confirmed this
+session and no preset restored from a previous one (see
+_on_printer_connected) — safer to start conservative than to trust
+whatever the firmware happened to boot with. Once any preset has
+actually been loaded (this session or a prior one, since the choice
+persists — see "Session persistence" below), *that* preset is what
+gets applied on connect instead, not the bundled default.
 """
 from __future__ import annotations
 
@@ -349,13 +353,19 @@ class MotionProfilesPanel(QWidget):
     def _on_printer_connected(self):
         """Wired to SetupPanel.motion_connected. Motion profiles aren't
         known to reliably survive a printer power cycle, so if we already
-        know what profile *should* be active (read, applied, or loaded
-        earlier this session), re-push it now rather than just reading —
-        the printer's actual state may have drifted while disconnected.
-        On the first connect of a session, with nothing else known yet,
-        apply the conservative default preset instead of trusting
-        whatever the firmware happened to boot with; only fall back to a
-        plain Read if that preset file is missing."""
+        know what profile *should* be active, re-push it now rather than
+        just reading — the printer's actual state may have drifted while
+        disconnected. Priority order:
+          1. Confirmed this session (read, applied, or loaded then
+             applied earlier) — self._last_read.
+          2. The preset last loaded in a *previous* session, restored
+             from disk (session_manager, same value _load_session()
+             populated the sliders from at startup) — the printer should
+             come up in whatever profile the user was actually last
+             using, not the conservative bundled default.
+          3. The bundled conservative default preset, for a genuinely
+             first-ever run with no prior session to restore.
+          4. A plain Read, if even the default preset file is missing."""
         if self._last_read:
             self._populate(self._last_read, mark_current=False)
             self._set_status(
@@ -364,6 +374,17 @@ class MotionProfilesPanel(QWidget):
             )
             self._apply_profiles()
             return
+
+        last_loaded = session_manager.get("motion_profiles").get("last_loaded_preset", "")
+        if last_loaded:
+            data = self._read_preset_file(last_loaded)
+            if data is not None:
+                self._populate(data, mark_current=False)
+                self._set_status(
+                    f"Printer connected — applying last-loaded profile ‘{last_loaded}’…", "gray"
+                )
+                self._apply_profiles()
+                return
 
         data = self._read_preset_file(_DEFAULT_PRESET_NAME)
         if data is not None:
