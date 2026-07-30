@@ -95,30 +95,36 @@ MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 # RAW_BURST_FINALIZE_BYTES_PER_S had before it became resolution/fps-aware.
 #
 # Two hardware runs per format (1936x1100 and 640x480, 6 wells each) let
-# the per-well cost be split into a resolution-independent fixed part
-# (exposure + SDK readback + call overhead) and a per-pixel part
-# (cv2.imwrite()'s actual encode/write cost, which is what should scale
-# with resolution):
+# the per-well cost be split into a resolution-independent fixed part and
+# a per-pixel part (cv2.imwrite()'s actual encode/write cost, which is
+# what should scale with resolution):
 #   tif: 0.1097s @ 1936x1100, 0.0493s @ 640x480 -> fixed=0.0391, per_px=3.31e-8
 #   png: 0.1402s @ 1936x1100, 0.0545s @ 640x480 -> fixed=0.0401, per_px=4.70e-8
 # The two formats' fixed components landed within 2.5% of each other
 # (0.0391 vs 0.0401) despite completely different encoders downstream --
-# consistent with that part being encoder-independent as expected, so
-# IMAGE_CAPTURE_FIXED_OVERHEAD_S below is their average. jpg only has one
-# hardware data point so far (0.055s @ 1936x1100, no low-res run yet); its
-# per-pixel rate is derived from that single point assuming the same
-# shared fixed overhead, not independently confirmed by two of its own
-# data points like tif/png -- lower confidence, revisit if a low-res jpg
-# run ever happens.
+# consistent with that part being encoder-independent as expected. jpg
+# only has one hardware data point so far (0.055s @ 1936x1100, no
+# low-res run yet); its per-pixel rate is derived from that single point
+# assuming the same shared fixed part, not independently confirmed by two
+# of its own data points like tif/png -- lower confidence, revisit if a
+# low-res jpg run ever happens.
 #
-# Caveat: image mode doesn't log camera exposure per capture (unlike raw
-# mode's camera_meta.json), so these hi-res/lo-res pairs aren't a
-# perfectly isolated resolution-only comparison -- if exposure also
-# differed between those runs, some of what's attributed to "fixed
-# overhead" here could actually be an exposure effect. Not expected to be
-# large (the two formats' fixed components agreeing closely argues against
-# it), but worth knowing if this model is ever revisited.
-IMAGE_CAPTURE_FIXED_OVERHEAD_S = 0.0396
+# That "fixed part" was NOT actually exposure-independent, though -- it
+# still had exposure baked into it, since image mode doesn't log exposure
+# per capture (unlike raw mode's camera_meta.json) and all 5 calibration
+# runs above happened to be taken back-to-back at the same ~33ms exposure
+# (confirmed manually, not from logs). A 200ms exposure would add ~170ms
+# that a flat "fixed part" calibrated at 33ms has no way to account for --
+# same shape of error as every other constant fixed on this branch, just
+# for a variable (exposure) that's actually easy to query live instead of
+# needing another hardware run to characterize. Split further:
+#   IMAGE_CAPTURE_BASE_OVERHEAD_S = fixed_part_measured - 0.033 (the known
+#   exposure at calibration time), averaged over tif/png: 0.0391-0.033=
+#   0.0061, 0.0401-0.033=0.0071 -> avg 0.0066. This is genuinely
+#   exposure-independent (SDK call + readback plumbing only); actual
+#   exposure is now added live from camera.get_exposure() per well instead
+#   of ever being baked into a constant.
+IMAGE_CAPTURE_BASE_OVERHEAD_S = 0.0066
 IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT = {
     "jpg": 7.24e-9,
     "jpeg": 7.24e-9,
@@ -129,16 +135,18 @@ IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT = {
 
 
 def _estimate_image_capture_time_s(camera, image_format: str) -> float:
-    """Estimate one well's still-image capture time (exposure + SDK
-    readback + cv2.imwrite() encode/write), scaled by resolution and
-    keyed by format -- see IMAGE_CAPTURE_FIXED_OVERHEAD_S above for the
-    hardware measurements this is fit from."""
+    """Estimate one well's still-image capture time: exposure (queried
+    live, not baked into a constant) + SDK call/readback overhead +
+    cv2.imwrite() encode/write, scaled by resolution and keyed by format
+    -- see IMAGE_CAPTURE_BASE_OVERHEAD_S above for the hardware
+    measurements this is fit from."""
     w, h = camera.resolution
     fmt = (image_format or "png").lower().lstrip(".")
     per_pixel = IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT.get(
         fmt, IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT["png"]
     )
-    return IMAGE_CAPTURE_FIXED_OVERHEAD_S + per_pixel * w * h
+    exposure_s = camera.get_exposure() / 1_000_000.0
+    return IMAGE_CAPTURE_BASE_OVERHEAD_S + exposure_s + per_pixel * w * h
 
 # Stale-frame discard loop (see the priming loop in run()) is never zero —
 # even catching up in the minimum "4 discard reads" case seen on hardware
