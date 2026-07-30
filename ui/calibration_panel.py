@@ -901,6 +901,14 @@ class CalibrationPanel(QWidget):
         mc = hw_state.get_motion()
         if not mc:
             return
+        if not mc.is_homed:
+            QMessageBox.warning(
+                self, "Home Required",
+                "The printer has not been homed this session.\n\n"
+                "Home all axes before navigating to a well or coordinate — "
+                "absolute positions aren't reliable until then."
+            )
+            return
         def task():
             mc.move_absolute(X=x, Y=y, Z=z)
             mc.update_position()
@@ -921,6 +929,15 @@ class CalibrationPanel(QWidget):
         mc = hw_state.get_motion()
         if not mc or not mc.is_connected:
             QMessageBox.warning(self, "Not Connected", "Connect and home the printer first.")
+            return
+        if not mc.is_homed:
+            QMessageBox.warning(
+                self, "Home Required",
+                "The printer has not been homed this session.\n\n"
+                "Home all axes before recording a corner — its absolute "
+                "position isn't reliable until then, and it will be baked "
+                "into every well position derived from this calibration."
+            )
             return
         try:
             pos = mc.update_position()
