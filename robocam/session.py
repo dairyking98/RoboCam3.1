@@ -45,6 +45,9 @@ DEFAULT_SESSION: Dict[str, Any] = {
     "manual_control": {
         "cal_file": "",
     },
+    "motion_profiles": {
+        "last_loaded_preset": "",
+    },
 }
 
 

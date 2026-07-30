@@ -23,14 +23,19 @@ Presets (save/load named slider configurations to
 config/motion_profile_presets/<name>.json) follow the same convention
 as ui/experiment_panel.py's Experiment Presets group, so profiles can
 be prepared and saved without a printer connected. Loading a preset
-sends it to the printer immediately (same as Apply) rather than just
-populating the sliders — motion profiles are not known to reliably
-persist across a printer power cycle, so anything meant to take effect
-is pushed as gcode right away instead of sitting unsent in the UI. The
-same reasoning applies on (re)connect: if a profile was already
-read/applied/loaded earlier in this session, it's re-sent then too, in
-case the printer's actual state drifted (e.g. a power cycle reset it
-to firmware defaults) while disconnected.
+only populates the sliders — it does not send anything to the printer;
+Apply (now grouped with Save/Load rather than off in the Read/Reset
+row) is the one action that actually pushes gcode. The last-loaded
+preset name is persisted to the session and restored (sliders
+populated, nothing sent) on the next launch.
+
+On (re)connect, if a profile was already read/applied earlier in this
+session, it's re-sent then, in case the printer's actual state drifted
+(e.g. a power cycle reset it to firmware defaults) while disconnected
+— motion profiles are not known to reliably persist across a printer
+power cycle. This connect-time re-push is independent of Load/Apply
+above; it only concerns what's already been confirmed on the
+printer, not merely populated into the sliders.
 
 Three bundled starting-point presets ship at fast/medium/slow speed
 tiers, all biased toward low vibration (see _DEFAULT_PRESET_NAME below
@@ -54,6 +59,7 @@ from PySide6.QtWidgets import (
 
 import robocam.hw_state as hw_state
 from robocam.config import get_config
+from robocam.session import session_manager
 from ui.profile_slider import ProfileSliderRow
 
 # Each group is (title, [(keys, label, lo, hi, step, decimals, suffix), ...]).
@@ -122,8 +128,9 @@ class MotionProfilesPanel(QWidget):
         # list of (keys_tuple, ProfileSliderRow)
         self._rows: list[tuple[tuple, ProfileSliderRow]] = []
         # Last profile confirmed on the printer, via Read or a successful
-        # Apply (including an auto-Apply from Load) — used both for Reset
-        # and to re-push on reconnect. Empty until the first Read/Apply.
+        # Apply — used both for Reset and to re-push on reconnect. Empty
+        # until the first Read/Apply. Loading a preset does NOT touch this;
+        # it only populates the sliders until Apply is actually clicked.
         self._last_read: dict = {}
         self._read_thread: _ReadThread | None = None
         self._apply_thread: _ApplyThread | None = None
@@ -139,14 +146,6 @@ class MotionProfilesPanel(QWidget):
         )
         self.read_btn.clicked.connect(self._read_profiles)
         btn_row.addWidget(self.read_btn)
-
-        self.apply_btn = QPushButton("Apply to Printer")
-        self.apply_btn.setToolTip(
-            "Send M203/M201/M205 with the current slider values\n"
-            "and save to EEPROM (M500)."
-        )
-        self.apply_btn.clicked.connect(self._apply_profiles)
-        btn_row.addWidget(self.apply_btn)
 
         self.reset_btn = QPushButton("Reset to Defaults")
         self.reset_btn.setToolTip(
@@ -171,15 +170,15 @@ class MotionProfilesPanel(QWidget):
 
         self._refresh_support()
         self._refresh_presets()
+        self._load_session()
 
     def _build_presets_group(self) -> QGroupBox:
         grp = QGroupBox("Motion Profile Presets")
         grp.setToolTip(
             "Save the slider values above as a named preset, independent of\n"
             "the printer connection, so profiles can be prepared offline.\n"
-            "Loading a preset sends it to the printer immediately (like Apply) —\n"
-            "profiles aren't known to reliably survive a printer power cycle,\n"
-            "so anything you load is pushed right away rather than left pending."
+            "Loading a preset only populates the sliders — click Apply to\n"
+            "actually send it to the printer."
         )
         layout = QHBoxLayout(grp)
 
@@ -192,9 +191,17 @@ class MotionProfilesPanel(QWidget):
         layout.addWidget(save_btn)
 
         load_btn = QPushButton("Load")
-        load_btn.setToolTip("Populate the sliders and immediately send them to the printer.")
+        load_btn.setToolTip("Populate the sliders from this preset — does not send anything to the printer.")
         load_btn.clicked.connect(self._load_preset)
         layout.addWidget(load_btn)
+
+        self.apply_btn = QPushButton("Apply to Printer")
+        self.apply_btn.setToolTip(
+            "Send M203/M201/M205 with the current slider values\n"
+            "and save to EEPROM (M500)."
+        )
+        self.apply_btn.clicked.connect(self._apply_profiles)
+        layout.addWidget(self.apply_btn)
 
         refresh_btn = QPushButton("↺")
         refresh_btn.setFixedWidth(28)
@@ -420,5 +427,28 @@ class MotionProfilesPanel(QWidget):
             QMessageBox.critical(self, "Preset Error", f"Could not load preset ‘{name}’.")
             return
         self._populate(data, mark_current=False)
-        self._set_status(f"Preset ‘{name}’ loaded — sending to printer…", "gray")
-        self._apply_profiles()
+        self._set_status(f"Preset ‘{name}’ loaded. Click ‘Apply to Printer’ to send it.", "gray")
+        session_manager.update("motion_profiles", {"last_loaded_preset": name})
+        session_manager.save()
+
+    # ------------------------------------------------------------------
+    # Session persistence
+    # ------------------------------------------------------------------
+
+    def _load_session(self):
+        """Restore the last-loaded preset on startup — populates the
+        sliders and combo box the same way a manual Load would, but sends
+        nothing to the printer (same decoupling as Load itself)."""
+        name = session_manager.get("motion_profiles").get("last_loaded_preset", "")
+        if not name:
+            return
+        data = self._read_preset_file(name)
+        if data is None:
+            return
+        idx = self.preset_combo.findText(name)
+        if idx >= 0:
+            self.preset_combo.setCurrentIndex(idx)
+        else:
+            self.preset_combo.setCurrentText(name)
+        self._populate(data, mark_current=False)
+        self._set_status(f"Restored last-loaded preset ‘{name}’.", "gray")
