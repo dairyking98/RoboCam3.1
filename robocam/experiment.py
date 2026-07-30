@@ -87,30 +87,58 @@ MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 # Per-well overhead for still-image capture (Image mode has no fixed
 # recording duration like raw bursts do — this covers exposure + camera
 # readback + cv2.imwrite() encode/write), used only for the pre-run ETA
-# estimate below. Was a single flat guess (0.3) until real hardware numbers
-# existed at all, then a single flat JPEG-only measurement -- now
-# format-aware, since cv2.imwrite()'s cost turned out to genuinely differ
-# by format, not just in theory:
-#   jpg: ~0.054s/well (24-well hardware run, 1936x1100, 0.047-0.062s range;
-#        one early one-time warm-up read at 0.079s folded into the average)
-#   tif: ~0.110s/well (6-well hardware run, 1936x1100, 0.102-0.121s range) --
-#        uncompressed, disk-write-bound rather than CPU-bound, ~2x jpg
-#   png: ~0.140s/well (6-well hardware run, 1936x1100, 0.130-0.171s range) --
-#        deflate compression is CPU-bound, ~2.6x jpg (less than the ~5-10x
-#        first guessed before real PNG numbers existed -- don't trust a
-#        format-cost ratio that hasn't itself been measured, same lesson as
-#        every other constant in this file)
-# The original flat-0.3 guess was responsible for an entire run's
-# estimate/actual gap (44s estimated vs. 38.1s actual on the jpg run) --
-# same shape of bug RAW_BURST_FINALIZE_BYTES_PER_S had before it became
-# resolution/fps-aware instead of a flat number measured at one setting.
-IMAGE_CAPTURE_TIME_ESTIMATE_S_BY_FORMAT = {
-    "jpg": 0.055,
-    "jpeg": 0.055,
-    "tif": 0.110,
-    "tiff": 0.110,
-    "png": 0.140,
+# estimate below. History: a pure guess (0.3) until any real hardware
+# numbers existed, then a flat-per-format measurement (jpg/tif/png each
+# their own constant) taken only at 1936x1100 (max resolution) -- both
+# stages are documented in this file's git history. That flat-per-format
+# version still didn't scale with resolution, the same shape of gap
+# RAW_BURST_FINALIZE_BYTES_PER_S had before it became resolution/fps-aware.
+#
+# Two hardware runs per format (1936x1100 and 640x480, 6 wells each) let
+# the per-well cost be split into a resolution-independent fixed part
+# (exposure + SDK readback + call overhead) and a per-pixel part
+# (cv2.imwrite()'s actual encode/write cost, which is what should scale
+# with resolution):
+#   tif: 0.1097s @ 1936x1100, 0.0493s @ 640x480 -> fixed=0.0391, per_px=3.31e-8
+#   png: 0.1402s @ 1936x1100, 0.0545s @ 640x480 -> fixed=0.0401, per_px=4.70e-8
+# The two formats' fixed components landed within 2.5% of each other
+# (0.0391 vs 0.0401) despite completely different encoders downstream --
+# consistent with that part being encoder-independent as expected, so
+# IMAGE_CAPTURE_FIXED_OVERHEAD_S below is their average. jpg only has one
+# hardware data point so far (0.055s @ 1936x1100, no low-res run yet); its
+# per-pixel rate is derived from that single point assuming the same
+# shared fixed overhead, not independently confirmed by two of its own
+# data points like tif/png -- lower confidence, revisit if a low-res jpg
+# run ever happens.
+#
+# Caveat: image mode doesn't log camera exposure per capture (unlike raw
+# mode's camera_meta.json), so these hi-res/lo-res pairs aren't a
+# perfectly isolated resolution-only comparison -- if exposure also
+# differed between those runs, some of what's attributed to "fixed
+# overhead" here could actually be an exposure effect. Not expected to be
+# large (the two formats' fixed components agreeing closely argues against
+# it), but worth knowing if this model is ever revisited.
+IMAGE_CAPTURE_FIXED_OVERHEAD_S = 0.0396
+IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT = {
+    "jpg": 7.24e-9,
+    "jpeg": 7.24e-9,
+    "tif": 3.31e-8,
+    "tiff": 3.31e-8,
+    "png": 4.70e-8,
 }
+
+
+def _estimate_image_capture_time_s(camera, image_format: str) -> float:
+    """Estimate one well's still-image capture time (exposure + SDK
+    readback + cv2.imwrite() encode/write), scaled by resolution and
+    keyed by format -- see IMAGE_CAPTURE_FIXED_OVERHEAD_S above for the
+    hardware measurements this is fit from."""
+    w, h = camera.resolution
+    fmt = (image_format or "png").lower().lstrip(".")
+    per_pixel = IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT.get(
+        fmt, IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT["png"]
+    )
+    return IMAGE_CAPTURE_FIXED_OVERHEAD_S + per_pixel * w * h
 
 # Stale-frame discard loop (see the priming loop in run()) is never zero —
 # even catching up in the minimum "4 discard reads" case seen on hardware
@@ -806,10 +834,7 @@ class ExperimentRunner:
         # alone).
         move_time_estimates: List[float] = []
         if profile:
-            image_capture_time_est = IMAGE_CAPTURE_TIME_ESTIMATE_S_BY_FORMAT.get(
-                (image_format or "png").lower().lstrip("."),
-                IMAGE_CAPTURE_TIME_ESTIMATE_S_BY_FORMAT["png"],
-            )
+            image_capture_time_est = _estimate_image_capture_time_s(self.camera, image_format)
             capture_time_est = FRAME_PRIMING_ESTIMATE_S + (
                 total_duration + RAW_BURST_OVERRUN_S if mode == "raw" else image_capture_time_est
             )
