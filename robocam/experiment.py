@@ -61,17 +61,17 @@ RAW_BURST_FRAME_BUFFER = 50
 # checks free space. Piggybacks one cadence for both instead of a separate
 # timer.
 #
-# DIAGNOSTIC PROBE (temporary): a high-fps/high-res hardware run showed a
-# ~140-155ms stall recurring at *exactly* every 30th frame — 13 stalls
-# totaling ~1.85s of a 5.13s recording (~36% of capture time), with
-# queue_full_stalls staying 0 throughout (so it's not simple producer
-# backpressure from a full queue). The period matching this constant is
-# circumstantial, not confirmed — bumped 30 -> 100 to test directly: if
-# the stall period shifts to every ~100 frames on the next high-fps run,
-# this flush cadence is the cause; if it stays at 30, something else
-# (GIL contention elsewhere, or the SDK's own internal buffering) is
-# responsible instead. Revert to 30 (or tune otherwise) once confirmed.
-MEMMAP_FLUSH_EVERY_N_FRAMES = 100
+# A high-fps/high-res hardware run showed periodic stalls at exactly this
+# cadence (13 stalls of ~142ms at 30, 3 stalls of ~468ms after bumping to
+# 100 as a direct test — confirmed: the period shifted exactly to match).
+# But the stall duration scaled proportionally with the cadence (~3.3x
+# frames -> ~3.3x stall time), so total stalled time barely changed
+# (~1.85s -> ~1.40s) and fps didn't meaningfully improve — batching less
+# often just trades many small pauses for fewer, longer ones. Reverted to
+# 30 since 100 bought nothing; see the flush/disk_usage timing added in
+# _writer() below for the next diagnostic step (disk bandwidth was ruled
+# out — 292MB/s measured vs. ~155MB/s actually demanded).
+MEMMAP_FLUSH_EVERY_N_FRAMES = 30
 
 # Safety floor checked against shutil.disk_usage(...).free on the same
 # cadence as the periodic flush above. A memory-mapped write that runs out
@@ -386,8 +386,28 @@ class ExperimentRunner:
                         jf.flush()
                         n_written += 1
                         if n_written % MEMMAP_FLUSH_EVERY_N_FRAMES == 0:
+                            # Diagnostic timing (temporary): a high-fps/high-res
+                            # hardware run showed periodic stalls at exactly this
+                            # cadence, scaling proportionally with
+                            # MEMMAP_FLUSH_EVERY_N_FRAMES — but disk write
+                            # bandwidth was ruled out (measured 292MB/s vs.
+                            # ~155MB/s actually demanded), so timing each call
+                            # separately to find which one is really costing
+                            # the time instead of continuing to infer it from
+                            # black-box frame timestamps.
+                            flush_start = time.perf_counter()
                             stack.flush()
+                            flush_s = time.perf_counter() - flush_start
+
+                            disk_check_start = time.perf_counter()
                             free = shutil.disk_usage(output_dir).free
+                            disk_check_s = time.perf_counter() - disk_check_start
+
+                            logger.info(
+                                f"[{label}] Writer flush at frame {n_written}: "
+                                f"stack.flush() took {flush_s:.3f}s, "
+                                f"disk_usage() took {disk_check_s:.3f}s"
+                            )
                             if free < MIN_FREE_DISK_BYTES:
                                 raise OSError(
                                     f"Only {free} bytes free in {output_dir}, "
