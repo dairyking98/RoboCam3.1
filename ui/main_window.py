@@ -1,7 +1,8 @@
 """
 Main application window.
 
-Tab order: Setup → Motion Profiles → Calibration → Experiment → Manual Control
+Tab order: Setup → Motion Profiles → Calibration → Experiment →
+Manual Control → Processing → Loop Processing
 """
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QTabWidget
 from PySide6.QtCore import QTimer
@@ -12,6 +13,7 @@ from ui.calibration_panel import CalibrationPanel
 from ui.experiment_panel import ExperimentPanel
 from ui.manual_control_panel import ManualControlPanel
 from ui.processing_panel import ProcessingPanel
+from ui.loop_processing_panel import LoopProcessingPanel
 import robocam.hw_state as hw_state
 from robocam.session import session_manager
 
@@ -41,6 +43,7 @@ class MainWindow(QMainWindow):
         )
         self.manual_panel         = ManualControlPanel()
         self.processing_panel     = ProcessingPanel()
+        self.loop_processing_panel = LoopProcessingPanel()
 
         self.tabs.addTab(self.setup_panel,           "Setup")
         self.tabs.addTab(self.motion_profiles_panel, "Motion Profiles")
@@ -48,6 +51,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.experiment_panel,      "Experiment")
         self.tabs.addTab(self.manual_panel,          "Manual Control")
         self.tabs.addTab(self.processing_panel,      "Processing")
+        self.tabs.addTab(self.loop_processing_panel, "Loop Processing")
 
         # Tab locking during experiment
         self.experiment_panel.experiment_started.connect(
