@@ -107,6 +107,20 @@ FRAME_PRIMING_ESTIMATE_S = 0.044
 # Image mode has no analogous "requested duration" to overrun.
 RAW_BURST_OVERRUN_S = 0.046
 
+# Every well's raw-burst finalize (flush + trim) runs in a background
+# process overlapped with the *next* well's move/dwell/capture — except
+# the very last well, which has no next well to overlap with. Its finalize
+# can only be waited out at the tail end (run()'s finally: block joins it
+# before returning), so it's a real, unavoidable addition to total
+# wall-clock time that every other well's finalize isn't. Without this,
+# the ETA undercounts the true finish time by ~this much: the UI's "done"
+# signal only fires once run() actually returns (see _ExperimentThread),
+# which is after this wait, so the countdown was observed ticking past
+# zero into the negative by close to this amount on hardware. Measured
+# consistently ~2.5s across many hardware runs (2.477-2.521s). Raw mode
+# only — Image mode has no finalize step at all.
+RAW_BURST_FINAL_FINALIZE_ESTIMATE_S = 2.5
+
 # Every move is 3 command/ack round-trips that have nothing to do with
 # physical travel — G90, G0's "queued" ack, and M114 — each blocked on
 # MarlinBackend.command_delay (send + blind sleep + wait-for-"ok"; see
@@ -750,6 +764,8 @@ class ExperimentRunner:
                 total_estimate_s += float(delay_per_well)
                 total_estimate_s += capture_time_est
                 cur_pos = pos
+            if mode == "raw" and positions:
+                total_estimate_s += RAW_BURST_FINAL_FINALIZE_ESTIMATE_S
             self.eta_finish_time = datetime.now() + timedelta(seconds=total_estimate_s)
             self.status_msg = (
                 f"Estimated duration {total_estimate_s:.0f}s for {len(positions)} wells "
