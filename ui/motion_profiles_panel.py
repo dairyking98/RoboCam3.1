@@ -67,11 +67,11 @@ from ui.profile_slider import ProfileSliderRow
 # Ranges are the real Ender-5 S1 firmware M203/M201/M205 edit ceilings
 # (see module docstring) — not arbitrary/generic values.
 _GROUPS = [
-    ("Max Feed Rate  (M203, mm/s)", [
+    ("Feed Rate  (M203 / G-code F, mm/s)", [
         (("max_feed_x", "max_feed_y"), "XY:", 0, 600, 5,   1, " mm/s"),
         (("max_feed_z",),              "Z:",  0, 20,  0.5, 1, " mm/s"),
     ]),
-    ("Max Acceleration  (M201, mm/s²)", [
+    ("Acceleration Rate  (M201 / M204 T, mm/s²)", [
         (("max_accel_x", "max_accel_y"), "XY:", 0, 2000, 25, 0, " mm/s²"),
         (("max_accel_z",),               "Z:",  0, 200,  5,  0, " mm/s²"),
     ]),
@@ -88,6 +88,17 @@ _GROUPS = [
 # with. All three (fast/medium/slow) are reasoned starting points, not
 # validated optima — see PROJECT_STATE.md for derivation.
 _DEFAULT_PRESET_NAME = "ender5_s1_slow_low_vibration"
+
+# The three bundled starting-point presets — protected from being
+# overwritten by Save (see _save_preset) so they stay a known-good
+# fallback (_on_printer_connected relies on _DEFAULT_PRESET_NAME always
+# being the original, reasoned values) even after a user saves their own
+# tuned profiles alongside them.
+_BUNDLED_PRESET_NAMES = (
+    "ender5_s1_fast_low_vibration",
+    "ender5_s1_medium_low_vibration",
+    _DEFAULT_PRESET_NAME,
+)
 
 
 class _ReadThread(QThread):
@@ -399,6 +410,13 @@ class MotionProfilesPanel(QWidget):
     def _save_preset(self):
         name = self.preset_combo.currentText().strip() or "default"
         name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+        if name in _BUNDLED_PRESET_NAMES:
+            QMessageBox.warning(
+                self, "Reserved Preset Name",
+                f"‘{name}’ is a bundled default preset and can't be overwritten.\n\n"
+                "Enter a different name to save your own profile."
+            )
+            return
         path = os.path.join(self._preset_dir(), f"{name}.json")
         try:
             with open(path, "w", encoding="utf-8") as f:

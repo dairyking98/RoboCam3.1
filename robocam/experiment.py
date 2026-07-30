@@ -77,13 +77,20 @@ MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 # readback + disk write) used only for the pre-run ETA estimate below.
 IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.3
 
-# Fixed per-move serial round-trip overhead, measured from hardware log
-# timestamps: G90, G0's "queued" ack, and M114 each cost ~0.1s (send +
-# command_delay + wait-for-"ok"), independent of the move's distance or
-# speed. Only M400's wait reflects real physical travel time — this
-# constant covers the other three round-trips the physics-only estimate
-# in _axis_move_time_s()/_estimate_move_time_s() has no way to know about.
-MOVE_COMMAND_OVERHEAD_S = 0.3
+# Fixed per-move serial round-trip overhead: every move is 3 command/ack
+# round-trips that have nothing to do with physical travel — G90, G0's
+# "queued" ack, and M114 — each costing ~SERIAL_ROUNDTRIP_S (send +
+# command_delay + wait-for-"ok"), measured from hardware log timestamps.
+# Only M400's wait reflects real physical travel time. Framed as
+# round-trip count x per-trip cost, not one flat number, so this stays
+# correct if a future change adds/removes a round-trip from the move
+# sequence (e.g. this bit us once already — see the fix that removed a
+# redundant post-move update_position() call from several UI handlers;
+# ExperimentRunner's own well loop never had that extra call, so this
+# constant — derived from real experiment-run logs — was never
+# contaminated by it).
+SERIAL_ROUNDTRIP_S = 0.1
+MOVE_COMMAND_OVERHEAD_S = 3 * SERIAL_ROUNDTRIP_S
 
 
 def _axis_move_time_s(distance_mm: float, max_feed: Optional[float], max_accel: Optional[float]) -> float:
@@ -115,7 +122,18 @@ def _estimate_move_time_s(
     Marlin's planner by taking the slowest of the three independent
     per-axis trapezoidal estimates rather than replicating its exact
     multi-axis feed-rate scaling — good enough for an ETA, not a substitute
-    for the firmware's own timing."""
+    for the firmware's own timing.
+
+    Jerk (M205) is intentionally not modeled. Every RoboCam move fully
+    stops (M400 is awaited before the next one starts), so jerk's actual
+    effect here is letting the planner start/end each move already moving
+    at up to the configured jerk speed instead of ramping from a dead
+    stop — saving roughly 2 * (jerk / accel) seconds per move. At this
+    rig's jerk range (<=10 mm/s XY) against the accel this estimate
+    already uses, that's on the order of 10-30ms — inside the ~10-15ms
+    residual this estimate already showed against real hardware after
+    the F/M204 fixes, not worth the added complexity of modeling
+    Marlin's junction-velocity math for."""
     tx = _axis_move_time_s(end[0] - start[0], profile.get("max_feed_x"), profile.get("max_accel_x"))
     ty = _axis_move_time_s(end[1] - start[1], profile.get("max_feed_y"), profile.get("max_accel_y"))
     tz = _axis_move_time_s(end[2] - start[2], profile.get("max_feed_z"), profile.get("max_accel_z"))
