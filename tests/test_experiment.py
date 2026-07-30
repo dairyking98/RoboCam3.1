@@ -62,20 +62,30 @@ class _FakeCamera:
 class _FakeMotion:
     """Minimal stand-in for the Marlin motion controller -- just enough
     surface for ExperimentRunner.run()/run_loop() to run end-to-end without
-    real hardware. supports_profiles=False skips the ETA-estimate branch
-    entirely (the simplest path; ETA estimation itself is exercised by other
-    tests/hardware verification, not by loop-mode mechanics)."""
+    real hardware. supports_profiles=False (the default) skips the
+    ETA-estimate branch entirely (the simplest path for tests that don't
+    care about estimation itself, just loop-mode mechanics); pass
+    supports_profiles=True for tests that need estimate_cycle_duration_s()
+    to actually return a value."""
 
-    def __init__(self):
+    def __init__(self, supports_profiles=False):
         self.is_homed = True
-        self.supports_profiles = False
+        self.supports_profiles = supports_profiles
         self.X = self.Y = self.Z = 0.0
+        self.command_delay = 0.0
 
     def home(self):
         self.is_homed = True
 
     def move_absolute(self, X, Y, Z):
         self.X, self.Y, self.Z = X, Y, Z
+
+    def read_profiles(self):
+        return {
+            "max_feed_x": 100.0, "max_accel_x": 500.0,
+            "max_feed_y": 100.0, "max_accel_y": 500.0,
+            "max_feed_z": 20.0, "max_accel_z": 100.0,
+        }
 
 
 def _make_stack(path, ceiling, real, h=8, w=10, dtype=np.uint8, fill=None):
@@ -191,8 +201,8 @@ class TestTargetFpsPacing:
         assert result["fps_average"] < 150
 
 
-def _make_runner(tmp_path, camera=None):
-    runner = ExperimentRunner(motion_controller=_FakeMotion(), camera=camera or _FakeCamera())
+def _make_runner(tmp_path, camera=None, motion=None):
+    runner = ExperimentRunner(motion_controller=motion or _FakeMotion(), camera=camera or _FakeCamera())
     runner.out_dir = str(tmp_path)
     return runner
 
@@ -205,16 +215,17 @@ def _manifest_records(loop_dir):
 
 
 class TestRunLoop:
-    """Loop mode: repeat run() with an inter-cycle interval (habituation:
-    0 = back-to-back; growth imaging: N minutes) until a wall-clock
-    duration elapses."""
+    """Loop mode: repeat run() with an inter-cycle interval (0 = back-to-back
+    "habituation"-style, N seconds = "growth imaging"-style) until a
+    wall-clock duration elapses. Any capture mode is supported -- there's
+    no separate growth-imaging flag, just interval_s/duration_s params."""
 
     def test_habituation_back_to_back_nested_folders(self, tmp_path):
         runner = _make_runner(tmp_path)
         runner.run_loop(
             name="hab", positions=[(0, 0, 0), (1, 1, 0)], labels=["A1", "A2"],
             delay_per_well=0.1, mode="image",
-            interval_minutes=0.0, duration_minutes=1.0 / 60.0,  # 1s wall-clock budget
+            interval_s=0.0, duration_s=1.0,
         )
 
         loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_hab_loop")]
@@ -230,13 +241,13 @@ class TestRunLoop:
         for d in cycle_dirs:
             assert list(d.glob("*_points.csv")), f"{d} missing points.csv -- not a normal experiment dir"
 
-    def test_growth_imaging_interval_spacing(self, tmp_path):
+    def test_interval_spacing(self, tmp_path):
         runner = _make_runner(tmp_path)
         interval_s = 2.0
         runner.run_loop(
             name="growth", positions=[(0, 0, 0)], labels=["A1"],
             delay_per_well=0.0, mode="image",
-            interval_minutes=interval_s / 60.0, duration_minutes=3.5 / 60.0,
+            interval_s=interval_s, duration_s=3.5,
         )
 
         loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_growth_loop")]
@@ -250,15 +261,25 @@ class TestRunLoop:
         # should track the configured interval, not be back-to-back.
         assert interval_s - 1.0 < gap < interval_s + 1.5
 
-    def test_growth_imaging_rejects_raw_mode(self, tmp_path):
-        runner = _make_runner(tmp_path)
-        with pytest.raises(ValueError):
-            runner.run_loop(
-                name="growth", positions=[(0, 0, 0)], labels=["A1"],
-                mode="raw", growth_imaging=True,
-                interval_minutes=1.0, duration_minutes=1.0,
-            )
-        assert list(tmp_path.iterdir()) == []
+    def test_raw_mode_allowed_in_loop(self, tmp_path):
+        # Growth imaging's old still-image-only restriction is gone -- any
+        # capture mode works in loop mode now, including raw bursts.
+        camera = _FakeCamera(exposure_us=5_000)
+        runner = _make_runner(tmp_path, camera=camera)
+        runner.run_loop(
+            name="rawloop", positions=[(0, 0, 0)], labels=["A1"],
+            mode="raw", pre_duration=0.05,
+            interval_s=0.0, duration_s=1.0,
+        )
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_rawloop_loop")]
+        assert len(loop_dirs) == 1
+        ok_records = [r for r in _manifest_records(loop_dirs[0]) if r["status"] == "ok"]
+        assert len(ok_records) >= 1
+        for d in loop_dirs[0].iterdir():
+            if not d.is_dir():
+                continue
+            assert list((d / "raw").glob("*_stack.npy")), f"{d} missing raw stack"
 
     def test_retry_once_then_abort(self, tmp_path, monkeypatch):
         runner = _make_runner(tmp_path)
@@ -273,7 +294,7 @@ class TestRunLoop:
         monkeypatch.setattr(runner, "run", fake_run)
         runner.run_loop(
             name="fail", positions=[(0, 0, 0)], labels=["A1"],
-            interval_minutes=0.0, duration_minutes=1.0,
+            interval_s=0.0, duration_s=60.0,
         )
 
         assert call_count["n"] == 2, "should retry exactly once, not loop forever"
@@ -291,7 +312,7 @@ class TestRunLoop:
             kwargs=dict(
                 name="stopme", positions=[(0, 0, 0)], labels=["A1"],
                 delay_per_well=0.0, mode="image",
-                interval_minutes=10.0, duration_minutes=10.0,
+                interval_s=600.0, duration_s=600.0,
             ),
         )
         thread.start()
@@ -320,7 +341,7 @@ class TestRunLoop:
         )
         runner.run_loop(
             name="full", positions=[(0, 0, 0)], labels=["A1"],
-            interval_minutes=0.0, duration_minutes=1.0,
+            interval_s=0.0, duration_s=60.0,
         )
 
         assert runner.current_cycle == 0
@@ -329,3 +350,22 @@ class TestRunLoop:
         assert len(records) == 1
         assert records[0]["status"] == "aborted_disk_full"
         assert [d for d in loop_dirs[0].iterdir() if d.is_dir()] == []
+
+
+class TestEstimateCycleDuration:
+    """estimate_cycle_duration_s() is the single source of truth run()'s own
+    ETA and loop mode's pre-flight interval-vs-duration check both use."""
+
+    def test_returns_none_without_motion_profile(self, tmp_path):
+        runner = _make_runner(tmp_path)  # default _FakeMotion: supports_profiles=False
+        result = runner.estimate_cycle_duration_s([(0, 0, 0)], delay_per_well=1.0, mode="image")
+        assert result is None
+
+    def test_returns_estimate_with_motion_profile(self, tmp_path):
+        motion = _FakeMotion(supports_profiles=True)
+        runner = _make_runner(tmp_path, motion=motion)
+        result = runner.estimate_cycle_duration_s([(10.0, 0.0, 0.0)], delay_per_well=1.0, mode="image")
+        assert result is not None
+        total_s, move_estimates = result
+        assert total_s > 1.0  # at least the dwell time
+        assert len(move_estimates) == 1

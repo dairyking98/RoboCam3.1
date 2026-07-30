@@ -25,9 +25,8 @@ DEFAULT_SESSION: Dict[str, Any] = {
         "post": 2.0,
         "cal_file": "",
         "loop_enabled": False,
-        "loop_interval": 0.0,
-        "loop_duration": 60.0,
-        "growth_imaging": False,
+        "loop_interval_s": 0.0,
+        "loop_duration_s": 3600.0,
     },
     "calibration": {
         "cols": 12,

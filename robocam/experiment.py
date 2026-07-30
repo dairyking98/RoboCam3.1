@@ -500,6 +500,67 @@ class ExperimentRunner:
         # status_msg.
         self.last_run_ok: Optional[bool] = None
 
+    def estimate_cycle_duration_s(
+        self,
+        positions: List[Tuple[float, float, float]],
+        delay_per_well: float,
+        mode: str,
+        image_format: str = "png",
+        use_laser: bool = False,
+        pre_duration: float = 5.0,
+        laser_on_duration: float = 1.0,
+        post_duration: float = 2.0,
+    ) -> Optional[Tuple[float, List[float]]]:
+        """Estimate one pass over `positions`' total wall-clock duration,
+        using the same motion-profile + capture-time model as run()'s own
+        single-run ETA (in fact run() delegates to this method for it) --
+        a single source of truth so a pre-flight check (e.g. loop mode
+        warning that a pass won't fit inside the configured interval) can't
+        drift out of sync with what actually gets estimated once the
+        experiment starts.
+
+        Pure computation, no side effects (no homing, no I/O) -- safe to
+        call before an experiment starts. Returns None if the connected
+        motion backend has no profile to estimate from (e.g. Klipper, the
+        simulated backend), otherwise (total_estimate_s,
+        per_well_move_estimates) -- the latter is what run()'s per-well
+        loop logs each move's actual time against.
+        """
+        mode = (mode or "image").lower()
+        if use_laser:
+            total_duration = float(pre_duration) + float(laser_on_duration) + float(post_duration)
+        else:
+            total_duration = float(pre_duration)
+
+        try:
+            profile = self.motion.read_profiles() if self.motion.supports_profiles else {}
+        except Exception as e:
+            logger.warning(f"[Experiment] Could not read motion profile for time estimate: {e}")
+            profile = {}
+
+        if not profile:
+            return None
+
+        image_capture_time_est = _estimate_image_capture_time_s(self.camera, image_format)
+        capture_time_est = FRAME_PRIMING_ESTIMATE_S + (
+            total_duration + RAW_BURST_OVERRUN_S if mode == "raw" else image_capture_time_est
+        )
+        move_overhead_s = _move_overhead_s(self.motion)
+        cur_pos = (self.motion.X, self.motion.Y, self.motion.Z)
+        total_estimate_s = 0.0
+        move_time_estimates: List[float] = []
+        for pos in positions:
+            move_est = _estimate_move_time_s(cur_pos, pos, profile, move_overhead_s)
+            move_time_estimates.append(move_est)
+            total_estimate_s += move_est
+            total_estimate_s += float(delay_per_well)
+            total_estimate_s += capture_time_est
+            cur_pos = pos
+        if mode == "raw" and positions:
+            bit_depth = int(self.camera.get_camera_meta().get("bit_depth", 8))
+            total_estimate_s += _estimate_finalize_time_s(self.camera, total_duration, bit_depth)
+        return total_estimate_s, move_time_estimates
+
     # ------------------------------------------------------------------
     # Internal: max-rate raw burst writer
     # ------------------------------------------------------------------
@@ -859,41 +920,15 @@ class ExperimentRunner:
             laser_on_duration = 0.0
 
         # Time estimate, computed once now that the stage is at a known
-        # (just-homed or already-homed) position — move times come from the
-        # motion profile (M203 feed / M201 accel), dwell and capture times
-        # are exact from the settings above.
-        try:
-            profile = self.motion.read_profiles() if self.motion.supports_profiles else {}
-        except Exception as e:
-            logger.warning(f"[Experiment] Could not read motion profile for time estimate: {e}")
-            profile = {}
-
-        # Per-well move-time estimates, kept around (not just summed) so the
-        # well loop below can log each move's actual time next to the
-        # estimate that predicted it — needed to empirically pin down where
-        # real-hardware runs diverge from the estimate (see PROJECT_STATE.md
-        # / robustness_log.md: a 24-well hardware run overshot the total
-        # estimate by ~1.08s/well and the cause wasn't obvious from theory
-        # alone).
-        move_time_estimates: List[float] = []
-        if profile:
-            image_capture_time_est = _estimate_image_capture_time_s(self.camera, image_format)
-            capture_time_est = FRAME_PRIMING_ESTIMATE_S + (
-                total_duration + RAW_BURST_OVERRUN_S if mode == "raw" else image_capture_time_est
-            )
-            move_overhead_s = _move_overhead_s(self.motion)
-            cur_pos = (self.motion.X, self.motion.Y, self.motion.Z)
-            total_estimate_s = 0.0
-            for pos in positions:
-                move_est = _estimate_move_time_s(cur_pos, pos, profile, move_overhead_s)
-                move_time_estimates.append(move_est)
-                total_estimate_s += move_est
-                total_estimate_s += float(delay_per_well)
-                total_estimate_s += capture_time_est
-                cur_pos = pos
-            if mode == "raw" and positions:
-                bit_depth = int(self.camera.get_camera_meta().get("bit_depth", 8))
-                total_estimate_s += _estimate_finalize_time_s(self.camera, total_duration, bit_depth)
+        # (just-homed or already-homed) position — delegates to
+        # estimate_cycle_duration_s() so a pre-flight caller (e.g. loop
+        # mode's interval-vs-duration check) uses the exact same formula.
+        estimate = self.estimate_cycle_duration_s(
+            positions, delay_per_well, mode, image_format, use_laser,
+            pre_duration, laser_on_duration, post_duration,
+        )
+        if estimate is not None:
+            total_estimate_s, move_time_estimates = estimate
             self.eta_finish_time = datetime.now() + timedelta(seconds=total_estimate_s)
             self.last_cycle_estimate_s = total_estimate_s
             self.status_msg = (
@@ -901,6 +936,7 @@ class ExperimentRunner:
                 f"— ETA finish {self.eta_finish_time.strftime('%H:%M:%S')}"
             )
         else:
+            move_time_estimates: List[float] = []
             self.status_msg = "Time estimate unavailable (no motion profile from this backend)."
         logger.info(self.status_msg)
         if callback:
@@ -1171,11 +1207,14 @@ class ExperimentRunner:
         self.paused = False
 
     # ------------------------------------------------------------------
-    # Loop mode: repeat run() with an inter-cycle interval (0 = habituation,
-    # back-to-back; N minutes = growth imaging) until a wall-clock duration
-    # elapses. An in-flight cycle always finishes rather than being aborted
-    # mid-well; only the *next* cycle/sleep is what stop() or the deadline
-    # can prevent.
+    # Loop mode: repeat run() with an inter-cycle interval (0 = back-to-back
+    # "habituation"-style; N seconds = "growth imaging"-style) until a
+    # wall-clock duration elapses. Any capture mode is supported -- there's
+    # no separate growth-imaging flag/restriction; interval and duration are
+    # just run_loop() parameters, and image vs. raw is the same mode
+    # argument run() already takes. An in-flight cycle always finishes
+    # rather than being aborted mid-well; only the *next* cycle/sleep is
+    # what stop() or the deadline can prevent.
     # ------------------------------------------------------------------
     def run_loop(
         self,
@@ -1190,19 +1229,10 @@ class ExperimentRunner:
         pre_duration: float = 5.0,
         laser_on_duration: float = 1.0,
         post_duration: float = 2.0,
-        interval_minutes: float = 0.0,
-        duration_minutes: float = 60.0,
-        growth_imaging: bool = False,
+        interval_s: float = 0.0,
+        duration_s: float = 3600.0,
     ):
         mode = (mode or "image").lower()
-        if growth_imaging and mode == "raw":
-            # Primary enforcement is the UI guard in experiment_panel.py
-            # (blocks this combination before a thread is ever started) —
-            # this is a defensive second layer so run_loop() is safe to call
-            # directly (e.g. a future script) even if that guard is bypassed.
-            raise ValueError(
-                "Growth imaging is still-image only; Raw Burst mode is not supported."
-            )
 
         self.looping = True
         self.current_cycle = 0
@@ -1214,8 +1244,8 @@ class ExperimentRunner:
         manifest_path = os.path.join(self.loop_dir, "loop_manifest.jsonl")
 
         original_out_dir = self.out_dir
-        deadline = datetime.now() + timedelta(minutes=duration_minutes)
-        interval_s = float(interval_minutes) * 60.0
+        deadline = datetime.now() + timedelta(seconds=float(duration_s))
+        interval_s = float(interval_s)
 
         def _write_manifest_record(mf, record: dict) -> None:
             mf.write(json.dumps(record) + "\n")
