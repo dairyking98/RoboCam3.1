@@ -592,6 +592,19 @@ class MotionController:
                 if self._homed:
                     logger.info("[MotionCtrl] Steppers disabled via raw command — clearing homed state.")
                 self._homed = False
+                # M18/M84 alone doesn't touch Marlin's own logical position
+                # counter, so without this, a full app/connection restart
+                # after this disable would read back the same
+                # still-plausible-looking coordinates and connect()'s
+                # not-homed heuristic (X==Y) would wrongly conclude
+                # "homed" again. G92 has no physical effect (no motion) —
+                # it only overwrites what Marlin believes its position is,
+                # to the same sentinel that heuristic already checks for.
+                try:
+                    self.backend.send_gcode("G92 X0 Y0")
+                    self.backend.update_position()
+                except Exception as e:
+                    logger.warning(f"[MotionCtrl] Could not mark position as unknown after disable: {e}")
 
     @property
     def supports_profiles(self) -> bool:
