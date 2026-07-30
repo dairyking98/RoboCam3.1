@@ -131,6 +131,30 @@ class MarlinBackend(MotionBackend):
             self._cached_profile = self.read_profiles()
         except Exception as e:
             logger.warning(f"[MotionCtrl] Could not read motion profile on connect: {e}")
+        self._apply_travel_accel()
+
+    def _apply_travel_accel(self):
+        """M201 (Motion Profiles tab) is only a per-axis ceiling — the
+        acceleration a move actually uses comes from the separate M204
+        command, which defaults to whatever the firmware shipped with
+        unless set explicitly. Without this, real moves accelerate at that
+        firmware default regardless of what the Motion Profiles tab says.
+        T (travel) is the right bucket since RoboCam never extrudes.
+        A single scalar, not per-axis like M201/F — min() across X/Y keeps
+        it within both axes' own ceilings for a diagonal move; M201 still
+        clamps per-axis on top of this regardless, so a lone Z move stays
+        safe even though Z isn't factored into this value."""
+        accels = [
+            v for v in (self._cached_profile.get("max_accel_x"), self._cached_profile.get("max_accel_y"))
+            if v
+        ]
+        if not accels:
+            return
+        try:
+            self.send_gcode(f"M204 T{min(accels):.3f}")
+            logger.info(f"[MotionCtrl] Set travel acceleration M204 T{min(accels):.3f}")
+        except Exception as e:
+            logger.warning(f"[MotionCtrl] Could not set travel acceleration (M204): {e}")
 
     def disconnect(self):
         if self.is_connected:
@@ -321,6 +345,7 @@ class MarlinBackend(MotionBackend):
             self._cached_profile = self.read_profiles()
         except Exception as e:
             logger.warning(f"[MotionCtrl] Could not refresh cached motion profile after apply: {e}")
+        self._apply_travel_accel()
 
 
 class KlipperBackend(MotionBackend):
