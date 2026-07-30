@@ -113,13 +113,45 @@ RAW_BURST_OVERRUN_S = 0.046
 # can only be waited out at the tail end (run()'s finally: block joins it
 # before returning), so it's a real, unavoidable addition to total
 # wall-clock time that every other well's finalize isn't. Without this,
-# the ETA undercounts the true finish time by ~this much: the UI's "done"
-# signal only fires once run() actually returns (see _ExperimentThread),
-# which is after this wait, so the countdown was observed ticking past
-# zero into the negative by close to this amount on hardware. Measured
-# consistently ~2.5s across many hardware runs (2.477-2.521s). Raw mode
-# only — Image mode has no finalize step at all.
-RAW_BURST_FINAL_FINALIZE_ESTIMATE_S = 2.5
+# the ETA undercounts the true finish time by however long that flush
+# takes: the UI's "done" signal only fires once run() actually returns
+# (see _ExperimentThread), which is after this wait, so the countdown was
+# observed ticking past zero into the negative by close to that amount on
+# hardware. Raw mode only — Image mode has no finalize step at all.
+#
+# This isn't a fixed cost — stack.flush()'s msync duration scales with how
+# many bytes are dirty, i.e. the stack's *preallocated* size (max_frames x
+# resolution x bit depth), not the resolution/fps-independent flat value
+# this used to be. A 1024x768 short burst and a 1936x1100x125fps burst do
+# not take the same time to flush. See _estimate_finalize_time_s() below,
+# calibrated from the one hardware run this used to be hardcoded from: a
+# 1936x1100 8-bit stack preallocated to 862 frames (5.0s x 125fps x
+# RAW_BURST_FPS_MARGIN + RAW_BURST_FRAME_BUFFER) = ~1836MB, measured
+# flushing in 2.487s -> ~738MB/s. Rounded down to 700MB/s for a slight
+# conservative bias, since an ETA that undercounts (goes negative on
+# screen) is the more confusing failure mode of the two — see the comment
+# above about the countdown ticking past zero being the original bug
+# report this whole estimate exists to fix.
+RAW_BURST_FINALIZE_BYTES_PER_S = 700_000_000
+
+
+def _estimate_finalize_time_s(camera, total_duration_s: float, bit_depth: int) -> float:
+    """Estimate the last well's raw-burst finalize (flush + trim) time,
+    scaled by the preallocated stack size. Mirrors _capture_raw_burst()'s
+    own max_frames formula exactly, since that's what actually determines
+    how many bytes the background finalize process's stack.flush() has to
+    write out — resolution and fps both change that size, so both need to
+    feed into the ETA, not just a flat constant measured at one particular
+    resolution/fps combination."""
+    w, h = camera.resolution
+    exposure_us = camera.get_exposure()
+    fps_ceiling_est = 1_000_000.0 / exposure_us
+    target_fps = camera.get_target_fps()
+    paced_fps_est = min(fps_ceiling_est, target_fps) if target_fps else fps_ceiling_est
+    max_frames = int(total_duration_s * paced_fps_est * RAW_BURST_FPS_MARGIN) + RAW_BURST_FRAME_BUFFER
+    itemsize = 1 if bit_depth <= 8 else 2
+    preallocated_bytes = max_frames * h * w * itemsize
+    return preallocated_bytes / RAW_BURST_FINALIZE_BYTES_PER_S
 
 # Every move is 3 command/ack round-trips that have nothing to do with
 # physical travel — G90, G0's "queued" ack, and M114 — each blocked on
@@ -765,7 +797,8 @@ class ExperimentRunner:
                 total_estimate_s += capture_time_est
                 cur_pos = pos
             if mode == "raw" and positions:
-                total_estimate_s += RAW_BURST_FINAL_FINALIZE_ESTIMATE_S
+                bit_depth = int(self.camera.get_camera_meta().get("bit_depth", 8))
+                total_estimate_s += _estimate_finalize_time_s(self.camera, total_duration, bit_depth)
             self.eta_finish_time = datetime.now() + timedelta(seconds=total_estimate_s)
             self.status_msg = (
                 f"Estimated duration {total_estimate_s:.0f}s for {len(positions)} wells "
