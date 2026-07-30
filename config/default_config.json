@@ -6,7 +6,7 @@
       "timeout": 10.0,
       "home_timeout": 90.0,
       "movement_wait_timeout": 30.0,
-      "command_delay": 0.1,
+      "command_delay": 0.02,
       "position_update_delay": 0.1,
       "connection_retry_delay": 2.0,
       "max_retries": 5

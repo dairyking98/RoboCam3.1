@@ -60,6 +60,17 @@ RAW_BURST_FRAME_BUFFER = 50
 # How often (in frames) the writer thread flushes the memmap to disk and
 # checks free space. Piggybacks one cadence for both instead of a separate
 # timer.
+#
+# A high-fps/high-res hardware run showed periodic stalls at exactly this
+# cadence (13 stalls of ~142ms at 30, 3 stalls of ~468ms after bumping to
+# 100 as a direct test — confirmed: the period shifted exactly to match).
+# But the stall duration scaled proportionally with the cadence (~3.3x
+# frames -> ~3.3x stall time), so total stalled time barely changed
+# (~1.85s -> ~1.40s) and fps didn't meaningfully improve — batching less
+# often just trades many small pauses for fewer, longer ones. Reverted to
+# 30 since 100 bought nothing; see the flush/disk_usage timing added in
+# _writer() below for the next diagnostic step (disk bandwidth was ruled
+# out — 292MB/s measured vs. ~155MB/s actually demanded).
 MEMMAP_FLUSH_EVERY_N_FRAMES = 30
 
 # Safety floor checked against shutil.disk_usage(...).free on the same
@@ -76,6 +87,67 @@ MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 # recording duration like raw bursts do — this covers exposure + camera
 # readback + disk write) used only for the pre-run ETA estimate below.
 IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.3
+
+# Stale-frame discard loop (see the priming loop in run()) is never zero —
+# even catching up in the minimum "4 discard reads" case seen on hardware
+# still takes real time. No live setting to derive this from (unlike
+# command_delay for moves), so it's a straight empirical average: two
+# separate 24-well hardware runs measured 0.0435s and ~0.044s per well.
+# Applies to both capture modes — the discard loop runs regardless of
+# mode.
+FRAME_PRIMING_ESTIMATE_S = 0.044
+
+# Raw-burst capture consistently records slightly *longer* than the
+# requested duration — structural, not incidental: the capture loop's
+# exit check (elapsed >= total_duration_s) can only fire at or after the
+# target, never exactly at it, so some overshoot every burst is
+# essentially guaranteed by how that loop is written. Measured ~0.0458s
+# and ~0.0455s average across two 24-well hardware runs. Raw mode only —
+# Image mode has no analogous "requested duration" to overrun.
+RAW_BURST_OVERRUN_S = 0.046
+
+# Every move is 3 command/ack round-trips that have nothing to do with
+# physical travel — G90, G0's "queued" ack, and M114 — each blocked on
+# MarlinBackend.command_delay (send + blind sleep + wait-for-"ok"; see
+# motion.py). Only M400's wait reflects real physical travel time.
+# Derived as round-trip count x the *actual configured* per-trip cost
+# (read from the live MotionController at estimate time — see
+# _move_overhead_s() below) rather than a hardcoded constant, so this
+# self-corrects if command_delay is ever tuned again instead of going
+# stale (it already did once: command_delay dropped from 0.1 to 0.02
+# after hardware logs showed it was ~the entire round-trip cost).
+GCODE_CALLS_PER_MOVE = 3
+
+
+def _move_overhead_s(motion) -> float:
+    """Fixed per-move serial round-trip overhead for the ETA estimate,
+    derived from the connected backend's actual command_delay rather
+    than a hardcoded value. 0.0 for backends with no such concept
+    (Klipper's HTTP calls, the simulated backend) — this only applies to
+    MarlinBackend's blind-sleep-per-command pattern."""
+    delay = motion.command_delay
+    return GCODE_CALLS_PER_MOVE * delay if delay else 0.0
+
+
+# A second, separate fixed cost — this one lives *inside* M400's own
+# measured wait, not in the surrounding G90/G0-ack/M114 round-trips
+# above. After the command_delay-derived overhead was confirmed accurate
+# (measured round-trips landed within ~3ms of estimate), a 24-well
+# hardware run still showed a remaining gap between real M400 wait time
+# and the physics-only estimate — but this one was flat regardless of
+# move type: ~77ms +-2ms on both short triangular-profile moves (never
+# reach cruise speed) and longer trapezoidal ones (do reach cruise).
+# That distance-independence is what rules out an accel/feed modeling
+# error — a wrong accel value would show a *smaller* gap on the
+# trapezoidal move's distance-scaling cruise portion, not the same flat
+# gap on both move shapes. So this is some fixed Marlin-internal cost
+# inside its own M400 timing (candidates: M400's own polling granularity
+# in the firmware's main loop, planner block-buffer overhead — not
+# confirmed, can't instrument the firmware itself from here), unrelated
+# to command_delay and NOT reduced by shrinking it further. Value is the
+# straight average of the actual-minus-estimated deltas across that
+# 24-well run (mean 77.3ms, tight spread) rather than a round number.
+MARLIN_M400_OVERHEAD_S = 0.077
 
 
 def _axis_move_time_s(distance_mm: float, max_feed: Optional[float], max_accel: Optional[float]) -> float:
@@ -99,7 +171,8 @@ def _axis_move_time_s(distance_mm: float, max_feed: Optional[float], max_accel: 
 
 
 def _estimate_move_time_s(
-    start: Tuple[float, float, float], end: Tuple[float, float, float], profile: dict
+    start: Tuple[float, float, float], end: Tuple[float, float, float], profile: dict,
+    move_overhead_s: float = 0.0,
 ) -> float:
     """Estimate a coordinated G0 XYZ move's duration from the motion profile.
 
@@ -107,11 +180,21 @@ def _estimate_move_time_s(
     Marlin's planner by taking the slowest of the three independent
     per-axis trapezoidal estimates rather than replicating its exact
     multi-axis feed-rate scaling — good enough for an ETA, not a substitute
-    for the firmware's own timing."""
+    for the firmware's own timing.
+
+    Jerk (M205) is intentionally not modeled. Every RoboCam move fully
+    stops (M400 is awaited before the next one starts), so jerk's actual
+    effect here is letting the planner start/end each move already moving
+    at up to the configured jerk speed instead of ramping from a dead
+    stop — saving roughly 2 * (jerk / accel) seconds per move. At this
+    rig's jerk range (<=10 mm/s XY) against the accel this estimate
+    already uses, that's on the order of 10-30ms — small next to
+    MARLIN_M400_OVERHEAD_S below, not worth the added complexity of
+    modeling Marlin's junction-velocity math for."""
     tx = _axis_move_time_s(end[0] - start[0], profile.get("max_feed_x"), profile.get("max_accel_x"))
     ty = _axis_move_time_s(end[1] - start[1], profile.get("max_feed_y"), profile.get("max_accel_y"))
     tz = _axis_move_time_s(end[2] - start[2], profile.get("max_feed_z"), profile.get("max_accel_z"))
-    return max(tx, ty, tz)
+    return max(tx, ty, tz) + move_overhead_s + MARLIN_M400_OVERHEAD_S
 
 
 def _trim_raw_stack(stack_path: str, frames_captured: int) -> None:
@@ -303,8 +386,28 @@ class ExperimentRunner:
                         jf.flush()
                         n_written += 1
                         if n_written % MEMMAP_FLUSH_EVERY_N_FRAMES == 0:
+                            # Diagnostic timing (temporary): a high-fps/high-res
+                            # hardware run showed periodic stalls at exactly this
+                            # cadence, scaling proportionally with
+                            # MEMMAP_FLUSH_EVERY_N_FRAMES — but disk write
+                            # bandwidth was ruled out (measured 292MB/s vs.
+                            # ~155MB/s actually demanded), so timing each call
+                            # separately to find which one is really costing
+                            # the time instead of continuing to infer it from
+                            # black-box frame timestamps.
+                            flush_start = time.perf_counter()
                             stack.flush()
+                            flush_s = time.perf_counter() - flush_start
+
+                            disk_check_start = time.perf_counter()
                             free = shutil.disk_usage(output_dir).free
+                            disk_check_s = time.perf_counter() - disk_check_start
+
+                            logger.info(
+                                f"[{label}] Writer flush at frame {n_written}: "
+                                f"stack.flush() took {flush_s:.3f}s, "
+                                f"disk_usage() took {disk_check_s:.3f}s"
+                            )
                             if free < MIN_FREE_DISK_BYTES:
                                 raise OSError(
                                     f"Only {free} bytes free in {output_dir}, "
@@ -522,12 +625,25 @@ class ExperimentRunner:
             logger.warning(f"[Experiment] Could not read motion profile for time estimate: {e}")
             profile = {}
 
+        # Per-well move-time estimates, kept around (not just summed) so the
+        # well loop below can log each move's actual time next to the
+        # estimate that predicted it — needed to empirically pin down where
+        # real-hardware runs diverge from the estimate (see PROJECT_STATE.md
+        # / robustness_log.md: a 24-well hardware run overshot the total
+        # estimate by ~1.08s/well and the cause wasn't obvious from theory
+        # alone).
+        move_time_estimates: List[float] = []
         if profile:
-            capture_time_est = total_duration if mode == "raw" else IMAGE_CAPTURE_TIME_ESTIMATE_S
+            capture_time_est = FRAME_PRIMING_ESTIMATE_S + (
+                total_duration + RAW_BURST_OVERRUN_S if mode == "raw" else IMAGE_CAPTURE_TIME_ESTIMATE_S
+            )
+            move_overhead_s = _move_overhead_s(self.motion)
             cur_pos = (self.motion.X, self.motion.Y, self.motion.Z)
             total_estimate_s = 0.0
             for pos in positions:
-                total_estimate_s += _estimate_move_time_s(cur_pos, pos, profile)
+                move_est = _estimate_move_time_s(cur_pos, pos, profile, move_overhead_s)
+                move_time_estimates.append(move_est)
+                total_estimate_s += move_est
                 total_estimate_s += float(delay_per_well)
                 total_estimate_s += capture_time_est
                 cur_pos = pos
@@ -598,13 +714,22 @@ class ExperimentRunner:
                     if callback:
                         callback(self.status_msg)
 
+                    move_start = time.perf_counter()
                     self.motion.move_absolute(X=x, Y=y, Z=z)
+                    move_actual_s = time.perf_counter() - move_start
+                    move_est_s = move_time_estimates[i] if i < len(move_time_estimates) else None
+                    logger.info(
+                        f"[{label}] Move took {move_actual_s:.3f}s"
+                        + (f" (estimated {move_est_s:.3f}s)" if move_est_s is not None else " (no estimate)")
+                    )
 
                     self.status_msg = f"Dwelling at {label} ({delay_per_well:.1f}s)..."
                     logger.info(self.status_msg)
                     if callback:
                         callback(self.status_msg)
+                    dwell_start = time.perf_counter()
                     time.sleep(delay_per_well)
+                    logger.info(f"[{label}] Dwell took {time.perf_counter() - dwell_start:.3f}s")
 
                     # Cameras run in continuous free-running exposure, so the SDK
                     # can have a small backlog of already-completed frames queued
@@ -618,15 +743,38 @@ class ExperimentRunner:
                     # left up to 2 stale pre-dwell frames at the start of the
                     # burst on hardware. Bounded so a genuinely fast sensor with
                     # no backlog can't loop forever.
+                    priming_start = time.perf_counter()
                     exposure_s = self.camera.get_exposure() / 1_000_000.0
+                    priming_reads = 0
                     for _ in range(STALE_FRAME_MAX_DISCARDS):
                         discard_start = time.perf_counter()
                         if mode == "raw":
                             self.camera.get_raw_frame()
                         else:
                             self.camera.get_frame()
+                        priming_reads += 1
                         if time.perf_counter() - discard_start >= exposure_s * 0.5:
                             break
+                    else:
+                        # Loop ran out of reads without ever catching up to
+                        # real-time (the "for" completed all iterations without
+                        # hitting the break above) — at a higher fps than this
+                        # was tuned against, the camera's backlog may be deeper
+                        # than STALE_FRAME_MAX_DISCARDS can drain, so the
+                        # recording could still be starting on a stale pre-dwell
+                        # frame. Distinct from merely using the last iteration
+                        # to genuinely catch up, which for/else does not flag.
+                        logger.warning(
+                            f"[{label}] Frame priming hit the {STALE_FRAME_MAX_DISCARDS}-read cap "
+                            f"without catching up to real-time — backlog may not be "
+                            f"fully drained; consider raising STALE_FRAME_MAX_DISCARDS."
+                        )
+                    priming_total_s = time.perf_counter() - priming_start
+                    logger.info(
+                        f"[{label}] Frame priming took {priming_total_s:.3f}s "
+                        f"({priming_reads} discard reads, "
+                        f"{priming_total_s / priming_reads:.3f}s avg/read)"
+                    )
 
                     if mode == "raw":
                         self.status_msg = (
@@ -642,6 +790,7 @@ class ExperimentRunner:
 
                     capture_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     capture_name = ""
+                    capture_call_start = time.perf_counter()
 
                     if mode == "raw":
                         # Burst of raw frames stacked into one .npy array in raw/ subdir
@@ -651,6 +800,17 @@ class ExperimentRunner:
                             laser_on_s=float(laser_on_duration),
                             laser_start_s=laser_start,
                             bit_depth=int(cam_meta.get("bit_depth", 8)),
+                        )
+                        capture_call_s = time.perf_counter() - capture_call_start
+                        # duration_actual_s covers only up to when the recording loop
+                        # itself decides it's done — the gap to capture_call_s is
+                        # everything after: writer-thread drain/join, memmap flush
+                        # and close, and _trim_raw_stack()'s truncate.
+                        finalize_s = capture_call_s - burst_meta["duration_actual_s"]
+                        logger.info(
+                            f"[{label}] Capture took {capture_call_s:.3f}s total "
+                            f"(recording {burst_meta['duration_actual_s']:.3f}s, "
+                            f"finalize {finalize_s:.3f}s)"
                         )
                         capture_name = f"raw/{burst_meta['frames_file']} ({burst_meta['frames_captured']} frames)"
                         meta_path = os.path.join(raw_dir, f"{label}_{timestamp}_metadata.json")
@@ -691,6 +851,9 @@ class ExperimentRunner:
                             logger.debug(f"{label} capture summary: wrote {img_path}")
                         else:
                             logger.warning(f"Failed to capture frame for {label}")
+                        logger.info(
+                            f"[{label}] Capture took {time.perf_counter() - capture_call_start:.3f}s"
+                        )
 
                     writer.writerow([label, x, y, z, capture_name, mode,
                                      "yes" if use_laser else "no", capture_time])

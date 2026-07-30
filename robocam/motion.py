@@ -53,11 +53,28 @@ class MarlinBackend(MotionBackend):
         self.timeout = printer_cfg.get("timeout", 10.0)
         self.home_timeout = printer_cfg.get("home_timeout", 90.0)
         self.movement_wait_timeout = printer_cfg.get("movement_wait_timeout", 30.0)
+        # Blind sleep in send_gcode() before it starts polling for "ok" —
+        # write()+flush() already guarantees the command is fully sent,
+        # and the polling loop's readline() safely blocks for a complete
+        # line regardless of when it starts checking, so this isn't
+        # protecting against a partial-write/partial-read race. Hardware
+        # log timestamps showed this value (previously 0.1s in
+        # config/default_config.json) essentially *was* the entire
+        # measured per-command round-trip cost, not half of it — real
+        # wire/firmware latency on top of it was negligible. Lowered to
+        # test whether shrinking it shrinks real round-trip time
+        # ~1:1 — validate this on hardware before trusting it, and
+        # recalibrate experiment.py's SERIAL_ROUNDTRIP_S from the next
+        # real log rather than guessing a new value here.
         self.command_delay = printer_cfg.get("command_delay", 0.05)
         
         self.X, self.Y, self.Z = 0.0, 0.0, 0.0
         self.serial_conn = None
         self._m400_supported = None
+        # Motion-profile values (M203 max feed / M201 accel / M205 jerk),
+        # cached on connect and refreshed on apply_profiles() so _move() can
+        # use them as the actual travel speed (see there for why).
+        self._cached_profile: dict = {}
         
     @property
     def is_connected(self) -> bool:
@@ -122,6 +139,35 @@ class MarlinBackend(MotionBackend):
             logger.info("[MotionCtrl] Disabled stepper idle timeout (M18 S0).")
         except Exception as e:
             logger.warning(f"[MotionCtrl] Could not disable stepper idle timeout: {e}")
+
+        try:
+            self._cached_profile = self.read_profiles()
+        except Exception as e:
+            logger.warning(f"[MotionCtrl] Could not read motion profile on connect: {e}")
+        self._apply_travel_accel()
+
+    def _apply_travel_accel(self):
+        """M201 (Motion Profiles tab) is only a per-axis ceiling — the
+        acceleration a move actually uses comes from the separate M204
+        command, which defaults to whatever the firmware shipped with
+        unless set explicitly. Without this, real moves accelerate at that
+        firmware default regardless of what the Motion Profiles tab says.
+        T (travel) is the right bucket since RoboCam never extrudes.
+        A single scalar, not per-axis like M201/F — min() across X/Y keeps
+        it within both axes' own ceilings for a diagonal move; M201 still
+        clamps per-axis on top of this regardless, so a lone Z move stays
+        safe even though Z isn't factored into this value."""
+        accels = [
+            v for v in (self._cached_profile.get("max_accel_x"), self._cached_profile.get("max_accel_y"))
+            if v
+        ]
+        if not accels:
+            return
+        try:
+            self.send_gcode(f"M204 T{min(accels):.3f}")
+            logger.info(f"[MotionCtrl] Set travel acceleration M204 T{min(accels):.3f}")
+        except Exception as e:
+            logger.warning(f"[MotionCtrl] Could not set travel acceleration (M204): {e}")
 
     def disconnect(self):
         if self.is_connected:
@@ -229,19 +275,38 @@ class MarlinBackend(MotionBackend):
 
     def move_relative(self, X=None, Y=None, Z=None, speed=None):
         self.send_gcode('G91')
-        self._move(X, Y, Z, speed)
-        
+        self._move(X, Y, Z, speed, relative=True)
+
     def move_absolute(self, X=None, Y=None, Z=None, speed=None):
         self.send_gcode('G90')
-        self._move(X, Y, Z, speed)
-        
-    def _move(self, X, Y, Z, speed):
+        self._move(X, Y, Z, speed, relative=False)
+
+    def _move(self, X, Y, Z, speed, relative=False):
         cmd = "G0"
-        if X is not None: cmd += f" X{X:.4f}"
-        if Y is not None: cmd += f" Y{Y:.4f}"
-        if Z is not None: cmd += f" Z{Z:.4f}"
-        if speed is not None: cmd += f" F{speed:.1f}"
-        
+        # Marlin doesn't default a bare G0/G1 to the M203 max feedrate — with
+        # no F it just keeps using whatever feed rate was last active (often
+        # far below the configured profile), so real moves silently crawl
+        # well under the speed the Motion Profiles tab configured. Explicit
+        # F here is what actually makes that tab's numbers the travel speed.
+        feeds = []
+        for axis, val, profile_key in (("X", X, "max_feed_x"), ("Y", Y, "max_feed_y"), ("Z", Z, "max_feed_z")):
+            if val is None:
+                continue
+            cmd += f" {axis}{val:.4f}"
+            displacement = val if relative else (val - getattr(self, axis))
+            if abs(displacement) > 1e-6:
+                feed = self._cached_profile.get(profile_key)
+                if feed:
+                    feeds.append(feed)
+
+        if speed is not None:
+            cmd += f" F{speed:.1f}"
+        elif feeds:
+            # G-code F is mm/min; M203 (and our cached profile) is mm/s.
+            # min() across the axes actually moving keeps the coordinated
+            # move within every involved axis's own configured ceiling.
+            cmd += f" F{min(feeds) * 60:.1f}"
+
         self.send_gcode(cmd)
         self._wait_movement()
         self.update_position()
@@ -288,6 +353,12 @@ class MarlinBackend(MotionBackend):
         _cmd("M201", [("X", "max_accel_x"), ("Y", "max_accel_y"), ("Z", "max_accel_z")])
         _cmd("M205", [("X", "jerk_x"), ("Y", "jerk_y"), ("Z", "jerk_z")])
         self.send_gcode("M500")
+
+        try:
+            self._cached_profile = self.read_profiles()
+        except Exception as e:
+            logger.warning(f"[MotionCtrl] Could not refresh cached motion profile after apply: {e}")
+        self._apply_travel_accel()
 
 
 class KlipperBackend(MotionBackend):
@@ -495,6 +566,18 @@ class MotionController:
         return self._homed
 
     @property
+    def command_delay(self) -> Optional[float]:
+        """The backend's per-gcode-command blind-wait setting, if it has
+        one (MarlinBackend only — Klipper's HTTP calls and the simulated
+        backend have no equivalent). None here means "not applicable to
+        this backend", not "unknown Marlin value" — MarlinBackend always
+        sets one. Used by ExperimentRunner to derive the move-time
+        estimate's fixed per-move overhead directly from the real
+        configured value instead of a hardcoded constant that goes stale
+        whenever this setting changes."""
+        return getattr(self.backend, "command_delay", None)
+
+    @property
     def X(self): return self.backend.X
     @property
     def Y(self): return self.backend.Y
@@ -534,6 +617,19 @@ class MotionController:
                 if self._homed:
                     logger.info("[MotionCtrl] Steppers disabled via raw command — clearing homed state.")
                 self._homed = False
+                # M18/M84 alone doesn't touch Marlin's own logical position
+                # counter, so without this, a full app/connection restart
+                # after this disable would read back the same
+                # still-plausible-looking coordinates and connect()'s
+                # not-homed heuristic (X==Y) would wrongly conclude
+                # "homed" again. G92 has no physical effect (no motion) —
+                # it only overwrites what Marlin believes its position is,
+                # to the same sentinel that heuristic already checks for.
+                try:
+                    self.backend.send_gcode("G92 X0 Y0")
+                    self.backend.update_position()
+                except Exception as e:
+                    logger.warning(f"[MotionCtrl] Could not mark position as unknown after disable: {e}")
 
     @property
     def supports_profiles(self) -> bool:

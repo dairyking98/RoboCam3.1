@@ -275,17 +275,26 @@ class _DemoWindow(QWidget):
         new_col = self._col + d_col
         if not (0 <= new_row < self._rows and 0 <= new_col < self._cols):
             return
-        self._row, self._col = new_row, new_col
-        self._update_well_label()
 
         mc = hw_state.get_motion()
         if not mc:
             return
+        if not mc.is_homed:
+            QMessageBox.warning(
+                self, "Home Required",
+                "The printer has not been homed this session, or the "
+                "steppers were disabled at some point since.\n\n"
+                "Home all axes before navigating to a well — absolute "
+                "positions aren't reliable until then."
+            )
+            return
+
+        self._row, self._col = new_row, new_col
+        self._update_well_label()
         _, x, y, z = self._grid[self._row][self._col]
 
         def task():
             mc.move_absolute(X=x, Y=y, Z=z)
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -601,6 +610,11 @@ class ManualControlPanel(QWidget):
         grp = QGroupBox("Manual G-code Sender")
         layout = QVBoxLayout(grp)
 
+        warning_lbl = QLabel("⚠ WARNING: sends raw G-code directly to the printer. USE AT OWN RISK.")
+        warning_lbl.setStyleSheet("color: #b00020; font-weight: bold;")
+        warning_lbl.setWordWrap(True)
+        layout.addWidget(warning_lbl)
+
         input_row = QHBoxLayout()
         self.gcode_input = QLineEdit()
         self.gcode_input.setPlaceholderText("G-code command…")
@@ -649,7 +663,6 @@ class ManualControlPanel(QWidget):
         step = self._get_step()
         def task():
             mc.move_relative(**{axis: direction * step})
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     def _home(self):
@@ -665,6 +678,15 @@ class ManualControlPanel(QWidget):
     def _goto(self):
         mc = hw_state.get_motion()
         if not mc:
+            return
+        if not mc.is_homed:
+            QMessageBox.warning(
+                self, "Home Required",
+                "The printer has not been homed this session, or the "
+                "steppers were disabled at some point since.\n\n"
+                "Home all axes before navigating to a coordinate — "
+                "absolute positions aren't reliable until then."
+            )
             return
         cur_x = mc.X or 0.0
         cur_y = mc.Y or 0.0
@@ -684,7 +706,6 @@ class ManualControlPanel(QWidget):
 
         def task():
             mc.move_absolute(X=x, Y=y, Z=z)
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     def _set_laser(self, state: bool):

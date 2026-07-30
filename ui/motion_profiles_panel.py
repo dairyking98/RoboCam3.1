@@ -23,22 +23,31 @@ Presets (save/load named slider configurations to
 config/motion_profile_presets/<name>.json) follow the same convention
 as ui/experiment_panel.py's Experiment Presets group, so profiles can
 be prepared and saved without a printer connected. Loading a preset
-sends it to the printer immediately (same as Apply) rather than just
-populating the sliders — motion profiles are not known to reliably
-persist across a printer power cycle, so anything meant to take effect
-is pushed as gcode right away instead of sitting unsent in the UI. The
-same reasoning applies on (re)connect: if a profile was already
-read/applied/loaded earlier in this session, it's re-sent then too, in
-case the printer's actual state drifted (e.g. a power cycle reset it
-to firmware defaults) while disconnected.
+only populates the sliders — it does not send anything to the printer;
+Apply (now grouped with Save/Load rather than off in the Read/Reset
+row) is the one action that actually pushes gcode. The last-loaded
+preset name is persisted to the session and restored (sliders
+populated, nothing sent) on the next launch.
+
+On (re)connect, if a profile was already read/applied earlier in this
+session, it's re-sent then, in case the printer's actual state drifted
+(e.g. a power cycle reset it to firmware defaults) while disconnected
+— motion profiles are not known to reliably persist across a printer
+power cycle. This connect-time re-push is independent of Load/Apply
+above; it only concerns what's already been confirmed on the
+printer, not merely populated into the sliders.
 
 Three bundled starting-point presets ship at fast/medium/slow speed
 tiers, all biased toward low vibration (see _DEFAULT_PRESET_NAME below
-for sourcing). "Slow" is treated as *the* default: it's what the combo
-box defaults to on first load, and what gets applied on the very first
-printer connect of a session when nothing else is known yet — safer
-to start conservative than to trust whatever the firmware happened to
-boot with.
+for sourcing). "Slow" is treated as *the* fallback default: it's what
+the combo box defaults to when nothing else has ever been loaded, and
+what gets applied on connect only if there's no profile confirmed this
+session and no preset restored from a previous one (see
+_on_printer_connected) — safer to start conservative than to trust
+whatever the firmware happened to boot with. Once any preset has
+actually been loaded (this session or a prior one, since the choice
+persists — see "Session persistence" below), *that* preset is what
+gets applied on connect instead, not the bundled default.
 """
 from __future__ import annotations
 
@@ -54,6 +63,7 @@ from PySide6.QtWidgets import (
 
 import robocam.hw_state as hw_state
 from robocam.config import get_config
+from robocam.session import session_manager
 from ui.profile_slider import ProfileSliderRow
 
 # Each group is (title, [(keys, label, lo, hi, step, decimals, suffix), ...]).
@@ -61,11 +71,11 @@ from ui.profile_slider import ProfileSliderRow
 # Ranges are the real Ender-5 S1 firmware M203/M201/M205 edit ceilings
 # (see module docstring) — not arbitrary/generic values.
 _GROUPS = [
-    ("Max Feed Rate  (M203, mm/s)", [
+    ("Feed Rate  (M203 / G-code F, mm/s)", [
         (("max_feed_x", "max_feed_y"), "XY:", 0, 600, 5,   1, " mm/s"),
         (("max_feed_z",),              "Z:",  0, 20,  0.5, 1, " mm/s"),
     ]),
-    ("Max Acceleration  (M201, mm/s²)", [
+    ("Acceleration Rate  (M201 / M204 T, mm/s²)", [
         (("max_accel_x", "max_accel_y"), "XY:", 0, 2000, 25, 0, " mm/s²"),
         (("max_accel_z",),               "Z:",  0, 200,  5,  0, " mm/s²"),
     ]),
@@ -82,6 +92,17 @@ _GROUPS = [
 # with. All three (fast/medium/slow) are reasoned starting points, not
 # validated optima — see PROJECT_STATE.md for derivation.
 _DEFAULT_PRESET_NAME = "ender5_s1_slow_low_vibration"
+
+# The three bundled starting-point presets — protected from being
+# overwritten by Save (see _save_preset) so they stay a known-good
+# fallback (_on_printer_connected relies on _DEFAULT_PRESET_NAME always
+# being the original, reasoned values) even after a user saves their own
+# tuned profiles alongside them.
+_BUNDLED_PRESET_NAMES = (
+    "ender5_s1_fast_low_vibration",
+    "ender5_s1_medium_low_vibration",
+    _DEFAULT_PRESET_NAME,
+)
 
 
 class _ReadThread(QThread):
@@ -122,8 +143,9 @@ class MotionProfilesPanel(QWidget):
         # list of (keys_tuple, ProfileSliderRow)
         self._rows: list[tuple[tuple, ProfileSliderRow]] = []
         # Last profile confirmed on the printer, via Read or a successful
-        # Apply (including an auto-Apply from Load) — used both for Reset
-        # and to re-push on reconnect. Empty until the first Read/Apply.
+        # Apply — used both for Reset and to re-push on reconnect. Empty
+        # until the first Read/Apply. Loading a preset does NOT touch this;
+        # it only populates the sliders until Apply is actually clicked.
         self._last_read: dict = {}
         self._read_thread: _ReadThread | None = None
         self._apply_thread: _ApplyThread | None = None
@@ -139,14 +161,6 @@ class MotionProfilesPanel(QWidget):
         )
         self.read_btn.clicked.connect(self._read_profiles)
         btn_row.addWidget(self.read_btn)
-
-        self.apply_btn = QPushButton("Apply to Printer")
-        self.apply_btn.setToolTip(
-            "Send M203/M201/M205 with the current slider values\n"
-            "and save to EEPROM (M500)."
-        )
-        self.apply_btn.clicked.connect(self._apply_profiles)
-        btn_row.addWidget(self.apply_btn)
 
         self.reset_btn = QPushButton("Reset to Defaults")
         self.reset_btn.setToolTip(
@@ -171,15 +185,15 @@ class MotionProfilesPanel(QWidget):
 
         self._refresh_support()
         self._refresh_presets()
+        self._load_session()
 
     def _build_presets_group(self) -> QGroupBox:
         grp = QGroupBox("Motion Profile Presets")
         grp.setToolTip(
             "Save the slider values above as a named preset, independent of\n"
             "the printer connection, so profiles can be prepared offline.\n"
-            "Loading a preset sends it to the printer immediately (like Apply) —\n"
-            "profiles aren't known to reliably survive a printer power cycle,\n"
-            "so anything you load is pushed right away rather than left pending."
+            "Loading a preset only populates the sliders — click Apply to\n"
+            "actually send it to the printer."
         )
         layout = QHBoxLayout(grp)
 
@@ -192,9 +206,17 @@ class MotionProfilesPanel(QWidget):
         layout.addWidget(save_btn)
 
         load_btn = QPushButton("Load")
-        load_btn.setToolTip("Populate the sliders and immediately send them to the printer.")
+        load_btn.setToolTip("Populate the sliders from this preset — does not send anything to the printer.")
         load_btn.clicked.connect(self._load_preset)
         layout.addWidget(load_btn)
+
+        self.apply_btn = QPushButton("Apply to Printer")
+        self.apply_btn.setToolTip(
+            "Send M203/M201/M205 with the current slider values\n"
+            "and save to EEPROM (M500)."
+        )
+        self.apply_btn.clicked.connect(self._apply_profiles)
+        layout.addWidget(self.apply_btn)
 
         refresh_btn = QPushButton("↺")
         refresh_btn.setFixedWidth(28)
@@ -331,13 +353,19 @@ class MotionProfilesPanel(QWidget):
     def _on_printer_connected(self):
         """Wired to SetupPanel.motion_connected. Motion profiles aren't
         known to reliably survive a printer power cycle, so if we already
-        know what profile *should* be active (read, applied, or loaded
-        earlier this session), re-push it now rather than just reading —
-        the printer's actual state may have drifted while disconnected.
-        On the first connect of a session, with nothing else known yet,
-        apply the conservative default preset instead of trusting
-        whatever the firmware happened to boot with; only fall back to a
-        plain Read if that preset file is missing."""
+        know what profile *should* be active, re-push it now rather than
+        just reading — the printer's actual state may have drifted while
+        disconnected. Priority order:
+          1. Confirmed this session (read, applied, or loaded then
+             applied earlier) — self._last_read.
+          2. The preset last loaded in a *previous* session, restored
+             from disk (session_manager, same value _load_session()
+             populated the sliders from at startup) — the printer should
+             come up in whatever profile the user was actually last
+             using, not the conservative bundled default.
+          3. The bundled conservative default preset, for a genuinely
+             first-ever run with no prior session to restore.
+          4. A plain Read, if even the default preset file is missing."""
         if self._last_read:
             self._populate(self._last_read, mark_current=False)
             self._set_status(
@@ -346,6 +374,17 @@ class MotionProfilesPanel(QWidget):
             )
             self._apply_profiles()
             return
+
+        last_loaded = session_manager.get("motion_profiles").get("last_loaded_preset", "")
+        if last_loaded:
+            data = self._read_preset_file(last_loaded)
+            if data is not None:
+                self._populate(data, mark_current=False)
+                self._set_status(
+                    f"Printer connected — applying last-loaded profile ‘{last_loaded}’…", "gray"
+                )
+                self._apply_profiles()
+                return
 
         data = self._read_preset_file(_DEFAULT_PRESET_NAME)
         if data is not None:
@@ -392,6 +431,13 @@ class MotionProfilesPanel(QWidget):
     def _save_preset(self):
         name = self.preset_combo.currentText().strip() or "default"
         name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+        if name in _BUNDLED_PRESET_NAMES:
+            QMessageBox.warning(
+                self, "Reserved Preset Name",
+                f"‘{name}’ is a bundled default preset and can't be overwritten.\n\n"
+                "Enter a different name to save your own profile."
+            )
+            return
         path = os.path.join(self._preset_dir(), f"{name}.json")
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -420,5 +466,28 @@ class MotionProfilesPanel(QWidget):
             QMessageBox.critical(self, "Preset Error", f"Could not load preset ‘{name}’.")
             return
         self._populate(data, mark_current=False)
-        self._set_status(f"Preset ‘{name}’ loaded — sending to printer…", "gray")
-        self._apply_profiles()
+        self._set_status(f"Preset ‘{name}’ loaded. Click ‘Apply to Printer’ to send it.", "gray")
+        session_manager.update("motion_profiles", {"last_loaded_preset": name})
+        session_manager.save()
+
+    # ------------------------------------------------------------------
+    # Session persistence
+    # ------------------------------------------------------------------
+
+    def _load_session(self):
+        """Restore the last-loaded preset on startup — populates the
+        sliders and combo box the same way a manual Load would, but sends
+        nothing to the printer (same decoupling as Load itself)."""
+        name = session_manager.get("motion_profiles").get("last_loaded_preset", "")
+        if not name:
+            return
+        data = self._read_preset_file(name)
+        if data is None:
+            return
+        idx = self.preset_combo.findText(name)
+        if idx >= 0:
+            self.preset_combo.setCurrentIndex(idx)
+        else:
+            self.preset_combo.setCurrentText(name)
+        self._populate(data, mark_current=False)
+        self._set_status(f"Restored last-loaded preset ‘{name}’.", "gray")

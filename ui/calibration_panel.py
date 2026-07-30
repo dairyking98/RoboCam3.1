@@ -307,18 +307,9 @@ class CalibrationPanel(QWidget):
 
         # Position display
         pos_row = QHBoxLayout()
-        pos_row.addWidget(QLabel("X:"))
-        self.x_pos_lbl = QLabel("0.00")
-        self.x_pos_lbl.setMinimumWidth(48)
-        pos_row.addWidget(self.x_pos_lbl)
-        pos_row.addWidget(QLabel("Y:"))
-        self.y_pos_lbl = QLabel("0.00")
-        self.y_pos_lbl.setMinimumWidth(48)
-        pos_row.addWidget(self.y_pos_lbl)
-        pos_row.addWidget(QLabel("Z:"))
-        self.z_pos_lbl = QLabel("0.00")
-        self.z_pos_lbl.setMinimumWidth(48)
-        pos_row.addWidget(self.z_pos_lbl)
+        self.pos_lbl = QLabel("X: ---  Y: ---  Z: ---")
+        self.pos_lbl.setStyleSheet("font-family: monospace; color: gray;")
+        pos_row.addWidget(self.pos_lbl)
         pos_row.addStretch()
         layout.addLayout(pos_row, 0, 0, 1, 5)
 
@@ -875,7 +866,6 @@ class CalibrationPanel(QWidget):
         step = self._get_step()
         def task():
             mc.move_relative(**{axis.upper(): direction * step})
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     def _home(self):
@@ -901,17 +891,27 @@ class CalibrationPanel(QWidget):
         mc = hw_state.get_motion()
         if not mc:
             return
+        if not mc.is_homed:
+            QMessageBox.warning(
+                self, "Home Required",
+                "The printer has not been homed this session, or the "
+                "steppers were disabled at some point since.\n\n"
+                "Home all axes before navigating to a well or coordinate — "
+                "absolute positions aren't reliable until then."
+            )
+            return
         def task():
             mc.move_absolute(X=x, Y=y, Z=z)
-            mc.update_position()
         threading.Thread(target=task, daemon=True).start()
 
     def _update_position_display(self):
         mc = hw_state.get_motion()
         if mc and mc.is_connected:
-            self.x_pos_lbl.setText(f"{mc.X:.2f}")
-            self.y_pos_lbl.setText(f"{mc.Y:.2f}")
-            self.z_pos_lbl.setText(f"{mc.Z:.2f}")
+            self.pos_lbl.setText(f"X: {mc.X:.2f}  Y: {mc.Y:.2f}  Z: {mc.Z:.2f}")
+            self.pos_lbl.setStyleSheet("font-family: monospace; font-weight: bold; color: black;")
+        else:
+            self.pos_lbl.setText("X: ---  Y: ---  Z: ---")
+            self.pos_lbl.setStyleSheet("font-family: monospace; color: gray;")
 
     # ------------------------------------------------------------------
     # Corner calibration
@@ -921,6 +921,16 @@ class CalibrationPanel(QWidget):
         mc = hw_state.get_motion()
         if not mc or not mc.is_connected:
             QMessageBox.warning(self, "Not Connected", "Connect and home the printer first.")
+            return
+        if not mc.is_homed:
+            QMessageBox.warning(
+                self, "Home Required",
+                "The printer has not been homed this session, or the "
+                "steppers were disabled at some point since.\n\n"
+                "Home all axes before recording a corner — its absolute "
+                "position isn't reliable until then, and it will be baked "
+                "into every well position derived from this calibration."
+            )
             return
         try:
             pos = mc.update_position()
