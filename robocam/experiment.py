@@ -1395,7 +1395,7 @@ class ExperimentRunner:
                             "cycle": cycle_num, "attempt": attempt,
                             "start": cycle_start.isoformat(), "end": cycle_end.isoformat(),
                             "status": "error_retrying", "error": self.status_msg,
-                            "well_count": len(positions),
+                            "well_count": len(positions), "labels": list(labels),
                         })
                         logger.warning(f"[Loop] Cycle {cycle_num} failed ({self.status_msg}); retrying once.")
                         attempt = 2
@@ -1421,7 +1421,7 @@ class ExperimentRunner:
                             "cycle": cycle_num, "attempt": attempt,
                             "start": cycle_start.isoformat(), "end": cycle_end.isoformat(),
                             "status": "ok" if attempt == 1 else "ok_after_retry",
-                            "well_count": len(positions),
+                            "well_count": len(positions), "labels": list(labels),
                             "estimated_s": estimate_s,
                             "actual_s": cycle_actual_s,
                         })
@@ -1431,6 +1431,7 @@ class ExperimentRunner:
                             "cycle": cycle_num, "attempt": attempt,
                             "start": cycle_start.isoformat(), "end": cycle_end.isoformat(),
                             "status": "stopped", "well_count": len(positions),
+                            "labels": list(labels),
                         })
                         self.looping = False
                         break
@@ -1439,7 +1440,7 @@ class ExperimentRunner:
                             "cycle": cycle_num, "attempt": attempt,
                             "start": cycle_start.isoformat(), "end": cycle_end.isoformat(),
                             "status": "aborted_after_retry_failure", "error": self.status_msg,
-                            "well_count": len(positions),
+                            "well_count": len(positions), "labels": list(labels),
                         })
                         logger.error(
                             f"[Loop] Cycle {cycle_num} failed twice in a row "

@@ -244,6 +244,8 @@ class TestRunLoop:
         records = _manifest_records(loop_dir)
         ok_records = [r for r in records if r["status"] == "ok"]
         assert len(ok_records) >= 2, "expected at least 2 back-to-back cycles in 1s"
+        for r in ok_records:
+            assert r["labels"] == ["A1", "A2"]
 
         cycle_dirs = sorted(d for d in loop_dir.iterdir() if d.is_dir())
         assert len(cycle_dirs) == len(ok_records)
