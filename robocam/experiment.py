@@ -100,6 +100,27 @@ def _move_overhead_s(motion) -> float:
     return GCODE_CALLS_PER_MOVE * delay if delay else 0.0
 
 
+# A second, separate fixed cost — this one lives *inside* M400's own
+# measured wait, not in the surrounding G90/G0-ack/M114 round-trips
+# above. After the command_delay-derived overhead was confirmed accurate
+# (measured round-trips landed within ~3ms of estimate), a 24-well
+# hardware run still showed a remaining gap between real M400 wait time
+# and the physics-only estimate — but this one was flat regardless of
+# move type: ~77ms +-2ms on both short triangular-profile moves (never
+# reach cruise speed) and longer trapezoidal ones (do reach cruise).
+# That distance-independence is what rules out an accel/feed modeling
+# error — a wrong accel value would show a *smaller* gap on the
+# trapezoidal move's distance-scaling cruise portion, not the same flat
+# gap on both move shapes. So this is some fixed Marlin-internal cost
+# inside its own M400 timing (candidates: M400's own polling granularity
+# in the firmware's main loop, planner block-buffer overhead — not
+# confirmed, can't instrument the firmware itself from here), unrelated
+# to command_delay and NOT reduced by shrinking it further. Value is the
+# straight average of the actual-minus-estimated deltas across that
+# 24-well run (mean 77.3ms, tight spread) rather than a round number.
+MARLIN_M400_OVERHEAD_S = 0.077
+
+
 def _axis_move_time_s(distance_mm: float, max_feed: Optional[float], max_accel: Optional[float]) -> float:
     """Trapezoidal-profile time estimate for one axis covering `distance_mm`,
     given its configured max feed rate (mm/s) and max acceleration (mm/s^2)
@@ -138,14 +159,13 @@ def _estimate_move_time_s(
     at up to the configured jerk speed instead of ramping from a dead
     stop — saving roughly 2 * (jerk / accel) seconds per move. At this
     rig's jerk range (<=10 mm/s XY) against the accel this estimate
-    already uses, that's on the order of 10-30ms — inside the ~10-15ms
-    residual this estimate already showed against real hardware after
-    the F/M204 fixes, not worth the added complexity of modeling
-    Marlin's junction-velocity math for."""
+    already uses, that's on the order of 10-30ms — small next to
+    MARLIN_M400_OVERHEAD_S below, not worth the added complexity of
+    modeling Marlin's junction-velocity math for."""
     tx = _axis_move_time_s(end[0] - start[0], profile.get("max_feed_x"), profile.get("max_accel_x"))
     ty = _axis_move_time_s(end[1] - start[1], profile.get("max_feed_y"), profile.get("max_accel_y"))
     tz = _axis_move_time_s(end[2] - start[2], profile.get("max_feed_z"), profile.get("max_accel_z"))
-    return max(tx, ty, tz) + move_overhead_s
+    return max(tx, ty, tz) + move_overhead_s + MARLIN_M400_OVERHEAD_S
 
 
 def _trim_raw_stack(stack_path: str, frames_captured: int) -> None:
