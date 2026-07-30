@@ -1,5 +1,6 @@
 import ast
 import math
+import multiprocessing
 import os
 import time
 import csv
@@ -248,6 +249,74 @@ def _trim_raw_stack(stack_path: str, frames_captured: int) -> None:
         f.truncate(data_offset + frames_captured * row_bytes)
 
 
+def _finalize_raw_burst_process(stack_path: str, frame_idx: int, label: str) -> None:
+    """Flushes and trims a raw burst's memory-mapped stack file down to its
+    real frame count. Runs in a separate OS *process*, not a thread — a
+    thread-based version was tried first and confirmed not to work: a
+    standalone test showed mmap.flush() does not release the GIL for its
+    blocking msync duration (a spin-loop thread's throughput dropped to
+    ~9% of normal while a different thread called flush() on a large
+    mmap), and hardware logs confirmed the practical effect — the "next
+    well" logging and motion calls on the main thread stalled for close to
+    the full flush duration, not just its I/O-bound portion, so the
+    intended overlap with the next well's move/dwell never actually
+    happened. A separate process has its own GIL, so this call blocking
+    itself has zero effect on the parent process.
+
+    Deliberately takes plain, picklable arguments (a path, an int, a
+    string) rather than the memmap object _capture_raw_burst() already has
+    — multiprocessing can't meaningfully share a live mmap object across
+    the process boundary anyway, and re-opening the file here is exactly
+    as correct: mmap's underlying page cache is shared per-inode across
+    every process that maps the same file, not per-mapping, so flushing
+    this independent mapping still persists whatever the parent process
+    already wrote (via its own, already-closed mapping — see
+    _capture_raw_burst's finally: block) before calling this.
+
+    Uses the `spawn` start method (forced by the caller's process context,
+    not this function) rather than the Linux default `fork` — this process
+    controls live hardware (a serial connection to the printer, camera SDK
+    handles, laser GPIO), and fork() would duplicate the *entire* parent
+    memory space into the child, including all of that, which risks the
+    child process's exit/cleanup interfering with the parent's still-live
+    connections. spawn starts a fresh interpreter with none of that
+    inherited, at the cost of a slower start than fork's near-instant
+    copy-on-write — an acceptable trade given this call already costs
+    multiple seconds regardless.
+
+    Logs and swallows its own errors rather than raising, since nothing is
+    left synchronously waiting to catch an exception from a background
+    process — check the experiment log.
+
+    spawn also means this process does NOT inherit the app's logging
+    setup (that's top-level code in robocam31.py's entry script, which
+    spawn — unlike fork — never re-runs; it only re-imports this specific
+    module). Without attaching a handler here, these log lines would
+    silently go nowhere instead of into robocam.log. Uses append mode
+    deliberately: the app's own setup opens robocam.log with mode="w"
+    (truncate) once at startup — reusing that here would wipe out
+    everything already logged the moment this child creates the handler."""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_path = os.path.join(project_root, "robocam.log")
+    handler = logging.FileHandler(log_path, mode="a")
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+    finalize_start = time.perf_counter()
+    try:
+        stack = np.lib.format.open_memmap(stack_path, mode="r+")
+        stack.flush()
+        stack._mmap.close()
+        _trim_raw_stack(stack_path, frame_idx)
+        logger.info(
+            f"[{label}] Finalize (flush + trim, subprocess) took "
+            f"{time.perf_counter() - finalize_start:.3f}s"
+        )
+    except Exception as e:
+        logger.error(f"[{label}] Raw-burst finalize failed: {e}", exc_info=True)
+
+
 class ExperimentRunner:
     """
     Experiment Runner for RoboCam 3.1.
@@ -310,12 +379,12 @@ class ExperimentRunner:
         seconds, stacking them into one `<label>_<timestamp>_stack.npy`
         memory-mapped array `(n_frames, H, W)`. Returns `(burst_meta,
         finalize_ctx)` — burst_meta is complete and ready to use (write to
-        JSON, log, etc.) the moment this returns; finalize_ctx must be
-        passed to _finalize_raw_burst() afterward to actually drain the
-        writer thread and trim the file to its final size, but none of
-        burst_meta depends on that having happened yet, so the caller is
-        free to run it in the background (see _finalize_raw_burst's
-        docstring for why that matters).
+        JSON, log, etc.) the moment this returns; the writer thread has
+        already been fully drained by then too. finalize_ctx just needs to
+        be passed to _finalize_raw_burst_process() afterward to flush and
+        trim the file to its final size — the one remaining expensive step,
+        safe to run in the background (see that function's docstring for
+        why it needs to be a separate process, not a thread).
 
         Capture (this thread, the producer) and disk writes (a separate
         writer thread, the consumer) are decoupled by a bounded queue, so a
@@ -428,7 +497,7 @@ class ExperimentRunner:
             # regardless of DISK_CHECK_EVERY_N_FRAMES — this was functionally
             # the same bug the periodic-flush removal was supposed to fix,
             # just relocated. Normal completion now gets its one flush from
-            # the explicit, backgrounded _finalize_raw_burst() instead.
+            # the explicit, backgrounded _finalize_raw_burst_process() instead.
 
         writer_thread = threading.Thread(target=_writer, daemon=True)
         writer_thread.start()
@@ -511,7 +580,7 @@ class ExperimentRunner:
                 # (frame_interval_s stays 0.0 unless a slower target fps was set)
 
             # Diagnostic timing (temporary): stack.flush()+trim is confirmed
-            # fast now (moved to _finalize_raw_burst, logged separately) and
+            # fast now (moved to _finalize_raw_burst_process, logged separately) and
             # jf.flush() benchmarks at ~0.01ms/call on this hardware — both
             # ruled out — yet duration_actual_s still showed a ~1.6s gap
             # after the last captured frame on a real hardware run. This
@@ -557,6 +626,17 @@ class ExperimentRunner:
                 f"[{label}] Writer drain (sentinel + join) took {drain_s:.3f}s "
                 f"({queue_backlog} frames queued but unwritten at signal time)"
             )
+            # Release this process's own mapping now — cheap (just unmaps
+            # virtual memory, doesn't force dirty pages to disk the way
+            # flush() does), unlike the actual durability guarantee, which
+            # happens in a separate OS process (see
+            # _finalize_raw_burst_process()) via its own independent
+            # mapping of the same file. Dirty pages already written by
+            # this process stay in the OS
+            # page cache (shared per-inode across every process, not
+            # per-mapping) until that other mapping's flush() picks them up
+            # — closing this one first doesn't lose or discard anything.
+            stack._mmap.close()
 
         duration_actual = time.perf_counter() - start
         capture_stats = self.camera.get_capture_stats()
@@ -575,47 +655,10 @@ class ExperimentRunner:
         }
         finalize_ctx = {
             "label": label,
-            "stack": stack,
             "stack_path": stack_path,
             "frame_idx": frame_idx,
         }
         return burst_meta, finalize_ctx
-
-    def _finalize_raw_burst(self, finalize_ctx: dict) -> None:
-        """Flushes and trims a raw burst's memory-mapped stack file down to
-        its real frame count. Safe to run in a background thread after the
-        caller has already moved on to the next well — none of burst_meta
-        (already returned by _capture_raw_burst) depends on this having
-        completed, only run() itself returning does (see the pending_finalize
-        handling there). This is deliberately the *only* part deferred, not
-        the queue-drain in _capture_raw_burst's finally: block, because it's
-        the expensive part: a standalone test confirmed mmap.flush() does not
-        release the GIL for its blocking msync duration (a spin-loop thread's
-        throughput dropped to ~9% of normal while a different thread called
-        flush() on a large mmap) — see DISK_CHECK_EVERY_N_FRAMES's comment
-        for the full investigation. Logs and swallows its own errors rather
-        than raising, since nothing is left synchronously waiting to catch
-        an exception from a background thread — check the experiment log."""
-        label = finalize_ctx["label"]
-        stack = finalize_ctx["stack"]
-        stack_path = finalize_ctx["stack_path"]
-        frame_idx = finalize_ctx["frame_idx"]
-        finalize_start = time.perf_counter()
-        try:
-            # Close the memmap before truncating its backing file below —
-            # the writer thread already wrote every row (in
-            # _capture_raw_burst's finally: block), but the mmap object must
-            # be flushed and closed first or a truncate here could race a
-            # lingering mapping.
-            stack.flush()
-            stack._mmap.close()
-            _trim_raw_stack(stack_path, frame_idx)
-            logger.info(
-                f"[{label}] Finalize (flush + trim) took "
-                f"{time.perf_counter() - finalize_start:.3f}s"
-            )
-        except Exception as e:
-            logger.error(f"[{label}] Raw-burst finalize failed: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # Main experiment loop
@@ -751,8 +794,10 @@ class ExperimentRunner:
                 # running in the background — bounded to at most one in
                 # flight at a time, joined right before starting the next
                 # one so it overlaps with this well's move/dwell/capture
-                # instead of blocking on it. See _finalize_raw_burst().
-                pending_finalize: Optional[threading.Thread] = None
+                # instead of blocking on it. A separate OS process, not a
+                # thread — see _finalize_raw_burst_process()'s docstring
+                # for why a thread doesn't actually achieve the overlap.
+                pending_finalize: Optional[multiprocessing.process.BaseProcess] = None
 
                 for i, (pos, label) in enumerate(zip(positions, labels)):
                     if not self.running:
@@ -871,7 +916,7 @@ class ExperimentRunner:
                         logger.info(
                             f"[{label}] Capture took {capture_call_s:.3f}s "
                             f"(recording {burst_meta['duration_actual_s']:.3f}s) — "
-                            f"finalize (flush + trim) running in the background"
+                            f"finalize (flush + trim) running in a background process"
                         )
                         capture_name = f"raw/{burst_meta['frames_file']} ({burst_meta['frames_captured']} frames)"
                         meta_path = os.path.join(raw_dir, f"{label}_{timestamp}_metadata.json")
@@ -901,11 +946,17 @@ class ExperimentRunner:
                         # well's finalize before starting this one's, so it
                         # overlaps with whatever move/dwell/capture time this
                         # well already took above instead of piling up
-                        # unbounded background threads.
+                        # unbounded background processes. spawn, not the
+                        # Linux default fork — see
+                        # _finalize_raw_burst_process()'s docstring for why
+                        # (this process holds live hardware connections that
+                        # fork would duplicate into the child).
                         if pending_finalize is not None:
                             pending_finalize.join()
-                        pending_finalize = threading.Thread(
-                            target=self._finalize_raw_burst, args=(finalize_ctx,), daemon=True
+                        pending_finalize = multiprocessing.get_context("spawn").Process(
+                            target=_finalize_raw_burst_process,
+                            args=(finalize_ctx["stack_path"], finalize_ctx["frame_idx"], finalize_ctx["label"]),
+                            daemon=True,
                         )
                         pending_finalize.start()
 

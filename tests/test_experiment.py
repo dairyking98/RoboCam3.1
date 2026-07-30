@@ -4,7 +4,7 @@ import time
 import numpy as np
 import pytest
 
-from robocam.experiment import ExperimentRunner, _trim_raw_stack
+from robocam.experiment import ExperimentRunner, _trim_raw_stack, _finalize_raw_burst_process
 
 
 class _FakeCamera:
@@ -122,7 +122,14 @@ class TestTargetFpsPacing:
             output_dir=str(tmp_path), label="A1", timestamp="t",
             total_duration_s=duration_s,
         )
-        runner._finalize_raw_burst(finalize_ctx)
+        # Call in-process rather than via multiprocessing.Process: it's a
+        # plain function now (see _finalize_raw_burst_process's docstring
+        # for why it needs to be spawn-process-safe in real use), and a
+        # unit test's job here is the capture+finalize logic, not
+        # re-exercising Python's multiprocessing module itself.
+        _finalize_raw_burst_process(
+            finalize_ctx["stack_path"], finalize_ctx["frame_idx"], finalize_ctx["label"]
+        )
         return burst_meta
 
     def test_uncapped_when_no_target_fps_set(self, tmp_path, monkeypatch):
