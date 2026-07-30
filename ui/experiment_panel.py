@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from robocam.calibration import WellPlate
 from robocam.config import get_config
+from robocam.experiment import estimate_loop_cycle_count
 import robocam.hw_state as hw_state
 from robocam.session import session_manager
 from ui.camera_widget import _FrameGrabber, _LivePreview
@@ -190,6 +191,24 @@ class ExperimentPanel(QWidget):
         for spin in (self.loop_interval_h_spin, self.loop_interval_m_spin, self.loop_interval_s_spin,
                      self.loop_duration_h_spin, self.loop_duration_m_spin, self.loop_duration_s_spin):
             spin.valueChanged.connect(self._autosave)
+
+        # Live "estimated time per pass" recompute (debounced) whenever
+        # anything that feeds estimate_cycle_duration_s() changes.
+        self.well_grid.selection_changed.connect(self._schedule_pass_estimate)
+        self.mode_combo.currentTextChanged.connect(self._schedule_pass_estimate)
+        self.dwell_spin.valueChanged.connect(self._schedule_pass_estimate)
+        self.duration_spin.valueChanged.connect(self._schedule_pass_estimate)
+        self.use_laser_chk.toggled.connect(self._schedule_pass_estimate)
+        self.laser_on_spin.valueChanged.connect(self._schedule_pass_estimate)
+        self.post_spin.valueChanged.connect(self._schedule_pass_estimate)
+        self.img_fmt_combo.currentTextChanged.connect(self._schedule_pass_estimate)
+        self.override_cal_chk.toggled.connect(self._schedule_pass_estimate)
+        self.cal_combo.currentIndexChanged.connect(self._schedule_pass_estimate)
+        self.loop_enabled_chk.toggled.connect(self._schedule_pass_estimate)
+        for spin in (self.loop_interval_h_spin, self.loop_interval_m_spin, self.loop_interval_s_spin,
+                     self.loop_duration_h_spin, self.loop_duration_m_spin, self.loop_duration_s_spin):
+            spin.valueChanged.connect(self._schedule_pass_estimate)
+        self._schedule_pass_estimate()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -372,9 +391,19 @@ class ExperimentPanel(QWidget):
         self.loop_duration_h_spin.setValue(1)  # default: 1 hour, matches run_loop()'s duration_s default
         layout.addWidget(self.loop_duration_row, row, 1); row += 1
 
-        self.loop_status_lbl = QLabel("")
-        self.loop_status_lbl.setStyleSheet("font-style: italic; color: #555;")
-        layout.addWidget(self.loop_status_lbl, row, 0, 1, 2)
+        # Live estimate of one pass's duration (and, given interval/duration,
+        # roughly how many cycles will fit) -- recomputed as well selection,
+        # calibration, mode, or timing settings change. See
+        # _recompute_pass_estimate() / _schedule_pass_estimate().
+        self.pass_estimate_lbl = QLabel("")
+        self.pass_estimate_lbl.setWordWrap(True)
+        self.pass_estimate_lbl.setStyleSheet("font-style: italic; color: #555;")
+        layout.addWidget(self.pass_estimate_lbl, row, 0, 1, 2); row += 1
+
+        self._pass_estimate_timer = QTimer(self)
+        self._pass_estimate_timer.setSingleShot(True)
+        self._pass_estimate_timer.setInterval(400)
+        self._pass_estimate_timer.timeout.connect(self._recompute_pass_estimate)
 
         self._update_loop_visibility()
         return grp
@@ -429,6 +458,10 @@ class ExperimentPanel(QWidget):
         self.eta_lbl = QLabel("ETA: —")
         self.eta_lbl.setStyleSheet("font-style: italic; color: #555;")
         layout.addWidget(self.eta_lbl)
+
+        self.loop_status_lbl = QLabel("")
+        self.loop_status_lbl.setStyleSheet("font-style: italic; color: #555;")
+        layout.addWidget(self.loop_status_lbl)
 
         self.dump_log_chk = QCheckBox("Save experiment log to output folder on completion")
         self.dump_log_chk.setToolTip(
@@ -527,6 +560,7 @@ class ExperimentPanel(QWidget):
         self.loop_interval_row.setVisible(enabled)
         self.lbl_loop_duration.setVisible(enabled)
         self.loop_duration_row.setVisible(enabled)
+        self.pass_estimate_lbl.setVisible(enabled)
 
     def _update_sel_count(self):
         sel = self.well_grid.selected_count()
@@ -553,6 +587,7 @@ class ExperimentPanel(QWidget):
             self._update_sel_count()
             self._well_placeholder.hide()
             self._well_scroll.show()
+        self._schedule_pass_estimate()
 
     def _update_active_cal_label(self):
         """Reflect the Calibration tab's currently active (loaded+saved,
@@ -959,6 +994,83 @@ class ExperimentPanel(QWidget):
                 f.write(self.exp_log.toPlainText())
         except Exception as e:
             logger.warning(f"Could not save experiment log to {log_path!r}: {e!r}", exc_info=True)
+
+    def _cal_path_for_estimate(self) -> Optional[str]:
+        """Silent, no-dialog variant of the calibration-path resolution in
+        _start_experiment() -- used by the live pass-time estimate, which
+        should just go blank on any unresolved state (no calibration
+        loaded yet, etc.) rather than popping up error dialogs while the
+        user is mid-configuration."""
+        if self.override_cal_chk.isChecked():
+            cal_file = self.cal_combo.currentText()
+            if not cal_file:
+                return None
+            cfg = get_config()
+            return os.path.join(cfg.get("paths.calibration_dir", "config/calibrations"), cal_file)
+        return self._cal_panel.get_active_calibration_path() if self._cal_panel else None
+
+    def _schedule_pass_estimate(self, *_):
+        # Debounced: rapid-fire changes (e.g. dragging across the well
+        # grid, or several settings changed in a row) collapse into one
+        # recompute after a short pause, rather than recomputing --
+        # and re-reading the cached motion profile -- on every single event.
+        self._pass_estimate_timer.start()
+
+    def _recompute_pass_estimate(self):
+        """Live 'estimated time per pass' (and, in loop mode, roughly how
+        many cycles will fit) shown in the Loop Mode group -- recomputed as
+        well selection/calibration/mode/timing settings change. Uses
+        MotionController.get_cached_profile() rather than read_profiles(),
+        which would be a real M503 serial round-trip (up to 15s) on every
+        single UI change -- see estimate_cycle_duration_s()'s profile= doc."""
+        runner = hw_state.get_runner()
+        if runner is None:
+            self.pass_estimate_lbl.setText("")
+            return
+
+        cal_path = self._cal_path_for_estimate()
+        if not cal_path:
+            self.pass_estimate_lbl.setText("")
+            return
+        try:
+            positions, labels = self._load_cal_positions(cal_path)
+        except Exception:
+            self.pass_estimate_lbl.setText("")
+            return
+        if not positions:
+            self.pass_estimate_lbl.setText("")
+            return
+
+        selected = self.well_grid.get_selected_indices()
+        filtered_pos = [positions[i] for i in selected if i < len(positions)]
+        if not filtered_pos:
+            self.pass_estimate_lbl.setText("")
+            return
+
+        mode_map = {"Image": "image", "Raw Burst": "raw"}
+        mode = mode_map.get(self.mode_combo.currentText(), "image")
+        profile = runner.motion.get_cached_profile() if runner.motion else {}
+        estimate = runner.estimate_cycle_duration_s(
+            filtered_pos, self.dwell_spin.value(), mode,
+            self.img_fmt_combo.currentText(), self.use_laser_chk.isChecked(),
+            self.duration_spin.value(), self.laser_on_spin.value(), self.post_spin.value(),
+            profile=profile,
+        )
+        if estimate is None:
+            self.pass_estimate_lbl.setText(
+                "Estimated time per pass: unavailable (no motion profile cached — connect/home first)"
+            )
+            return
+
+        pass_s, _ = estimate
+        text = f"Estimated time per pass: ~{pass_s:.0f}s"
+        if self.loop_enabled_chk.isChecked():
+            n_cycles = estimate_loop_cycle_count(
+                pass_s, self._loop_interval_seconds(), self._loop_duration_seconds()
+            )
+            if n_cycles > 0:
+                text += f"  (~{n_cycles} cycle{'s' if n_cycles != 1 else ''} in configured duration)"
+        self.pass_estimate_lbl.setText(text)
 
     def _update_eta_label(self):
         runner = hw_state.get_runner()

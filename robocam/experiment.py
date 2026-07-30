@@ -437,6 +437,21 @@ def _finalize_raw_burst_process(stack_path: str, frame_idx: int, label: str) -> 
         logger.error(f"[{label}] Raw-burst finalize failed: {e}", exc_info=True)
 
 
+def estimate_loop_cycle_count(pass_s: float, interval_s: float, duration_s: float) -> int:
+    """Rough count of how many cycles a loop-mode run is expected to start
+    within `duration_s`, given one pass takes `pass_s` and cycles are
+    spaced `interval_s` apart (0 = back-to-back). Mirrors run_loop()'s own
+    scheduling logic (a new cycle starts as long as there's still time
+    left before the deadline, not only if a full period's worth remains)
+    closely enough for a UI estimate -- not a substitute for the real
+    per-cycle manifest once a loop is actually running.
+    """
+    if duration_s <= 0 or pass_s <= 0:
+        return 0
+    period_s = max(pass_s, interval_s)
+    return max(1, math.ceil(duration_s / period_s))
+
+
 class ExperimentRunner:
     """
     Experiment Runner for RoboCam 3.1.
@@ -520,6 +535,7 @@ class ExperimentRunner:
         pre_duration: float = 5.0,
         laser_on_duration: float = 1.0,
         post_duration: float = 2.0,
+        profile: Optional[dict] = None,
     ) -> Optional[Tuple[float, List[float]]]:
         """Estimate one pass over `positions`' total wall-clock duration,
         using the same motion-profile + capture-time model as run()'s own
@@ -530,11 +546,20 @@ class ExperimentRunner:
         experiment starts.
 
         Pure computation, no side effects (no homing, no I/O) -- safe to
-        call before an experiment starts. Returns None if the connected
-        motion backend has no profile to estimate from (e.g. Klipper, the
-        simulated backend), otherwise (total_estimate_s,
+        call before an experiment starts. Returns None if no profile is
+        available to estimate from, otherwise (total_estimate_s,
         per_well_move_estimates) -- the latter is what run()'s per-well
         loop logs each move's actual time against.
+
+        `profile`: pass an already-known profile (e.g.
+        MotionController.get_cached_profile()) to skip querying the
+        backend entirely -- read_profiles() is a real M503 serial
+        round-trip on Marlin (up to a 15s timeout), far too slow for a
+        caller that wants to recompute this on every UI change (e.g. a
+        live "estimated time per pass" display as wells/settings change).
+        Leave as None (the default) for a fresh read, which is what run()
+        itself does -- appropriate there since it's called once per
+        experiment start, not repeatedly.
         """
         mode = (mode or "image").lower()
         if use_laser:
@@ -542,11 +567,12 @@ class ExperimentRunner:
         else:
             total_duration = float(pre_duration)
 
-        try:
-            profile = self.motion.read_profiles() if self.motion.supports_profiles else {}
-        except Exception as e:
-            logger.warning(f"[Experiment] Could not read motion profile for time estimate: {e}")
-            profile = {}
+        if profile is None:
+            try:
+                profile = self.motion.read_profiles() if self.motion.supports_profiles else {}
+            except Exception as e:
+                logger.warning(f"[Experiment] Could not read motion profile for time estimate: {e}")
+                profile = {}
 
         if not profile:
             return None
@@ -1283,6 +1309,7 @@ class ExperimentRunner:
                     self.current_cycle += 1
                     cycle_num = self.current_cycle
                     self.out_dir = self.loop_dir
+                    logger.info(f"[Loop] Cycle {cycle_num} starting.")
 
                     # run()'s own exp_dir name is only second-resolution
                     # (timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")),
@@ -1332,14 +1359,16 @@ class ExperimentRunner:
                         estimate_s = self.last_cycle_estimate_s
 
                     if outcome is True:
+                        cycle_actual_s = (cycle_end - cycle_start).total_seconds()
                         _write_manifest_record(mf, {
                             "cycle": cycle_num, "attempt": attempt,
                             "start": cycle_start.isoformat(), "end": cycle_end.isoformat(),
                             "status": "ok" if attempt == 1 else "ok_after_retry",
                             "well_count": len(positions),
                             "estimated_s": estimate_s,
-                            "actual_s": (cycle_end - cycle_start).total_seconds(),
+                            "actual_s": cycle_actual_s,
                         })
+                        logger.info(f"[Loop] Cycle {cycle_num} complete in {cycle_actual_s:.1f}s.")
                     elif outcome is None:
                         _write_manifest_record(mf, {
                             "cycle": cycle_num, "attempt": attempt,
@@ -1386,6 +1415,10 @@ class ExperimentRunner:
                         )
 
                     self.next_cycle_time = datetime.now() + timedelta(seconds=sleep_s) if sleep_s > 0 else None
+                    if self.next_cycle_time:
+                        logger.info(f"[Loop] Next cycle at {self.next_cycle_time.strftime('%H:%M:%S')}.")
+                    else:
+                        logger.info("[Loop] Starting next cycle now.")
                     while sleep_s > 0 and self.looping:
                         chunk = min(0.5, sleep_s)
                         time.sleep(chunk)

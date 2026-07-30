@@ -7,7 +7,9 @@ from datetime import datetime, timedelta
 import numpy as np
 import pytest
 
-from robocam.experiment import ExperimentRunner, _trim_raw_stack, _finalize_raw_burst_process
+from robocam.experiment import (
+    ExperimentRunner, _trim_raw_stack, _finalize_raw_burst_process, estimate_loop_cycle_count,
+)
 
 
 class _FakeCamera:
@@ -390,3 +392,44 @@ class TestEstimateCycleDuration:
         total_s, move_estimates = result
         assert total_s > 1.0  # at least the dwell time
         assert len(move_estimates) == 1
+
+    def test_passed_in_profile_skips_hardware_read(self, tmp_path):
+        # A caller recomputing this live on every UI change (e.g. well
+        # selection) must not trigger a fresh motion.read_profiles() call --
+        # for Marlin that's a real serial round-trip. supports_profiles is
+        # left False here specifically so a fallback read would return None,
+        # proving the profile= value is what's actually used.
+        motion = _FakeMotion(supports_profiles=False)
+        runner = _make_runner(tmp_path, motion=motion)
+        cached_profile = {
+            "max_feed_x": 100.0, "max_accel_x": 500.0,
+            "max_feed_y": 100.0, "max_accel_y": 500.0,
+            "max_feed_z": 20.0, "max_accel_z": 100.0,
+        }
+        result = runner.estimate_cycle_duration_s(
+            [(10.0, 0.0, 0.0)], delay_per_well=1.0, mode="image", profile=cached_profile,
+        )
+        assert result is not None
+        total_s, _ = result
+        assert total_s > 1.0
+
+
+class TestEstimateLoopCycleCount:
+    def test_back_to_back_uses_pass_time_as_period(self):
+        # interval_s=0 -> cycles run back-to-back, period is just pass_s.
+        assert estimate_loop_cycle_count(pass_s=10.0, interval_s=0.0, duration_s=95.0) == 10
+
+    def test_interval_longer_than_pass_time_dominates(self):
+        assert estimate_loop_cycle_count(pass_s=5.0, interval_s=30.0, duration_s=95.0) == 4
+
+    def test_pass_time_longer_than_interval_dominates(self):
+        # A too-short interval doesn't speed anything up -- period is still
+        # bounded by how long a pass actually takes.
+        assert estimate_loop_cycle_count(pass_s=30.0, interval_s=5.0, duration_s=95.0) == 4
+
+    def test_at_least_one_cycle_if_duration_positive(self):
+        assert estimate_loop_cycle_count(pass_s=1000.0, interval_s=0.0, duration_s=1.0) == 1
+
+    def test_zero_duration_or_pass_time_gives_zero(self):
+        assert estimate_loop_cycle_count(pass_s=10.0, interval_s=0.0, duration_s=0.0) == 0
+        assert estimate_loop_cycle_count(pass_s=0.0, interval_s=0.0, duration_s=60.0) == 0
