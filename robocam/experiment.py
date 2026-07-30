@@ -77,6 +77,24 @@ MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 # readback + disk write) used only for the pre-run ETA estimate below.
 IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.3
 
+# Stale-frame discard loop (see the priming loop in run()) is never zero —
+# even catching up in the minimum "4 discard reads" case seen on hardware
+# still takes real time. No live setting to derive this from (unlike
+# command_delay for moves), so it's a straight empirical average: two
+# separate 24-well hardware runs measured 0.0435s and ~0.044s per well.
+# Applies to both capture modes — the discard loop runs regardless of
+# mode.
+FRAME_PRIMING_ESTIMATE_S = 0.044
+
+# Raw-burst capture consistently records slightly *longer* than the
+# requested duration — structural, not incidental: the capture loop's
+# exit check (elapsed >= total_duration_s) can only fire at or after the
+# target, never exactly at it, so some overshoot every burst is
+# essentially guaranteed by how that loop is written. Measured ~0.0458s
+# and ~0.0455s average across two 24-well hardware runs. Raw mode only —
+# Image mode has no analogous "requested duration" to overrun.
+RAW_BURST_OVERRUN_S = 0.046
+
 # Every move is 3 command/ack round-trips that have nothing to do with
 # physical travel — G90, G0's "queued" ack, and M114 — each blocked on
 # MarlinBackend.command_delay (send + blind sleep + wait-for-"ok"; see
@@ -585,7 +603,9 @@ class ExperimentRunner:
         # alone).
         move_time_estimates: List[float] = []
         if profile:
-            capture_time_est = total_duration if mode == "raw" else IMAGE_CAPTURE_TIME_ESTIMATE_S
+            capture_time_est = FRAME_PRIMING_ESTIMATE_S + (
+                total_duration + RAW_BURST_OVERRUN_S if mode == "raw" else IMAGE_CAPTURE_TIME_ESTIMATE_S
+            )
             move_overhead_s = _move_overhead_s(self.motion)
             cur_pos = (self.motion.X, self.motion.Y, self.motion.Z)
             total_estimate_s = 0.0
