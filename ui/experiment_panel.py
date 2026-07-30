@@ -223,6 +223,13 @@ class ExperimentPanel(QWidget):
             self._h_splitter.setSizes([w // 2, w - w // 2])
             self._v_splitter.setSizes([h * 2 // 3, h - h * 2 // 3])
 
+        # Every time this tab becomes visible (including app launch), not
+        # just once: hardware may have connected (or a motion profile been
+        # applied) on the Setup/Motion Profiles tab since the last time this
+        # estimate was computed, with nothing on *this* tab having changed
+        # to otherwise trigger a recompute.
+        self._schedule_pass_estimate()
+
     def closeEvent(self, event):
         self._grabber.stop()
         self._grabber.wait(1000)
@@ -341,7 +348,7 @@ class ExperimentPanel(QWidget):
         # it lives here rather than inside the Loop Mode group.
         self.pass_estimate_lbl = QLabel("")
         self.pass_estimate_lbl.setWordWrap(True)
-        self.pass_estimate_lbl.setStyleSheet("font-style: italic; color: #555; font-size: 10px;")
+        self.pass_estimate_lbl.setStyleSheet("font-style: italic; color: #555;")
         layout.addWidget(self.pass_estimate_lbl, row, 0, 1, 2); row += 1
 
         self._pass_estimate_timer = QTimer(self)
@@ -1111,12 +1118,13 @@ class ExperimentPanel(QWidget):
             return
 
         if runner.looping and runner.loop_deadline is not None:
-            # While looping, the per-cycle move/capture estimate (below)
-            # resets every cycle and isn't what matters for an hours/days
-            # long run -- count down against the configured duration budget
-            # instead. Goes negative (red, counting up) once the final
-            # in-flight cycle runs past it -- expected, a cycle always
-            # finishes rather than aborting mid-well.
+            # While looping, count down runner.loop_deadline -- an
+            # estimated actual finish time (see estimate_loop_finish_s()),
+            # not just the raw configured duration -- since the loop is
+            # guaranteed to run past duration_s by some amount (the last
+            # cycle always finishes rather than aborting mid-well), so
+            # counting down to duration_s itself would read as an already-
+            # predictable overrun near the end.
             remaining = (runner.loop_deadline - datetime.now()).total_seconds()
             text, negative = self._format_hms_signed(remaining)
             self.eta_lbl.setText(f"ETA: {text}")
@@ -1134,10 +1142,6 @@ class ExperimentPanel(QWidget):
             )
 
         if runner.looping:
-            next_str = (
-                runner.next_cycle_time.strftime("%H:%M:%S")
-                if runner.next_cycle_time else "now"
-            )
-            self.loop_status_lbl.setText(f"Cycle {runner.current_cycle} — next cycle at {next_str}")
+            self.loop_status_lbl.setText(f"Current cycle: {runner.current_cycle}")
         else:
             self.loop_status_lbl.setText("")

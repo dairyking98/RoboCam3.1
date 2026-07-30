@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 
 from robocam.experiment import (
-    ExperimentRunner, _trim_raw_stack, _finalize_raw_burst_process, estimate_loop_cycle_count,
+    ExperimentRunner, _trim_raw_stack, _finalize_raw_burst_process,
+    estimate_loop_cycle_count, estimate_loop_finish_s,
 )
 
 
@@ -280,9 +281,40 @@ class TestRunLoop:
         after = datetime.now()
 
         assert "deadline" in seen_deadline, "loop_deadline should be set while looping"
-        # Deadline should be ~1s (duration_s) after the loop started.
+        # No motion profile (default _FakeMotion) -> falls back to the raw
+        # duration_s-based deadline, ~1s after the loop started.
         assert before <= seen_deadline["deadline"] <= after + timedelta(seconds=1.0)
         assert runner.loop_deadline is None, "loop_deadline should be cleared once the loop ends"
+
+    def test_loop_deadline_uses_calculated_finish_when_profile_available(self, tmp_path):
+        # With a motion profile cached, loop_deadline should reflect
+        # estimate_loop_finish_s() -- the realistic finish estimate -- not
+        # a naive start + duration_s.
+        motion = _FakeMotion(supports_profiles=True)
+        runner = _make_runner(tmp_path, motion=motion)
+        positions = [(10.0, 0.0, 0.0)]
+
+        estimate = runner.estimate_cycle_duration_s(positions, delay_per_well=0.0, mode="image")
+        assert estimate is not None
+        pass_s, _ = estimate
+        expected_finish_s = estimate_loop_finish_s(pass_s, interval_s=0.0, duration_s=1.0)
+
+        seen_deadline = {}
+
+        def _capture_deadline(msg):
+            if runner.loop_deadline is not None and "deadline" not in seen_deadline:
+                seen_deadline["deadline"] = runner.loop_deadline
+
+        start = datetime.now()
+        runner.run_loop(
+            name="calcfinish", positions=positions, labels=["A1"],
+            delay_per_well=0.0, mode="image", callback=_capture_deadline,
+            interval_s=0.0, duration_s=1.0,
+        )
+
+        assert "deadline" in seen_deadline
+        actual_span = (seen_deadline["deadline"] - start).total_seconds()
+        assert abs(actual_span - expected_finish_s) < 0.2
 
     def test_interval_spacing(self, tmp_path):
         runner = _make_runner(tmp_path)
@@ -476,3 +508,28 @@ class TestEstimateLoopCycleCount:
     def test_zero_duration_or_pass_time_gives_zero(self):
         assert estimate_loop_cycle_count(pass_s=10.0, interval_s=0.0, duration_s=0.0) == 0
         assert estimate_loop_cycle_count(pass_s=0.0, interval_s=0.0, duration_s=60.0) == 0
+
+
+class TestEstimateLoopFinishS:
+    """The loop always runs past duration_s by some amount (the last
+    cycle it starts always finishes rather than aborting mid-well) -- this
+    is meant to be a more realistic countdown target than duration_s
+    itself, which is guaranteed to under-count by a predictable amount."""
+
+    def test_back_to_back_extends_past_duration_by_the_final_pass(self):
+        # 10 cycles of 10s each = 100s actual, vs. the 95s configured.
+        assert estimate_loop_finish_s(pass_s=10.0, interval_s=0.0, duration_s=95.0) == 100.0
+
+    def test_interval_bound_extends_past_duration_to_the_last_scheduled_start_plus_one_pass(self):
+        # 4 cycles at a 30s period (start at 0/30/60/90), last one
+        # finishes at 90 + 5s pass = 95... period dominates the spacing,
+        # pass_s dominates how long that last cycle actually takes.
+        assert estimate_loop_finish_s(pass_s=5.0, interval_s=30.0, duration_s=95.0) == 95.0
+
+    def test_pass_bound_extends_past_duration_by_the_full_last_pass(self):
+        # 4 cycles at a 30s period (pass_s dominates the period too here),
+        # start at 0/30/60/90, last one finishes at 90 + 30 = 120.
+        assert estimate_loop_finish_s(pass_s=30.0, interval_s=5.0, duration_s=95.0) == 120.0
+
+    def test_falls_back_to_duration_when_no_cycles_expected(self):
+        assert estimate_loop_finish_s(pass_s=0.0, interval_s=0.0, duration_s=60.0) == 60.0

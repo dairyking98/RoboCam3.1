@@ -452,6 +452,22 @@ def estimate_loop_cycle_count(pass_s: float, interval_s: float, duration_s: floa
     return max(1, math.ceil(duration_s / period_s))
 
 
+def estimate_loop_finish_s(pass_s: float, interval_s: float, duration_s: float) -> float:
+    """A more realistic total-loop-runtime estimate than duration_s alone.
+    The loop is *guaranteed* to run past duration_s by some amount -- the
+    last cycle it starts always runs to completion rather than being
+    aborted mid-well -- so counting down to duration_s itself would always
+    read as an overrun near the end, for something already predictable
+    ahead of time. This instead estimates when the last cycle will
+    actually finish: (n_cycles - 1) whole periods, plus one more pass.
+    """
+    n_cycles = estimate_loop_cycle_count(pass_s, interval_s, duration_s)
+    if n_cycles <= 0:
+        return duration_s
+    period_s = max(pass_s, interval_s)
+    return (n_cycles - 1) * period_s + pass_s
+
+
 class ExperimentRunner:
     """
     Experiment Runner for RoboCam 3.1.
@@ -507,15 +523,19 @@ class ExperimentRunner:
         self.current_cycle: int = 0
         self.next_cycle_time: Optional[datetime] = None
         self.loop_dir: Optional[str] = None
-        # Wall-clock time the loop's configured duration_s runs out, set
-        # once at the start of run_loop(). The UI counts down to this
-        # directly rather than showing run()'s own per-cycle move/capture
-        # estimate while looping -- that per-cycle number resets every
-        # cycle and isn't what matters when watching an hours/days-long
-        # loop; the overall budget is. Goes negative (UI shows red,
-        # counting up in magnitude) if the final in-flight cycle runs past
-        # it -- expected, since a cycle always finishes rather than being
-        # aborted mid-well.
+        # Estimated wall-clock finish time of the whole loop, set once at
+        # the start of run_loop() -- see estimate_loop_finish_s(). Not the
+        # same as the configured duration_s cutoff: that's guaranteed to be
+        # exceeded by some amount (the last cycle started always runs to
+        # completion, never aborted mid-well), so this instead estimates
+        # when that final cycle will actually finish, using the per-pass
+        # time estimate. Falls back to the raw duration_s-based deadline if
+        # no motion profile is cached to estimate from. The UI counts down
+        # to this directly rather than showing run()'s own per-cycle
+        # move/capture estimate while looping -- that per-cycle number
+        # resets every cycle and isn't what matters when watching an
+        # hours/days-long loop. Can still go negative (estimate was
+        # optimistic) -- the UI shows that in red.
         self.loop_deadline: Optional[datetime] = None
         # Tri-state outcome of the most recent run() call: True (completed
         # normally), False (raised/caught an error), or None (stopped by the
@@ -1296,9 +1316,28 @@ class ExperimentRunner:
         manifest_path = os.path.join(self.loop_dir, "loop_manifest.jsonl")
 
         original_out_dir = self.out_dir
-        deadline = datetime.now() + timedelta(seconds=float(duration_s))
-        self.loop_deadline = deadline
+        loop_start = datetime.now()
+        # `deadline` (below) is the authoritative "stop starting new
+        # cycles" boundary -- unchanged, still exactly duration_s. Displayed
+        # separately via self.loop_deadline: an estimate of when the loop
+        # will actually finish, accounting for the fact that the last cycle
+        # it starts always runs to completion rather than being aborted
+        # mid-well, so a countdown to duration_s itself would necessarily
+        # read as an already-predictable overrun near the end. Falls back
+        # to the raw deadline if no motion profile is cached to estimate
+        # from (matches run()'s own ETA behavior in that situation).
+        deadline = loop_start + timedelta(seconds=float(duration_s))
         interval_s = float(interval_s)
+        estimate = self.estimate_cycle_duration_s(
+            positions, delay_per_well, mode, image_format, use_laser,
+            pre_duration, laser_on_duration, post_duration,
+        )
+        if estimate is not None:
+            pass_s, _ = estimate
+            finish_s = estimate_loop_finish_s(pass_s, interval_s, float(duration_s))
+            self.loop_deadline = loop_start + timedelta(seconds=finish_s)
+        else:
+            self.loop_deadline = deadline
 
         def _write_manifest_record(mf, record: dict) -> None:
             mf.write(json.dumps(record) + "\n")
