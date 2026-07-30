@@ -332,7 +332,22 @@ class ExperimentPanel(QWidget):
         browse_btn.setFixedWidth(70)
         browse_btn.clicked.connect(self._browse_output_dir)
         out_row.addWidget(browse_btn)
-        layout.addLayout(out_row, row, 1)
+        layout.addLayout(out_row, row, 1); row += 1
+
+        # Live estimate of one pass's duration -- recomputed as well
+        # selection, calibration, mode, or timing settings change. Shared
+        # by loop mode (which adds its own cycle-count line, see
+        # _build_loop_group()) and plain single-run experiments alike, so
+        # it lives here rather than inside the Loop Mode group.
+        self.pass_estimate_lbl = QLabel("")
+        self.pass_estimate_lbl.setWordWrap(True)
+        self.pass_estimate_lbl.setStyleSheet("font-style: italic; color: #555; font-size: 10px;")
+        layout.addWidget(self.pass_estimate_lbl, row, 0, 1, 2); row += 1
+
+        self._pass_estimate_timer = QTimer(self)
+        self._pass_estimate_timer.setSingleShot(True)
+        self._pass_estimate_timer.setInterval(400)
+        self._pass_estimate_timer.timeout.connect(self._recompute_pass_estimate)
 
         return grp
 
@@ -391,19 +406,14 @@ class ExperimentPanel(QWidget):
         self.loop_duration_h_spin.setValue(1)  # default: 1 hour, matches run_loop()'s duration_s default
         layout.addWidget(self.loop_duration_row, row, 1); row += 1
 
-        # Live estimate of one pass's duration (and, given interval/duration,
-        # roughly how many cycles will fit) -- recomputed as well selection,
-        # calibration, mode, or timing settings change. See
+        # Cycle-count estimate given the shared per-pass estimate (Experiment
+        # Settings group, below Output folder) plus this loop's own
+        # interval/duration -- recomputed alongside that estimate, see
         # _recompute_pass_estimate() / _schedule_pass_estimate().
-        self.pass_estimate_lbl = QLabel("")
-        self.pass_estimate_lbl.setWordWrap(True)
-        self.pass_estimate_lbl.setStyleSheet("font-style: italic; color: #555;")
-        layout.addWidget(self.pass_estimate_lbl, row, 0, 1, 2); row += 1
-
-        self._pass_estimate_timer = QTimer(self)
-        self._pass_estimate_timer.setSingleShot(True)
-        self._pass_estimate_timer.setInterval(400)
-        self._pass_estimate_timer.timeout.connect(self._recompute_pass_estimate)
+        self.loop_cycle_count_lbl = QLabel("")
+        self.loop_cycle_count_lbl.setWordWrap(True)
+        self.loop_cycle_count_lbl.setStyleSheet("font-style: italic; color: #555;")
+        layout.addWidget(self.loop_cycle_count_lbl, row, 0, 1, 2); row += 1
 
         self._update_loop_visibility()
         return grp
@@ -560,7 +570,7 @@ class ExperimentPanel(QWidget):
         self.loop_interval_row.setVisible(enabled)
         self.lbl_loop_duration.setVisible(enabled)
         self.loop_duration_row.setVisible(enabled)
-        self.pass_estimate_lbl.setVisible(enabled)
+        self.loop_cycle_count_lbl.setVisible(enabled)
 
     def _update_sel_count(self):
         sel = self.well_grid.selected_count()
@@ -898,15 +908,15 @@ class ExperimentPanel(QWidget):
                     # itself has margin for error — better to flag early.
                     if total_estimate_s >= interval_s * 0.9:
                         logger.warning(
-                            f"Estimated pass duration ({total_estimate_s:.0f}s) is close to "
-                            f"or exceeds the configured interval ({interval_s:.0f}s)."
+                            f"Estimated pass duration ({self._format_hms(total_estimate_s)}) is close "
+                            f"to or exceeds the configured interval ({self._format_hms(interval_s)})."
                         )
                         proceed = QMessageBox.question(
                             self, "Interval may be too short",
                             f"Estimated time for one pass over the selected wells is "
-                            f"~{total_estimate_s:.0f}s, close to or exceeding the "
-                            f"configured interval ({interval_s:.0f}s). If this holds, "
-                            f"cycles will run back-to-back instead of on schedule.\n\n"
+                            f"~{self._format_hms(total_estimate_s)}, close to or exceeding "
+                            f"the configured interval ({self._format_hms(interval_s)}). If "
+                            f"this holds, cycles will run back-to-back instead of on schedule.\n\n"
                             f"Start anyway?",
                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                             QMessageBox.StandardButton.No,
@@ -1016,34 +1026,55 @@ class ExperimentPanel(QWidget):
         # and re-reading the cached motion profile -- on every single event.
         self._pass_estimate_timer.start()
 
+    @staticmethod
+    def _format_hms(total_seconds: float) -> str:
+        """Plain (unsigned) HH:MM:SS -- for a duration, not a countdown."""
+        total = max(0, int(round(total_seconds)))
+        hh, rem = divmod(total, 3600)
+        mm, ss = divmod(rem, 60)
+        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+    @staticmethod
+    def _format_hms_signed(remaining_seconds: float) -> tuple[str, bool]:
+        """Signed HH:MM:SS for a countdown -- returns (text, is_negative)."""
+        sign = "-" if remaining_seconds < 0 else ""
+        return f"{sign}{ExperimentPanel._format_hms(abs(remaining_seconds))}", remaining_seconds < 0
+
     def _recompute_pass_estimate(self):
-        """Live 'estimated time per pass' (and, in loop mode, roughly how
-        many cycles will fit) shown in the Loop Mode group -- recomputed as
-        well selection/calibration/mode/timing settings change. Safe to
-        call this often: estimate_cycle_duration_s() reads the cached
-        motion profile by default, never a fresh one -- see its docstring."""
+        """Live 'estimated time per pass' (Experiment Settings group, below
+        Output folder -- shared by loop mode and plain single-run
+        experiments alike) and, in loop mode, the estimated cycle count
+        (Loop Mode group) -- recomputed as well selection/calibration/
+        mode/timing settings change. Safe to call this often:
+        estimate_cycle_duration_s() reads the cached motion profile by
+        default, never a fresh one -- see its docstring."""
         runner = hw_state.get_runner()
         if runner is None:
             self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
             return
 
         cal_path = self._cal_path_for_estimate()
         if not cal_path:
             self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
             return
         try:
             positions, labels = self._load_cal_positions(cal_path)
         except Exception:
             self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
             return
         if not positions:
             self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
             return
 
         selected = self.well_grid.get_selected_indices()
         filtered_pos = [positions[i] for i in selected if i < len(positions)]
         if not filtered_pos:
             self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
             return
 
         mode_map = {"Image": "image", "Raw Burst": "raw"}
@@ -1057,17 +1088,22 @@ class ExperimentPanel(QWidget):
             self.pass_estimate_lbl.setText(
                 "Estimated time per pass: unavailable (no motion profile cached — connect/home first)"
             )
+            self.loop_cycle_count_lbl.setText("")
             return
 
         pass_s, _ = estimate
-        text = f"Estimated time per pass: ~{pass_s:.0f}s"
+        self.pass_estimate_lbl.setText(f"Estimated time per pass: {self._format_hms(pass_s)}")
+
         if self.loop_enabled_chk.isChecked():
             n_cycles = estimate_loop_cycle_count(
                 pass_s, self._loop_interval_seconds(), self._loop_duration_seconds()
             )
-            if n_cycles > 0:
-                text += f"  (~{n_cycles} cycle{'s' if n_cycles != 1 else ''} in configured duration)"
-        self.pass_estimate_lbl.setText(text)
+            self.loop_cycle_count_lbl.setText(
+                f"~{n_cycles} cycle{'s' if n_cycles != 1 else ''} in configured duration"
+                if n_cycles > 0 else ""
+            )
+        else:
+            self.loop_cycle_count_lbl.setText("")
 
     def _update_eta_label(self):
         runner = hw_state.get_runner()
@@ -1082,22 +1118,18 @@ class ExperimentPanel(QWidget):
             # in-flight cycle runs past it -- expected, a cycle always
             # finishes rather than aborting mid-well.
             remaining = (runner.loop_deadline - datetime.now()).total_seconds()
-            sign = "-" if remaining < 0 else ""
-            total = int(abs(remaining))
-            hh, rem = divmod(total, 3600)
-            mm, ss = divmod(rem, 60)
-            self.eta_lbl.setText(f"ETA: {sign}{hh:02d}:{mm:02d}:{ss:02d}")
+            text, negative = self._format_hms_signed(remaining)
+            self.eta_lbl.setText(f"ETA: {text}")
             self.eta_lbl.setStyleSheet(
-                "font-style: italic; color: #b00020;" if remaining < 0
+                "font-style: italic; color: #b00020;" if negative
                 else "font-style: italic; color: #555;"
             )
         elif runner.eta_finish_time is not None:
             remaining = (runner.eta_finish_time - datetime.now()).total_seconds()
-            sign = "-" if remaining < 0 else ""
-            mm, ss = divmod(int(abs(remaining)), 60)
-            self.eta_lbl.setText(f"ETA: {sign}{mm:02d}:{ss:02d}")
+            text, negative = self._format_hms_signed(remaining)
+            self.eta_lbl.setText(f"ETA: {text}")
             self.eta_lbl.setStyleSheet(
-                "font-style: italic; color: #b00020;" if remaining < 0
+                "font-style: italic; color: #b00020;" if negative
                 else "font-style: italic; color: #555;"
             )
 

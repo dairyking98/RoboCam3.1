@@ -249,6 +249,20 @@ class TestRunLoop:
         for d in cycle_dirs:
             assert list(d.glob("*_points.csv")), f"{d} missing points.csv -- not a normal experiment dir"
 
+    def test_mid_loop_status_says_pass_not_experiment_finished(self, tmp_path):
+        # A per-cycle "Experiment finished" message would misleadingly read
+        # as the whole loop being done while it's actually still looping
+        # (waiting out the interval, or about to start the next cycle).
+        runner = _make_runner(tmp_path)
+        messages = []
+        runner.run_loop(
+            name="wording", positions=[(0, 0, 0)], labels=["A1"],
+            delay_per_well=0.0, mode="image", callback=messages.append,
+            interval_s=0.0, duration_s=1.0,
+        )
+        assert any(m.startswith("Pass ") and m.endswith(" finished.") for m in messages), messages
+        assert not any(m == "Experiment finished." for m in messages), messages
+
     def test_loop_deadline_set_during_run_and_cleared_after(self, tmp_path):
         runner = _make_runner(tmp_path)
         seen_deadline = {}

@@ -1207,7 +1207,17 @@ class ExperimentRunner:
                     f.flush()
 
             if self.running:
-                self.status_msg = "Experiment finished."
+                # Mid-loop, this run() call is just one cycle -- "Experiment
+                # finished" would wrongly read as the whole loop being done
+                # while it's actually just waiting out the interval (or
+                # about to start the next cycle) with self.looping still
+                # True. self.current_cycle is already incremented by
+                # run_loop() before it calls run(), so this reflects the
+                # cycle that just completed.
+                self.status_msg = (
+                    f"Pass {self.current_cycle} finished." if self.looping
+                    else "Experiment finished."
+                )
                 logger.info(self.status_msg)
                 logger.debug(
                     f"Experiment summary: {wells_captured}/{len(positions)} wells captured, "
