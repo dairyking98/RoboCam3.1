@@ -77,6 +77,14 @@ MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 # readback + disk write) used only for the pre-run ETA estimate below.
 IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.3
 
+# Fixed per-move serial round-trip overhead, measured from hardware log
+# timestamps: G90, G0's "queued" ack, and M114 each cost ~0.1s (send +
+# command_delay + wait-for-"ok"), independent of the move's distance or
+# speed. Only M400's wait reflects real physical travel time — this
+# constant covers the other three round-trips the physics-only estimate
+# in _axis_move_time_s()/_estimate_move_time_s() has no way to know about.
+MOVE_COMMAND_OVERHEAD_S = 0.3
+
 
 def _axis_move_time_s(distance_mm: float, max_feed: Optional[float], max_accel: Optional[float]) -> float:
     """Trapezoidal-profile time estimate for one axis covering `distance_mm`,
@@ -111,7 +119,7 @@ def _estimate_move_time_s(
     tx = _axis_move_time_s(end[0] - start[0], profile.get("max_feed_x"), profile.get("max_accel_x"))
     ty = _axis_move_time_s(end[1] - start[1], profile.get("max_feed_y"), profile.get("max_accel_y"))
     tz = _axis_move_time_s(end[2] - start[2], profile.get("max_feed_z"), profile.get("max_accel_z"))
-    return max(tx, ty, tz)
+    return max(tx, ty, tz) + MOVE_COMMAND_OVERHEAD_S
 
 
 def _trim_raw_stack(stack_path: str, frames_captured: int) -> None:
