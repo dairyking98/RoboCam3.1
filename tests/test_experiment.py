@@ -9,7 +9,7 @@ from robocam.experiment import ExperimentRunner, _trim_raw_stack
 
 class _FakeCamera:
     """Minimal stand-in for robocam.camera.Camera -- just enough surface
-    for ExperimentRunner._write_raw_burst() to run against a fixed exposure
+    for ExperimentRunner._capture_raw_burst() to run against a fixed exposure
     and (optionally) a decoupled target fps, without any real hardware."""
 
     def __init__(self, exposure_us=10_000, target_fps=None, resolution=(4, 4)):
@@ -118,10 +118,12 @@ class TestTargetFpsPacing:
         monkeypatch.chdir(tmp_path)
         runner = ExperimentRunner(motion_controller=None, camera=camera)
         runner.running = True
-        return runner._write_raw_burst(
+        burst_meta, finalize_ctx = runner._capture_raw_burst(
             output_dir=str(tmp_path), label="A1", timestamp="t",
             total_duration_s=duration_s,
         )
+        runner._finalize_raw_burst(finalize_ctx)
+        return burst_meta
 
     def test_uncapped_when_no_target_fps_set(self, tmp_path, monkeypatch):
         # 1ms exposure -> ~1000fps ceiling; no target fps -> capture as fast

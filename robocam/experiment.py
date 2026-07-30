@@ -294,7 +294,7 @@ class ExperimentRunner:
     # ------------------------------------------------------------------
     # Internal: max-rate raw burst writer
     # ------------------------------------------------------------------
-    def _write_raw_burst(
+    def _capture_raw_burst(
         self,
         output_dir: str,
         label: str,
@@ -304,11 +304,18 @@ class ExperimentRunner:
         laser_on_s: float = 0.0,
         laser_start_s: float = 0.0,
         bit_depth: int = 8,
-    ) -> dict:
+    ) -> Tuple[dict, dict]:
         """
         Capture raw sensor frames as fast as possible for `total_duration_s`
         seconds, stacking them into one `<label>_<timestamp>_stack.npy`
-        memory-mapped array `(n_frames, H, W)`. Returns a metadata dict.
+        memory-mapped array `(n_frames, H, W)`. Returns `(burst_meta,
+        finalize_ctx)` — burst_meta is complete and ready to use (write to
+        JSON, log, etc.) the moment this returns; finalize_ctx must be
+        passed to _finalize_raw_burst() afterward to actually drain the
+        writer thread and trim the file to its final size, but none of
+        burst_meta depends on that having happened yet, so the caller is
+        free to run it in the background (see _finalize_raw_burst's
+        docstring for why that matters).
 
         Capture (this thread, the producer) and disk writes (a separate
         writer thread, the consumer) are decoupled by a bounded queue, so a
@@ -512,22 +519,20 @@ class ExperimentRunner:
                     "frame_index": frame_idx,
                 })
             # Drain: signal no more frames, then wait for every already-queued
-            # frame to actually be written before returning — never lose an
-            # already-captured frame, whether stopped normally or by the user.
+            # frame to actually be written into the stack array before
+            # returning — never lose an already-captured frame, whether
+            # stopped normally or by the user. Kept synchronous (unlike the
+            # flush+trim below): writing rows into the mmap and appending to
+            # frames_saved/the jsonl sidecar is cheap now that there's no
+            # periodic stack.flush() left in the writer's loop to slow it
+            # down, and burst_meta below needs frames_saved/frame_idx to be
+            # fully complete, not whatever's landed so far.
             frame_queue.put(None)
             writer_thread.join()
 
-        # Close the memmap before truncating its backing file below — the
-        # writer thread already flushed it in its own finally block, but the
-        # mmap object (kept alive by the writer thread's closure) must be
-        # closed first or a truncate here could race a lingering mapping.
-        stack.flush()
-        stack._mmap.close()
-        _trim_raw_stack(stack_path, frame_idx)
-
         duration_actual = time.perf_counter() - start
         capture_stats = self.camera.get_capture_stats()
-        return {
+        burst_meta = {
             "frames_captured": frame_idx,
             "frames_file": stack_filename,
             "duration_requested_s": round(total_duration_s, 3),
@@ -540,6 +545,49 @@ class ExperimentRunner:
             "queue_full_stalls": stall_count,
             "queue_full_stall_s_total": round(stall_s_total, 6),
         }
+        finalize_ctx = {
+            "label": label,
+            "stack": stack,
+            "stack_path": stack_path,
+            "frame_idx": frame_idx,
+        }
+        return burst_meta, finalize_ctx
+
+    def _finalize_raw_burst(self, finalize_ctx: dict) -> None:
+        """Flushes and trims a raw burst's memory-mapped stack file down to
+        its real frame count. Safe to run in a background thread after the
+        caller has already moved on to the next well — none of burst_meta
+        (already returned by _capture_raw_burst) depends on this having
+        completed, only run() itself returning does (see the pending_finalize
+        handling there). This is deliberately the *only* part deferred, not
+        the queue-drain in _capture_raw_burst's finally: block, because it's
+        the expensive part: a standalone test confirmed mmap.flush() does not
+        release the GIL for its blocking msync duration (a spin-loop thread's
+        throughput dropped to ~9% of normal while a different thread called
+        flush() on a large mmap) — see DISK_CHECK_EVERY_N_FRAMES's comment
+        for the full investigation. Logs and swallows its own errors rather
+        than raising, since nothing is left synchronously waiting to catch
+        an exception from a background thread — check the experiment log."""
+        label = finalize_ctx["label"]
+        stack = finalize_ctx["stack"]
+        stack_path = finalize_ctx["stack_path"]
+        frame_idx = finalize_ctx["frame_idx"]
+        finalize_start = time.perf_counter()
+        try:
+            # Close the memmap before truncating its backing file below —
+            # the writer thread already wrote every row (in
+            # _capture_raw_burst's finally: block), but the mmap object must
+            # be flushed and closed first or a truncate here could race a
+            # lingering mapping.
+            stack.flush()
+            stack._mmap.close()
+            _trim_raw_stack(stack_path, frame_idx)
+            logger.info(
+                f"[{label}] Finalize (flush + trim) took "
+                f"{time.perf_counter() - finalize_start:.3f}s"
+            )
+        except Exception as e:
+            logger.error(f"[{label}] Raw-burst finalize failed: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # Main experiment loop
@@ -671,6 +719,12 @@ class ExperimentRunner:
                 wells_captured = 0
                 total_capture_failures = {"lock_timeout": 0, "sdk_timeout_or_error": 0}
                 total_dropped_frames = 0
+                # Previous well's raw-burst finalize (flush + trim), still
+                # running in the background — bounded to at most one in
+                # flight at a time, joined right before starting the next
+                # one so it overlaps with this well's move/dwell/capture
+                # instead of blocking on it. See _finalize_raw_burst().
+                pending_finalize: Optional[threading.Thread] = None
 
                 for i, (pos, label) in enumerate(zip(positions, labels)):
                     if not self.running:
@@ -778,7 +832,7 @@ class ExperimentRunner:
 
                     if mode == "raw":
                         # Burst of raw frames stacked into one .npy array in raw/ subdir
-                        burst_meta = self._write_raw_burst(
+                        burst_meta, finalize_ctx = self._capture_raw_burst(
                             raw_dir, label, timestamp, total_duration,
                             laser_controller=laser_controller,
                             laser_on_s=float(laser_on_duration),
@@ -786,15 +840,10 @@ class ExperimentRunner:
                             bit_depth=int(cam_meta.get("bit_depth", 8)),
                         )
                         capture_call_s = time.perf_counter() - capture_call_start
-                        # duration_actual_s covers only up to when the recording loop
-                        # itself decides it's done — the gap to capture_call_s is
-                        # everything after: writer-thread drain/join, memmap flush
-                        # and close, and _trim_raw_stack()'s truncate.
-                        finalize_s = capture_call_s - burst_meta["duration_actual_s"]
                         logger.info(
-                            f"[{label}] Capture took {capture_call_s:.3f}s total "
-                            f"(recording {burst_meta['duration_actual_s']:.3f}s, "
-                            f"finalize {finalize_s:.3f}s)"
+                            f"[{label}] Capture took {capture_call_s:.3f}s "
+                            f"(recording {burst_meta['duration_actual_s']:.3f}s) — "
+                            f"finalize (flush + trim) running in the background"
                         )
                         capture_name = f"raw/{burst_meta['frames_file']} ({burst_meta['frames_captured']} frames)"
                         meta_path = os.path.join(raw_dir, f"{label}_{timestamp}_metadata.json")
@@ -819,6 +868,18 @@ class ExperimentRunner:
                             f"queue_full_stalls={burst_meta['queue_full_stalls']} "
                             f"({burst_meta['queue_full_stall_s_total']:.3f}s total)"
                         )
+
+                        # Bounded to one in flight: wait for the *previous*
+                        # well's finalize before starting this one's, so it
+                        # overlaps with whatever move/dwell/capture time this
+                        # well already took above instead of piling up
+                        # unbounded background threads.
+                        if pending_finalize is not None:
+                            pending_finalize.join()
+                        pending_finalize = threading.Thread(
+                            target=self._finalize_raw_burst, args=(finalize_ctx,), daemon=True
+                        )
+                        pending_finalize.start()
 
                     else:
                         # Standard still image
@@ -860,6 +921,13 @@ class ExperimentRunner:
             if callback:
                 callback(self.status_msg)
         finally:
+            # The experiment isn't really done until the last well's raw
+            # burst is actually flushed and trimmed to disk, even though
+            # run() itself has otherwise finished (or errored, or been
+            # stopped) — wait for it here rather than leaving a dangling
+            # background thread when this method returns.
+            if "pending_finalize" in locals() and pending_finalize is not None:
+                pending_finalize.join()
             if "laser_controller" in locals() and laser_controller:
                 laser_controller.disconnect()
             self.running = False
