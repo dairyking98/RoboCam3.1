@@ -57,30 +57,30 @@ STALE_FRAME_MAX_DISCARDS = 6
 RAW_BURST_FPS_MARGIN = 1.3
 RAW_BURST_FRAME_BUFFER = 50
 
-# How often (in frames) the writer thread flushes the memmap to disk and
-# checks free space. Piggybacks one cadence for both instead of a separate
-# timer.
+# How often (in frames) the writer thread checks free disk space.
 #
-# A high-fps/high-res hardware run showed periodic stalls at exactly this
-# cadence (13 stalls of ~142ms at 30, 3 stalls of ~468ms after bumping to
-# 100 as a direct test — confirmed: the period shifted exactly to match).
-# But the stall duration scaled proportionally with the cadence (~3.3x
-# frames -> ~3.3x stall time), so total stalled time barely changed
-# (~1.85s -> ~1.40s) and fps didn't meaningfully improve — batching less
-# often just trades many small pauses for fewer, longer ones. Reverted to
-# 30 since 100 bought nothing; see the flush/disk_usage timing added in
-# _writer() below for the next diagnostic step (disk bandwidth was ruled
-# out — 292MB/s measured vs. ~155MB/s actually demanded).
-MEMMAP_FLUSH_EVERY_N_FRAMES = 30
+# Used to periodically call stack.flush() here too, on the same cadence.
+# Removed: a high-fps/high-res hardware run showed periodic stalls at
+# exactly this cadence (13 stalls of ~142ms at 30, 3 stalls of ~468ms
+# after bumping to 100 as a direct test — confirmed, the period shifted
+# exactly to match). Tuning the cadence didn't help (stall duration scaled
+# proportionally with it, so total stalled time barely changed), and a
+# standalone GIL test proved why: mmap.flush() doesn't release the GIL for
+# its blocking msync duration, so it stalls the whole process regardless
+# of which thread calls it — not fixable by moving it to a background
+# thread. Disk bandwidth was independently ruled out (292MB/s measured
+# vs. ~155MB/s actually demanded), so this was pure flush-call latency.
+# Now relies on the kernel's own background dirty-page writeback instead
+# of forcing periodic syncs — see the trade-off note in _writer() below.
+DISK_CHECK_EVERY_N_FRAMES = 30
 
-# Safety floor checked against shutil.disk_usage(...).free on the same
-# cadence as the periodic flush above. A memory-mapped write that runs out
-# of backing disk space raises SIGBUS, not a catchable Python exception —
-# unlike a plain np.save() failing with a catchable OSError. Aborting
-# cleanly well before actually hitting ENOSPC via the mmap fault path is the
-# only way to keep this failure mode inside the writer_failed/RuntimeError
-# path already built for other writer failures, instead of crashing the
-# whole process.
+# Safety floor checked against shutil.disk_usage(...).free on the cadence
+# above. A memory-mapped write that runs out of backing disk space raises
+# SIGBUS, not a catchable Python exception — unlike a plain np.save()
+# failing with a catchable OSError. Aborting cleanly well before actually
+# hitting ENOSPC via the mmap fault path is the only way to keep this
+# failure mode inside the writer_failed/RuntimeError path already built
+# for other writer failures, instead of crashing the whole process.
 MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 
 # Rough per-well overhead for still-image capture (Image mode has no fixed
@@ -385,29 +385,13 @@ class ExperimentRunner:
                         jf.write(json.dumps(record) + "\n")
                         jf.flush()
                         n_written += 1
-                        if n_written % MEMMAP_FLUSH_EVERY_N_FRAMES == 0:
-                            # Diagnostic timing (temporary): a high-fps/high-res
-                            # hardware run showed periodic stalls at exactly this
-                            # cadence, scaling proportionally with
-                            # MEMMAP_FLUSH_EVERY_N_FRAMES — but disk write
-                            # bandwidth was ruled out (measured 292MB/s vs.
-                            # ~155MB/s actually demanded), so timing each call
-                            # separately to find which one is really costing
-                            # the time instead of continuing to infer it from
-                            # black-box frame timestamps.
-                            flush_start = time.perf_counter()
-                            stack.flush()
-                            flush_s = time.perf_counter() - flush_start
-
-                            disk_check_start = time.perf_counter()
+                        if n_written % DISK_CHECK_EVERY_N_FRAMES == 0:
+                            # No periodic stack.flush() here anymore — see
+                            # DISK_CHECK_EVERY_N_FRAMES above for why. The one
+                            # remaining stack.flush() is in the finally: block
+                            # below, guaranteeing durability once the burst
+                            # completes normally.
                             free = shutil.disk_usage(output_dir).free
-                            disk_check_s = time.perf_counter() - disk_check_start
-
-                            logger.info(
-                                f"[{label}] Writer flush at frame {n_written}: "
-                                f"stack.flush() took {flush_s:.3f}s, "
-                                f"disk_usage() took {disk_check_s:.3f}s"
-                            )
                             if free < MIN_FREE_DISK_BYTES:
                                 raise OSError(
                                     f"Only {free} bytes free in {output_dir}, "
