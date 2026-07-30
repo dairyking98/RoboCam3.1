@@ -566,6 +566,18 @@ class MotionController:
         return self._homed
 
     @property
+    def command_delay(self) -> Optional[float]:
+        """The backend's per-gcode-command blind-wait setting, if it has
+        one (MarlinBackend only — Klipper's HTTP calls and the simulated
+        backend have no equivalent). None here means "not applicable to
+        this backend", not "unknown Marlin value" — MarlinBackend always
+        sets one. Used by ExperimentRunner to derive the move-time
+        estimate's fixed per-move overhead directly from the real
+        configured value instead of a hardcoded constant that goes stale
+        whenever this setting changes."""
+        return getattr(self.backend, "command_delay", None)
+
+    @property
     def X(self): return self.backend.X
     @property
     def Y(self): return self.backend.Y

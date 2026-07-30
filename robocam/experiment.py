@@ -77,20 +77,27 @@ MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 # readback + disk write) used only for the pre-run ETA estimate below.
 IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.3
 
-# Fixed per-move serial round-trip overhead: every move is 3 command/ack
-# round-trips that have nothing to do with physical travel — G90, G0's
-# "queued" ack, and M114 — each costing ~SERIAL_ROUNDTRIP_S (send +
-# command_delay + wait-for-"ok"), measured from hardware log timestamps.
-# Only M400's wait reflects real physical travel time. Framed as
-# round-trip count x per-trip cost, not one flat number, so this stays
-# correct if a future change adds/removes a round-trip from the move
-# sequence (e.g. this bit us once already — see the fix that removed a
-# redundant post-move update_position() call from several UI handlers;
-# ExperimentRunner's own well loop never had that extra call, so this
-# constant — derived from real experiment-run logs — was never
-# contaminated by it).
-SERIAL_ROUNDTRIP_S = 0.1
-MOVE_COMMAND_OVERHEAD_S = 3 * SERIAL_ROUNDTRIP_S
+# Every move is 3 command/ack round-trips that have nothing to do with
+# physical travel — G90, G0's "queued" ack, and M114 — each blocked on
+# MarlinBackend.command_delay (send + blind sleep + wait-for-"ok"; see
+# motion.py). Only M400's wait reflects real physical travel time.
+# Derived as round-trip count x the *actual configured* per-trip cost
+# (read from the live MotionController at estimate time — see
+# _move_overhead_s() below) rather than a hardcoded constant, so this
+# self-corrects if command_delay is ever tuned again instead of going
+# stale (it already did once: command_delay dropped from 0.1 to 0.02
+# after hardware logs showed it was ~the entire round-trip cost).
+GCODE_CALLS_PER_MOVE = 3
+
+
+def _move_overhead_s(motion) -> float:
+    """Fixed per-move serial round-trip overhead for the ETA estimate,
+    derived from the connected backend's actual command_delay rather
+    than a hardcoded value. 0.0 for backends with no such concept
+    (Klipper's HTTP calls, the simulated backend) — this only applies to
+    MarlinBackend's blind-sleep-per-command pattern."""
+    delay = motion.command_delay
+    return GCODE_CALLS_PER_MOVE * delay if delay else 0.0
 
 
 def _axis_move_time_s(distance_mm: float, max_feed: Optional[float], max_accel: Optional[float]) -> float:
@@ -114,7 +121,8 @@ def _axis_move_time_s(distance_mm: float, max_feed: Optional[float], max_accel: 
 
 
 def _estimate_move_time_s(
-    start: Tuple[float, float, float], end: Tuple[float, float, float], profile: dict
+    start: Tuple[float, float, float], end: Tuple[float, float, float], profile: dict,
+    move_overhead_s: float = 0.0,
 ) -> float:
     """Estimate a coordinated G0 XYZ move's duration from the motion profile.
 
@@ -137,7 +145,7 @@ def _estimate_move_time_s(
     tx = _axis_move_time_s(end[0] - start[0], profile.get("max_feed_x"), profile.get("max_accel_x"))
     ty = _axis_move_time_s(end[1] - start[1], profile.get("max_feed_y"), profile.get("max_accel_y"))
     tz = _axis_move_time_s(end[2] - start[2], profile.get("max_feed_z"), profile.get("max_accel_z"))
-    return max(tx, ty, tz) + MOVE_COMMAND_OVERHEAD_S
+    return max(tx, ty, tz) + move_overhead_s
 
 
 def _trim_raw_stack(stack_path: str, frames_captured: int) -> None:
@@ -558,10 +566,11 @@ class ExperimentRunner:
         move_time_estimates: List[float] = []
         if profile:
             capture_time_est = total_duration if mode == "raw" else IMAGE_CAPTURE_TIME_ESTIMATE_S
+            move_overhead_s = _move_overhead_s(self.motion)
             cur_pos = (self.motion.X, self.motion.Y, self.motion.Z)
             total_estimate_s = 0.0
             for pos in positions:
-                move_est = _estimate_move_time_s(cur_pos, pos, profile)
+                move_est = _estimate_move_time_s(cur_pos, pos, profile, move_overhead_s)
                 move_time_estimates.append(move_est)
                 total_estimate_s += move_est
                 total_estimate_s += float(delay_per_well)
