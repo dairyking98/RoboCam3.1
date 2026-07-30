@@ -89,6 +89,12 @@ class _FakeMotion:
             "max_feed_z": 20.0, "max_accel_z": 100.0,
         }
 
+    def get_cached_profile(self):
+        # estimate_cycle_duration_s() reads the cache by default (see its
+        # docstring) rather than triggering a live read -- mirror
+        # MotionController's real behavior (cache == last-read profile).
+        return self.read_profiles()
+
 
 def _make_stack(path, ceiling, real, h=8, w=10, dtype=np.uint8, fill=None):
     stack = np.lib.format.open_memmap(str(path), mode="w+", dtype=dtype, shape=(ceiling, h, w))
@@ -412,6 +418,29 @@ class TestEstimateCycleDuration:
         assert result is not None
         total_s, _ = result
         assert total_s > 1.0
+
+    def test_default_path_never_calls_read_profiles(self, tmp_path):
+        # run() calls this once per cycle in loop mode -- profile=None (the
+        # default) must go through the cache (get_cached_profile()), never
+        # a fresh read_profiles() call, or a multi-day loop would hammer
+        # the printer with hundreds of unnecessary M503 round-trips.
+        class _AssertNoLiveRead(_FakeMotion):
+            def read_profiles(self):
+                raise AssertionError("read_profiles() must not be called by the default path")
+
+            def get_cached_profile(self):
+                # Must NOT delegate to read_profiles() -- that's the whole
+                # point of a cache: available with zero hardware I/O.
+                return {
+                    "max_feed_x": 100.0, "max_accel_x": 500.0,
+                    "max_feed_y": 100.0, "max_accel_y": 500.0,
+                    "max_feed_z": 20.0, "max_accel_z": 100.0,
+                }
+
+        motion = _AssertNoLiveRead(supports_profiles=True)
+        runner = _make_runner(tmp_path, motion=motion)
+        result = runner.estimate_cycle_duration_s([(10.0, 0.0, 0.0)], delay_per_well=1.0, mode="image")
+        assert result is not None
 
 
 class TestEstimateLoopCycleCount:

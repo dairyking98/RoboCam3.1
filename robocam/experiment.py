@@ -551,15 +551,16 @@ class ExperimentRunner:
         per_well_move_estimates) -- the latter is what run()'s per-well
         loop logs each move's actual time against.
 
-        `profile`: pass an already-known profile (e.g.
-        MotionController.get_cached_profile()) to skip querying the
-        backend entirely -- read_profiles() is a real M503 serial
-        round-trip on Marlin (up to a 15s timeout), far too slow for a
-        caller that wants to recompute this on every UI change (e.g. a
-        live "estimated time per pass" display as wells/settings change).
-        Leave as None (the default) for a fresh read, which is what run()
-        itself does -- appropriate there since it's called once per
-        experiment start, not repeatedly.
+        `profile`: pass an already-known profile (e.g. a value read once
+        by the caller) to use it directly. Leave as None (the default) to
+        use MotionController.get_cached_profile() -- the profile cached at
+        connect() / last apply_profiles() call, with zero hardware I/O.
+        Nothing calls this with profile=None expecting a *fresh* read
+        anymore: run() calls it once per cycle in loop mode, so a live
+        M503 serial round-trip here would mean hundreds of unnecessary
+        gcode round-trips over a multi-day loop. The one place a genuinely
+        live read belongs is the Motion Profiles tab's explicit "Read"
+        button, which calls MotionController.read_profiles() directly.
         """
         mode = (mode or "image").lower()
         if use_laser:
@@ -568,11 +569,16 @@ class ExperimentRunner:
             total_duration = float(pre_duration)
 
         if profile is None:
-            try:
-                profile = self.motion.read_profiles() if self.motion.supports_profiles else {}
-            except Exception as e:
-                logger.warning(f"[Experiment] Could not read motion profile for time estimate: {e}")
-                profile = {}
+            # Trust the cache (populated at connect() and refreshed on
+            # apply_profiles()) rather than issuing a fresh read here -- a
+            # real M503 serial round-trip on Marlin. run() calls this once
+            # per cycle in loop mode, so a live query here would mean
+            # hundreds of unnecessary gcode round-trips over a multi-day
+            # loop. The one place a live read belongs is the Motion
+            # Profiles tab's explicit "Read" button
+            # (ui/motion_profiles_panel.py's _ReadThread), a deliberate,
+            # occasional user action -- not this automatic path.
+            profile = self.motion.get_cached_profile() if self.motion.supports_profiles else {}
 
         if not profile:
             return None

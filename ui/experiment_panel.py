@@ -1019,10 +1019,9 @@ class ExperimentPanel(QWidget):
     def _recompute_pass_estimate(self):
         """Live 'estimated time per pass' (and, in loop mode, roughly how
         many cycles will fit) shown in the Loop Mode group -- recomputed as
-        well selection/calibration/mode/timing settings change. Uses
-        MotionController.get_cached_profile() rather than read_profiles(),
-        which would be a real M503 serial round-trip (up to 15s) on every
-        single UI change -- see estimate_cycle_duration_s()'s profile= doc."""
+        well selection/calibration/mode/timing settings change. Safe to
+        call this often: estimate_cycle_duration_s() reads the cached
+        motion profile by default, never a fresh one -- see its docstring."""
         runner = hw_state.get_runner()
         if runner is None:
             self.pass_estimate_lbl.setText("")
@@ -1049,12 +1048,10 @@ class ExperimentPanel(QWidget):
 
         mode_map = {"Image": "image", "Raw Burst": "raw"}
         mode = mode_map.get(self.mode_combo.currentText(), "image")
-        profile = runner.motion.get_cached_profile() if runner.motion else {}
         estimate = runner.estimate_cycle_duration_s(
             filtered_pos, self.dwell_spin.value(), mode,
             self.img_fmt_combo.currentText(), self.use_laser_chk.isChecked(),
             self.duration_spin.value(), self.laser_on_spin.value(), self.post_spin.value(),
-            profile=profile,
         )
         if estimate is None:
             self.pass_estimate_lbl.setText(
