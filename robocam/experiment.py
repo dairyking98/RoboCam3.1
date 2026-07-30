@@ -394,10 +394,7 @@ class ExperimentRunner:
                         n_written += 1
                         if n_written % DISK_CHECK_EVERY_N_FRAMES == 0:
                             # No periodic stack.flush() here anymore — see
-                            # DISK_CHECK_EVERY_N_FRAMES above for why. The one
-                            # remaining stack.flush() is in the finally: block
-                            # below, guaranteeing durability once the burst
-                            # completes normally.
+                            # DISK_CHECK_EVERY_N_FRAMES above for why.
                             free = shutil.disk_usage(output_dir).free
                             if free < MIN_FREE_DISK_BYTES:
                                 raise OSError(
@@ -409,20 +406,29 @@ class ExperimentRunner:
                 # Record the failure and switch to drain-only mode — the
                 # producer must never block forever on a full queue waiting
                 # for a writer that has died (e.g. disk full, drive unmounted).
+                # Flush here (error path only, NOT a finally: — see below)
+                # so whatever was written before the crash is still durable;
+                # a memmap write that never reached this point could
+                # otherwise be lost to OS page-cache buffering.
                 writer_exc["error"] = e
                 writer_failed.set()
-                while True:
-                    item = frame_queue.get()
-                    if item is None:
-                        return
-            finally:
-                # Whatever was written must be durable even on abort — a
-                # memmap write that never reached this point could otherwise
-                # be lost to OS page-cache buffering.
                 try:
                     stack.flush()
                 except Exception:
                     pass
+                while True:
+                    item = frame_queue.get()
+                    if item is None:
+                        return
+            # Deliberately no finally: stack.flush() here — that was the
+            # actual bug behind a "0 frames queued but unwritten" drain still
+            # taking ~2.5s on hardware: finally: runs on the *normal* return
+            # path too (if item is None: return), so every single burst was
+            # still doing one full, unbatched, GIL-blocking flush right here
+            # regardless of DISK_CHECK_EVERY_N_FRAMES — this was functionally
+            # the same bug the periodic-flush removal was supposed to fix,
+            # just relocated. Normal completion now gets its one flush from
+            # the explicit, backgrounded _finalize_raw_burst() instead.
 
         writer_thread = threading.Thread(target=_writer, daemon=True)
         writer_thread.start()
