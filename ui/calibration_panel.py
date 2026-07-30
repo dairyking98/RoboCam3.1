@@ -863,6 +863,15 @@ class CalibrationPanel(QWidget):
         mc = hw_state.get_motion()
         if not mc:
             return
+        if not mc.is_homed:
+            QMessageBox.warning(
+                self, "Home Required",
+                "The printer has not been homed this session, or the "
+                "steppers were disabled at some point since.\n\n"
+                "Home all axes before jogging — the printer's position "
+                "isn't reliable until then."
+            )
+            return
         step = self._get_step()
         def task():
             mc.move_relative(**{axis.upper(): direction * step})
