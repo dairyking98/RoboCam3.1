@@ -904,7 +904,8 @@ class CalibrationPanel(QWidget):
         if not mc.is_homed:
             QMessageBox.warning(
                 self, "Home Required",
-                "The printer has not been homed this session.\n\n"
+                "The printer has not been homed this session, or the "
+                "steppers were disabled at some point since.\n\n"
                 "Home all axes before navigating to a well or coordinate — "
                 "absolute positions aren't reliable until then."
             )
@@ -933,7 +934,8 @@ class CalibrationPanel(QWidget):
         if not mc.is_homed:
             QMessageBox.warning(
                 self, "Home Required",
-                "The printer has not been homed this session.\n\n"
+                "The printer has not been homed this session, or the "
+                "steppers were disabled at some point since.\n\n"
                 "Home all axes before recording a corner — its absolute "
                 "position isn't reliable until then, and it will be baked "
                 "into every well position derived from this calibration."
