@@ -307,18 +307,9 @@ class CalibrationPanel(QWidget):
 
         # Position display
         pos_row = QHBoxLayout()
-        pos_row.addWidget(QLabel("X:"))
-        self.x_pos_lbl = QLabel("0.00")
-        self.x_pos_lbl.setMinimumWidth(48)
-        pos_row.addWidget(self.x_pos_lbl)
-        pos_row.addWidget(QLabel("Y:"))
-        self.y_pos_lbl = QLabel("0.00")
-        self.y_pos_lbl.setMinimumWidth(48)
-        pos_row.addWidget(self.y_pos_lbl)
-        pos_row.addWidget(QLabel("Z:"))
-        self.z_pos_lbl = QLabel("0.00")
-        self.z_pos_lbl.setMinimumWidth(48)
-        pos_row.addWidget(self.z_pos_lbl)
+        self.pos_lbl = QLabel("X: ---  Y: ---  Z: ---")
+        self.pos_lbl.setStyleSheet("font-family: monospace; color: gray;")
+        pos_row.addWidget(self.pos_lbl)
         pos_row.addStretch()
         layout.addLayout(pos_row, 0, 0, 1, 5)
 
@@ -918,9 +909,11 @@ class CalibrationPanel(QWidget):
     def _update_position_display(self):
         mc = hw_state.get_motion()
         if mc and mc.is_connected:
-            self.x_pos_lbl.setText(f"{mc.X:.2f}")
-            self.y_pos_lbl.setText(f"{mc.Y:.2f}")
-            self.z_pos_lbl.setText(f"{mc.Z:.2f}")
+            self.pos_lbl.setText(f"X: {mc.X:.2f}  Y: {mc.Y:.2f}  Z: {mc.Z:.2f}")
+            self.pos_lbl.setStyleSheet("font-family: monospace; font-weight: bold; color: black;")
+        else:
+            self.pos_lbl.setText("X: ---  Y: ---  Z: ---")
+            self.pos_lbl.setStyleSheet("font-family: monospace; color: gray;")
 
     # ------------------------------------------------------------------
     # Corner calibration

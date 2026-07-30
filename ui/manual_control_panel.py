@@ -611,6 +611,11 @@ class ManualControlPanel(QWidget):
         grp = QGroupBox("Manual G-code Sender")
         layout = QVBoxLayout(grp)
 
+        warning_lbl = QLabel("⚠ WARNING: sends raw G-code directly to the printer. USE AT OWN RISK.")
+        warning_lbl.setStyleSheet("color: #b00020; font-weight: bold;")
+        warning_lbl.setWordWrap(True)
+        layout.addWidget(warning_lbl)
+
         input_row = QHBoxLayout()
         self.gcode_input = QLineEdit()
         self.gcode_input.setPlaceholderText("G-code command…")
