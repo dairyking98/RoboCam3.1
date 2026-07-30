@@ -8,18 +8,6 @@ import sys
 # near-white highlighted-text that makes dropdown items invisible).
 os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 
-_verbose = "--verbose" in sys.argv or "-v" in sys.argv
-_simulate = "--simulate" in sys.argv or "-s" in sys.argv
-
-logging.basicConfig(
-    level=logging.DEBUG if _verbose else logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "robocam.log"), mode="w"),
-    ],
-)
-
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QStyleFactory
@@ -62,6 +50,50 @@ def _apply_palette(app: QApplication) -> None:
 
 
 def main():
+    # Guarded behind __name__ == "__main__" deliberately, not at module top
+    # level: robocam.experiment spawns background subprocesses (see
+    # _finalize_raw_burst_process) using multiprocessing's "spawn" start
+    # method, which re-imports this entry script in every child to
+    # reconstruct its state — Python's own documented reason scripts using
+    # spawn must guard their real work this way. Top-level code here used
+    # to include this exact logging.basicConfig(..., FileHandler(mode="w"))
+    # call, which truncates robocam.log — with that unguarded, every single
+    # spawned finalize subprocess re-truncated the log from scratch,
+    # repeatedly wiping out everything already written (confirmed on
+    # hardware: a 24-well experiment left exactly one surviving log line,
+    # each subprocess's truncate-then-append cycle erasing all before it).
+    verbose = "--verbose" in sys.argv or "-v" in sys.argv
+    simulate = "--simulate" in sys.argv or "-s" in sys.argv
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "robocam.log")
+    # Truncate once, then attach the real handler in append mode -- opening
+    # with mode="w" and keeping that same handle open for the whole session
+    # does NOT set O_APPEND, so this process's file position only ever
+    # advances by what it itself has written. Every _finalize_raw_burst_process
+    # subprocess appends via its own O_APPEND-mode handle (always writes to
+    # the file's true current end, atomically, regardless of what any other
+    # process's fd position thinks), but this process has no way to notice
+    # that the file grew out from under it -- so its next write lands at its
+    # own stale position, which is exactly where the subprocess's line just
+    # went, silently overwriting it. Confirmed on hardware: a finalize
+    # subprocess's "took X.XXXs" line was present in robocam.log right after
+    # its well finished, then vanished once the next experiment's "Starting
+    # experiment..." lines were written past that same byte offset.
+    # Reproduced in isolation too: a long-lived mode="w" parent handle
+    # interleaved with spawned children's mode="a" handles lost 29 of 30
+    # child log lines -- only ever the very last write survives, since
+    # nothing comes after it to overwrite. Opening this handler in mode="a"
+    # instead makes every writer O_APPEND-consistent, so the kernel handles
+    # the ordering atomically and nobody's writes get clobbered.
+    open(log_path, "w").close()
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(log_path, mode="a"),
+        ],
+    )
+
     app = QApplication(sys.argv)
     app.setApplicationName("RoboCam 3.1")
     _apply_palette(app)
@@ -74,7 +106,7 @@ def main():
     _sigint_timer.start(200)
     _sigint_timer.timeout.connect(lambda: None)
 
-    window = MainWindow(simulate=_simulate)
+    window = MainWindow(simulate=simulate)
     window.show()
     sys.exit(app.exec())
 

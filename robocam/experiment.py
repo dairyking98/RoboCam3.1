@@ -1,5 +1,6 @@
 import ast
 import math
+import multiprocessing
 import os
 import time
 import csv
@@ -57,36 +58,95 @@ STALE_FRAME_MAX_DISCARDS = 6
 RAW_BURST_FPS_MARGIN = 1.3
 RAW_BURST_FRAME_BUFFER = 50
 
-# How often (in frames) the writer thread flushes the memmap to disk and
-# checks free space. Piggybacks one cadence for both instead of a separate
-# timer.
+# How often (in frames) the writer thread checks free disk space.
 #
-# A high-fps/high-res hardware run showed periodic stalls at exactly this
-# cadence (13 stalls of ~142ms at 30, 3 stalls of ~468ms after bumping to
-# 100 as a direct test — confirmed: the period shifted exactly to match).
-# But the stall duration scaled proportionally with the cadence (~3.3x
-# frames -> ~3.3x stall time), so total stalled time barely changed
-# (~1.85s -> ~1.40s) and fps didn't meaningfully improve — batching less
-# often just trades many small pauses for fewer, longer ones. Reverted to
-# 30 since 100 bought nothing; see the flush/disk_usage timing added in
-# _writer() below for the next diagnostic step (disk bandwidth was ruled
-# out — 292MB/s measured vs. ~155MB/s actually demanded).
-MEMMAP_FLUSH_EVERY_N_FRAMES = 30
+# Used to periodically call stack.flush() here too, on the same cadence.
+# Removed: a high-fps/high-res hardware run showed periodic stalls at
+# exactly this cadence (13 stalls of ~142ms at 30, 3 stalls of ~468ms
+# after bumping to 100 as a direct test — confirmed, the period shifted
+# exactly to match). Tuning the cadence didn't help (stall duration scaled
+# proportionally with it, so total stalled time barely changed), and a
+# standalone GIL test proved why: mmap.flush() doesn't release the GIL for
+# its blocking msync duration, so it stalls the whole process regardless
+# of which thread calls it — not fixable by moving it to a background
+# thread. Disk bandwidth was independently ruled out (292MB/s measured
+# vs. ~155MB/s actually demanded), so this was pure flush-call latency.
+# Now relies on the kernel's own background dirty-page writeback instead
+# of forcing periodic syncs — see the trade-off note in _writer() below.
+DISK_CHECK_EVERY_N_FRAMES = 30
 
-# Safety floor checked against shutil.disk_usage(...).free on the same
-# cadence as the periodic flush above. A memory-mapped write that runs out
-# of backing disk space raises SIGBUS, not a catchable Python exception —
-# unlike a plain np.save() failing with a catchable OSError. Aborting
-# cleanly well before actually hitting ENOSPC via the mmap fault path is the
-# only way to keep this failure mode inside the writer_failed/RuntimeError
-# path already built for other writer failures, instead of crashing the
-# whole process.
+# Safety floor checked against shutil.disk_usage(...).free on the cadence
+# above. A memory-mapped write that runs out of backing disk space raises
+# SIGBUS, not a catchable Python exception — unlike a plain np.save()
+# failing with a catchable OSError. Aborting cleanly well before actually
+# hitting ENOSPC via the mmap fault path is the only way to keep this
+# failure mode inside the writer_failed/RuntimeError path already built
+# for other writer failures, instead of crashing the whole process.
 MIN_FREE_DISK_BYTES = 500 * 1024 * 1024
 
-# Rough per-well overhead for still-image capture (Image mode has no fixed
+# Per-well overhead for still-image capture (Image mode has no fixed
 # recording duration like raw bursts do — this covers exposure + camera
-# readback + disk write) used only for the pre-run ETA estimate below.
-IMAGE_CAPTURE_TIME_ESTIMATE_S = 0.3
+# readback + cv2.imwrite() encode/write), used only for the pre-run ETA
+# estimate below. History: a pure guess (0.3) until any real hardware
+# numbers existed, then a flat-per-format measurement (jpg/tif/png each
+# their own constant) taken only at 1936x1100 (max resolution) -- both
+# stages are documented in this file's git history. That flat-per-format
+# version still didn't scale with resolution, the same shape of gap
+# RAW_BURST_FINALIZE_BYTES_PER_S had before it became resolution/fps-aware.
+#
+# Two hardware runs per format (1936x1100 and 640x480, 6 wells each) let
+# the per-well cost be split into a resolution-independent fixed part and
+# a per-pixel part (cv2.imwrite()'s actual encode/write cost, which is
+# what should scale with resolution):
+#   tif: 0.1097s @ 1936x1100, 0.0493s @ 640x480 -> fixed=0.0391, per_px=3.31e-8
+#   png: 0.1402s @ 1936x1100, 0.0545s @ 640x480 -> fixed=0.0401, per_px=4.70e-8
+# The two formats' fixed components landed within 2.5% of each other
+# (0.0391 vs 0.0401) despite completely different encoders downstream --
+# consistent with that part being encoder-independent as expected. jpg
+# only has one hardware data point so far (0.055s @ 1936x1100, no
+# low-res run yet); its per-pixel rate is derived from that single point
+# assuming the same shared fixed part, not independently confirmed by two
+# of its own data points like tif/png -- lower confidence, revisit if a
+# low-res jpg run ever happens.
+#
+# That "fixed part" was NOT actually exposure-independent, though -- it
+# still had exposure baked into it, since image mode doesn't log exposure
+# per capture (unlike raw mode's camera_meta.json) and all 5 calibration
+# runs above happened to be taken back-to-back at the same ~33ms exposure
+# (confirmed manually, not from logs). A 200ms exposure would add ~170ms
+# that a flat "fixed part" calibrated at 33ms has no way to account for --
+# same shape of error as every other constant fixed on this branch, just
+# for a variable (exposure) that's actually easy to query live instead of
+# needing another hardware run to characterize. Split further:
+#   IMAGE_CAPTURE_BASE_OVERHEAD_S = fixed_part_measured - 0.033 (the known
+#   exposure at calibration time), averaged over tif/png: 0.0391-0.033=
+#   0.0061, 0.0401-0.033=0.0071 -> avg 0.0066. This is genuinely
+#   exposure-independent (SDK call + readback plumbing only); actual
+#   exposure is now added live from camera.get_exposure() per well instead
+#   of ever being baked into a constant.
+IMAGE_CAPTURE_BASE_OVERHEAD_S = 0.0066
+IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT = {
+    "jpg": 7.24e-9,
+    "jpeg": 7.24e-9,
+    "tif": 3.31e-8,
+    "tiff": 3.31e-8,
+    "png": 4.70e-8,
+}
+
+
+def _estimate_image_capture_time_s(camera, image_format: str) -> float:
+    """Estimate one well's still-image capture time: exposure (queried
+    live, not baked into a constant) + SDK call/readback overhead +
+    cv2.imwrite() encode/write, scaled by resolution and keyed by format
+    -- see IMAGE_CAPTURE_BASE_OVERHEAD_S above for the hardware
+    measurements this is fit from."""
+    w, h = camera.resolution
+    fmt = (image_format or "png").lower().lstrip(".")
+    per_pixel = IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT.get(
+        fmt, IMAGE_CAPTURE_PER_PIXEL_S_BY_FORMAT["png"]
+    )
+    exposure_s = camera.get_exposure() / 1_000_000.0
+    return IMAGE_CAPTURE_BASE_OVERHEAD_S + exposure_s + per_pixel * w * h
 
 # Stale-frame discard loop (see the priming loop in run()) is never zero —
 # even catching up in the minimum "4 discard reads" case seen on hardware
@@ -105,6 +165,52 @@ FRAME_PRIMING_ESTIMATE_S = 0.044
 # and ~0.0455s average across two 24-well hardware runs. Raw mode only —
 # Image mode has no analogous "requested duration" to overrun.
 RAW_BURST_OVERRUN_S = 0.046
+
+# Every well's raw-burst finalize (flush + trim) runs in a background
+# process overlapped with the *next* well's move/dwell/capture — except
+# the very last well, which has no next well to overlap with. Its finalize
+# can only be waited out at the tail end (run()'s finally: block joins it
+# before returning), so it's a real, unavoidable addition to total
+# wall-clock time that every other well's finalize isn't. Without this,
+# the ETA undercounts the true finish time by however long that flush
+# takes: the UI's "done" signal only fires once run() actually returns
+# (see _ExperimentThread), which is after this wait, so the countdown was
+# observed ticking past zero into the negative by close to that amount on
+# hardware. Raw mode only — Image mode has no finalize step at all.
+#
+# This isn't a fixed cost — stack.flush()'s msync duration scales with how
+# many bytes are dirty, i.e. the stack's *preallocated* size (max_frames x
+# resolution x bit depth), not the resolution/fps-independent flat value
+# this used to be. A 1024x768 short burst and a 1936x1100x125fps burst do
+# not take the same time to flush. See _estimate_finalize_time_s() below,
+# calibrated from the one hardware run this used to be hardcoded from: a
+# 1936x1100 8-bit stack preallocated to 862 frames (5.0s x 125fps x
+# RAW_BURST_FPS_MARGIN + RAW_BURST_FRAME_BUFFER) = ~1836MB, measured
+# flushing in 2.487s -> ~738MB/s. Rounded down to 700MB/s for a slight
+# conservative bias, since an ETA that undercounts (goes negative on
+# screen) is the more confusing failure mode of the two — see the comment
+# above about the countdown ticking past zero being the original bug
+# report this whole estimate exists to fix.
+RAW_BURST_FINALIZE_BYTES_PER_S = 700_000_000
+
+
+def _estimate_finalize_time_s(camera, total_duration_s: float, bit_depth: int) -> float:
+    """Estimate the last well's raw-burst finalize (flush + trim) time,
+    scaled by the preallocated stack size. Mirrors _capture_raw_burst()'s
+    own max_frames formula exactly, since that's what actually determines
+    how many bytes the background finalize process's stack.flush() has to
+    write out — resolution and fps both change that size, so both need to
+    feed into the ETA, not just a flat constant measured at one particular
+    resolution/fps combination."""
+    w, h = camera.resolution
+    exposure_us = camera.get_exposure()
+    fps_ceiling_est = 1_000_000.0 / exposure_us
+    target_fps = camera.get_target_fps()
+    paced_fps_est = min(fps_ceiling_est, target_fps) if target_fps else fps_ceiling_est
+    max_frames = int(total_duration_s * paced_fps_est * RAW_BURST_FPS_MARGIN) + RAW_BURST_FRAME_BUFFER
+    itemsize = 1 if bit_depth <= 8 else 2
+    preallocated_bytes = max_frames * h * w * itemsize
+    return preallocated_bytes / RAW_BURST_FINALIZE_BYTES_PER_S
 
 # Every move is 3 command/ack round-trips that have nothing to do with
 # physical travel — G90, G0's "queued" ack, and M114 — each blocked on
@@ -248,6 +354,74 @@ def _trim_raw_stack(stack_path: str, frames_captured: int) -> None:
         f.truncate(data_offset + frames_captured * row_bytes)
 
 
+def _finalize_raw_burst_process(stack_path: str, frame_idx: int, label: str) -> None:
+    """Flushes and trims a raw burst's memory-mapped stack file down to its
+    real frame count. Runs in a separate OS *process*, not a thread — a
+    thread-based version was tried first and confirmed not to work: a
+    standalone test showed mmap.flush() does not release the GIL for its
+    blocking msync duration (a spin-loop thread's throughput dropped to
+    ~9% of normal while a different thread called flush() on a large
+    mmap), and hardware logs confirmed the practical effect — the "next
+    well" logging and motion calls on the main thread stalled for close to
+    the full flush duration, not just its I/O-bound portion, so the
+    intended overlap with the next well's move/dwell never actually
+    happened. A separate process has its own GIL, so this call blocking
+    itself has zero effect on the parent process.
+
+    Deliberately takes plain, picklable arguments (a path, an int, a
+    string) rather than the memmap object _capture_raw_burst() already has
+    — multiprocessing can't meaningfully share a live mmap object across
+    the process boundary anyway, and re-opening the file here is exactly
+    as correct: mmap's underlying page cache is shared per-inode across
+    every process that maps the same file, not per-mapping, so flushing
+    this independent mapping still persists whatever the parent process
+    already wrote (via its own, already-closed mapping — see
+    _capture_raw_burst's finally: block) before calling this.
+
+    Uses the `spawn` start method (forced by the caller's process context,
+    not this function) rather than the Linux default `fork` — this process
+    controls live hardware (a serial connection to the printer, camera SDK
+    handles, laser GPIO), and fork() would duplicate the *entire* parent
+    memory space into the child, including all of that, which risks the
+    child process's exit/cleanup interfering with the parent's still-live
+    connections. spawn starts a fresh interpreter with none of that
+    inherited, at the cost of a slower start than fork's near-instant
+    copy-on-write — an acceptable trade given this call already costs
+    multiple seconds regardless.
+
+    Logs and swallows its own errors rather than raising, since nothing is
+    left synchronously waiting to catch an exception from a background
+    process — check the experiment log.
+
+    spawn also means this process does NOT inherit the app's logging
+    setup (that's top-level code in robocam31.py's entry script, which
+    spawn — unlike fork — never re-runs; it only re-imports this specific
+    module). Without attaching a handler here, these log lines would
+    silently go nowhere instead of into robocam.log. Uses append mode
+    deliberately: the app's own setup opens robocam.log with mode="w"
+    (truncate) once at startup — reusing that here would wipe out
+    everything already logged the moment this child creates the handler."""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_path = os.path.join(project_root, "robocam.log")
+    handler = logging.FileHandler(log_path, mode="a")
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+    finalize_start = time.perf_counter()
+    try:
+        stack = np.lib.format.open_memmap(stack_path, mode="r+")
+        stack.flush()
+        stack._mmap.close()
+        _trim_raw_stack(stack_path, frame_idx)
+        logger.info(
+            f"[{label}] Finalize (flush + trim, subprocess) took "
+            f"{time.perf_counter() - finalize_start:.3f}s"
+        )
+    except Exception as e:
+        logger.error(f"[{label}] Raw-burst finalize failed: {e}", exc_info=True)
+
+
 class ExperimentRunner:
     """
     Experiment Runner for RoboCam 3.1.
@@ -294,7 +468,7 @@ class ExperimentRunner:
     # ------------------------------------------------------------------
     # Internal: max-rate raw burst writer
     # ------------------------------------------------------------------
-    def _write_raw_burst(
+    def _capture_raw_burst(
         self,
         output_dir: str,
         label: str,
@@ -304,11 +478,18 @@ class ExperimentRunner:
         laser_on_s: float = 0.0,
         laser_start_s: float = 0.0,
         bit_depth: int = 8,
-    ) -> dict:
+    ) -> Tuple[dict, dict]:
         """
         Capture raw sensor frames as fast as possible for `total_duration_s`
         seconds, stacking them into one `<label>_<timestamp>_stack.npy`
-        memory-mapped array `(n_frames, H, W)`. Returns a metadata dict.
+        memory-mapped array `(n_frames, H, W)`. Returns `(burst_meta,
+        finalize_ctx)` — burst_meta is complete and ready to use (write to
+        JSON, log, etc.) the moment this returns; the writer thread has
+        already been fully drained by then too. finalize_ctx just needs to
+        be passed to _finalize_raw_burst_process() afterward to flush and
+        trim the file to its final size — the one remaining expensive step,
+        safe to run in the background (see that function's docstring for
+        why it needs to be a separate process, not a thread).
 
         Capture (this thread, the producer) and disk writes (a separate
         writer thread, the consumer) are decoupled by a bounded queue, so a
@@ -385,29 +566,10 @@ class ExperimentRunner:
                         jf.write(json.dumps(record) + "\n")
                         jf.flush()
                         n_written += 1
-                        if n_written % MEMMAP_FLUSH_EVERY_N_FRAMES == 0:
-                            # Diagnostic timing (temporary): a high-fps/high-res
-                            # hardware run showed periodic stalls at exactly this
-                            # cadence, scaling proportionally with
-                            # MEMMAP_FLUSH_EVERY_N_FRAMES — but disk write
-                            # bandwidth was ruled out (measured 292MB/s vs.
-                            # ~155MB/s actually demanded), so timing each call
-                            # separately to find which one is really costing
-                            # the time instead of continuing to infer it from
-                            # black-box frame timestamps.
-                            flush_start = time.perf_counter()
-                            stack.flush()
-                            flush_s = time.perf_counter() - flush_start
-
-                            disk_check_start = time.perf_counter()
+                        if n_written % DISK_CHECK_EVERY_N_FRAMES == 0:
+                            # No periodic stack.flush() here anymore — see
+                            # DISK_CHECK_EVERY_N_FRAMES above for why.
                             free = shutil.disk_usage(output_dir).free
-                            disk_check_s = time.perf_counter() - disk_check_start
-
-                            logger.info(
-                                f"[{label}] Writer flush at frame {n_written}: "
-                                f"stack.flush() took {flush_s:.3f}s, "
-                                f"disk_usage() took {disk_check_s:.3f}s"
-                            )
                             if free < MIN_FREE_DISK_BYTES:
                                 raise OSError(
                                     f"Only {free} bytes free in {output_dir}, "
@@ -418,20 +580,29 @@ class ExperimentRunner:
                 # Record the failure and switch to drain-only mode — the
                 # producer must never block forever on a full queue waiting
                 # for a writer that has died (e.g. disk full, drive unmounted).
+                # Flush here (error path only, NOT a finally: — see below)
+                # so whatever was written before the crash is still durable;
+                # a memmap write that never reached this point could
+                # otherwise be lost to OS page-cache buffering.
                 writer_exc["error"] = e
                 writer_failed.set()
-                while True:
-                    item = frame_queue.get()
-                    if item is None:
-                        return
-            finally:
-                # Whatever was written must be durable even on abort — a
-                # memmap write that never reached this point could otherwise
-                # be lost to OS page-cache buffering.
                 try:
                     stack.flush()
                 except Exception:
                     pass
+                while True:
+                    item = frame_queue.get()
+                    if item is None:
+                        return
+            # Deliberately no finally: stack.flush() here — that was the
+            # actual bug behind a "0 frames queued but unwritten" drain still
+            # taking ~2.5s on hardware: finally: runs on the *normal* return
+            # path too (if item is None: return), so every single burst was
+            # still doing one full, unbatched, GIL-blocking flush right here
+            # regardless of DISK_CHECK_EVERY_N_FRAMES — this was functionally
+            # the same bug the periodic-flush removal was supposed to fix,
+            # just relocated. Normal completion now gets its one flush from
+            # the explicit, backgrounded _finalize_raw_burst_process() instead.
 
         writer_thread = threading.Thread(target=_writer, daemon=True)
         writer_thread.start()
@@ -513,6 +684,21 @@ class ExperimentRunner:
                 # Otherwise no sleep — capture as fast as exposure allows
                 # (frame_interval_s stays 0.0 unless a slower target fps was set)
 
+            # Diagnostic timing (temporary): stack.flush()+trim is confirmed
+            # fast now (moved to _finalize_raw_burst_process, logged separately) and
+            # jf.flush() benchmarks at ~0.01ms/call on this hardware — both
+            # ruled out — yet duration_actual_s still showed a ~1.6s gap
+            # after the last captured frame on a real hardware run. This
+            # narrows down whether that gap is the producer loop taking a
+            # while to notice elapsed >= total_duration_s, or the writer
+            # thread taking a while to drain its backlog after being
+            # signaled, instead of continuing to guess between them.
+            loop_exit_t = time.perf_counter() - start
+            logger.info(
+                f"[{label}] Producer loop exited at t={loop_exit_t:.3f}s "
+                f"(target {total_duration_s:.1f}s, {frame_idx} frames sent to writer)"
+            )
+
             if writer_failed.is_set():
                 raise RuntimeError(
                     f"Raw-burst writer thread failed for well {label}: {writer_exc['error']}"
@@ -528,22 +714,38 @@ class ExperimentRunner:
                     "frame_index": frame_idx,
                 })
             # Drain: signal no more frames, then wait for every already-queued
-            # frame to actually be written before returning — never lose an
-            # already-captured frame, whether stopped normally or by the user.
+            # frame to actually be written into the stack array before
+            # returning — never lose an already-captured frame, whether
+            # stopped normally or by the user. Kept synchronous (unlike the
+            # flush+trim below): writing rows into the mmap and appending to
+            # frames_saved/the jsonl sidecar is cheap now that there's no
+            # periodic stack.flush() left in the writer's loop to slow it
+            # down, and burst_meta below needs frames_saved/frame_idx to be
+            # fully complete, not whatever's landed so far.
+            drain_start = time.perf_counter()
+            queue_backlog = frame_queue.qsize()
             frame_queue.put(None)
             writer_thread.join()
-
-        # Close the memmap before truncating its backing file below — the
-        # writer thread already flushed it in its own finally block, but the
-        # mmap object (kept alive by the writer thread's closure) must be
-        # closed first or a truncate here could race a lingering mapping.
-        stack.flush()
-        stack._mmap.close()
-        _trim_raw_stack(stack_path, frame_idx)
+            drain_s = time.perf_counter() - drain_start
+            logger.info(
+                f"[{label}] Writer drain (sentinel + join) took {drain_s:.3f}s "
+                f"({queue_backlog} frames queued but unwritten at signal time)"
+            )
+            # Release this process's own mapping now — cheap (just unmaps
+            # virtual memory, doesn't force dirty pages to disk the way
+            # flush() does), unlike the actual durability guarantee, which
+            # happens in a separate OS process (see
+            # _finalize_raw_burst_process()) via its own independent
+            # mapping of the same file. Dirty pages already written by
+            # this process stay in the OS
+            # page cache (shared per-inode across every process, not
+            # per-mapping) until that other mapping's flush() picks them up
+            # — closing this one first doesn't lose or discard anything.
+            stack._mmap.close()
 
         duration_actual = time.perf_counter() - start
         capture_stats = self.camera.get_capture_stats()
-        return {
+        burst_meta = {
             "frames_captured": frame_idx,
             "frames_file": stack_filename,
             "duration_requested_s": round(total_duration_s, 3),
@@ -556,6 +758,12 @@ class ExperimentRunner:
             "queue_full_stalls": stall_count,
             "queue_full_stall_s_total": round(stall_s_total, 6),
         }
+        finalize_ctx = {
+            "label": label,
+            "stack_path": stack_path,
+            "frame_idx": frame_idx,
+        }
+        return burst_meta, finalize_ctx
 
     # ------------------------------------------------------------------
     # Main experiment loop
@@ -568,7 +776,7 @@ class ExperimentRunner:
         delay_per_well: float = 1.0,
         callback=None,
         mode: str = "image",
-        image_format: str = "jpg",
+        image_format: str = "png",
         use_laser: bool = False,
         pre_duration: float = 5.0,
         laser_on_duration: float = 1.0,
@@ -634,8 +842,9 @@ class ExperimentRunner:
         # alone).
         move_time_estimates: List[float] = []
         if profile:
+            image_capture_time_est = _estimate_image_capture_time_s(self.camera, image_format)
             capture_time_est = FRAME_PRIMING_ESTIMATE_S + (
-                total_duration + RAW_BURST_OVERRUN_S if mode == "raw" else IMAGE_CAPTURE_TIME_ESTIMATE_S
+                total_duration + RAW_BURST_OVERRUN_S if mode == "raw" else image_capture_time_est
             )
             move_overhead_s = _move_overhead_s(self.motion)
             cur_pos = (self.motion.X, self.motion.Y, self.motion.Z)
@@ -647,6 +856,9 @@ class ExperimentRunner:
                 total_estimate_s += float(delay_per_well)
                 total_estimate_s += capture_time_est
                 cur_pos = pos
+            if mode == "raw" and positions:
+                bit_depth = int(self.camera.get_camera_meta().get("bit_depth", 8))
+                total_estimate_s += _estimate_finalize_time_s(self.camera, total_duration, bit_depth)
             self.eta_finish_time = datetime.now() + timedelta(seconds=total_estimate_s)
             self.status_msg = (
                 f"Estimated duration {total_estimate_s:.0f}s for {len(positions)} wells "
@@ -687,6 +899,14 @@ class ExperimentRunner:
                 wells_captured = 0
                 total_capture_failures = {"lock_timeout": 0, "sdk_timeout_or_error": 0}
                 total_dropped_frames = 0
+                # Previous well's raw-burst finalize (flush + trim), still
+                # running in the background — bounded to at most one in
+                # flight at a time, joined right before starting the next
+                # one so it overlaps with this well's move/dwell/capture
+                # instead of blocking on it. A separate OS process, not a
+                # thread — see _finalize_raw_burst_process()'s docstring
+                # for why a thread doesn't actually achieve the overlap.
+                pending_finalize: Optional[multiprocessing.process.BaseProcess] = None
 
                 for i, (pos, label) in enumerate(zip(positions, labels)):
                     if not self.running:
@@ -794,7 +1014,7 @@ class ExperimentRunner:
 
                     if mode == "raw":
                         # Burst of raw frames stacked into one .npy array in raw/ subdir
-                        burst_meta = self._write_raw_burst(
+                        burst_meta, finalize_ctx = self._capture_raw_burst(
                             raw_dir, label, timestamp, total_duration,
                             laser_controller=laser_controller,
                             laser_on_s=float(laser_on_duration),
@@ -802,15 +1022,10 @@ class ExperimentRunner:
                             bit_depth=int(cam_meta.get("bit_depth", 8)),
                         )
                         capture_call_s = time.perf_counter() - capture_call_start
-                        # duration_actual_s covers only up to when the recording loop
-                        # itself decides it's done — the gap to capture_call_s is
-                        # everything after: writer-thread drain/join, memmap flush
-                        # and close, and _trim_raw_stack()'s truncate.
-                        finalize_s = capture_call_s - burst_meta["duration_actual_s"]
                         logger.info(
-                            f"[{label}] Capture took {capture_call_s:.3f}s total "
-                            f"(recording {burst_meta['duration_actual_s']:.3f}s, "
-                            f"finalize {finalize_s:.3f}s)"
+                            f"[{label}] Capture took {capture_call_s:.3f}s "
+                            f"(recording {burst_meta['duration_actual_s']:.3f}s) — "
+                            f"finalize (flush + trim) running in a background process"
                         )
                         capture_name = f"raw/{burst_meta['frames_file']} ({burst_meta['frames_captured']} frames)"
                         meta_path = os.path.join(raw_dir, f"{label}_{timestamp}_metadata.json")
@@ -836,9 +1051,27 @@ class ExperimentRunner:
                             f"({burst_meta['queue_full_stall_s_total']:.3f}s total)"
                         )
 
+                        # Bounded to one in flight: wait for the *previous*
+                        # well's finalize before starting this one's, so it
+                        # overlaps with whatever move/dwell/capture time this
+                        # well already took above instead of piling up
+                        # unbounded background processes. spawn, not the
+                        # Linux default fork — see
+                        # _finalize_raw_burst_process()'s docstring for why
+                        # (this process holds live hardware connections that
+                        # fork would duplicate into the child).
+                        if pending_finalize is not None:
+                            pending_finalize.join()
+                        pending_finalize = multiprocessing.get_context("spawn").Process(
+                            target=_finalize_raw_burst_process,
+                            args=(finalize_ctx["stack_path"], finalize_ctx["frame_idx"], finalize_ctx["label"]),
+                            daemon=True,
+                        )
+                        pending_finalize.start()
+
                     else:
                         # Standard still image
-                        fmt = (image_format or "jpg").lower().lstrip(".")
+                        fmt = (image_format or "png").lower().lstrip(".")
                         capture_name = f"{label}_{timestamp}.{fmt}"
                         img_path = os.path.join(exp_dir, capture_name)
                         frame = self.camera.get_frame()
@@ -876,6 +1109,13 @@ class ExperimentRunner:
             if callback:
                 callback(self.status_msg)
         finally:
+            # The experiment isn't really done until the last well's raw
+            # burst is actually flushed and trimmed to disk, even though
+            # run() itself has otherwise finished (or errored, or been
+            # stopped) — wait for it here rather than leaving a dangling
+            # background thread when this method returns.
+            if "pending_finalize" in locals() and pending_finalize is not None:
+                pending_finalize.join()
             if "laser_controller" in locals() and laser_controller:
                 laser_controller.disconnect()
             self.running = False
