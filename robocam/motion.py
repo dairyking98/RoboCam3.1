@@ -53,6 +53,19 @@ class MarlinBackend(MotionBackend):
         self.timeout = printer_cfg.get("timeout", 10.0)
         self.home_timeout = printer_cfg.get("home_timeout", 90.0)
         self.movement_wait_timeout = printer_cfg.get("movement_wait_timeout", 30.0)
+        # Blind sleep in send_gcode() before it starts polling for "ok" —
+        # write()+flush() already guarantees the command is fully sent,
+        # and the polling loop's readline() safely blocks for a complete
+        # line regardless of when it starts checking, so this isn't
+        # protecting against a partial-write/partial-read race. Hardware
+        # log timestamps showed this value (previously 0.1s in
+        # config/default_config.json) essentially *was* the entire
+        # measured per-command round-trip cost, not half of it — real
+        # wire/firmware latency on top of it was negligible. Lowered to
+        # test whether shrinking it shrinks real round-trip time
+        # ~1:1 — validate this on hardware before trusting it, and
+        # recalibrate experiment.py's SERIAL_ROUNDTRIP_S from the next
+        # real log rather than guessing a new value here.
         self.command_delay = printer_cfg.get("command_delay", 0.05)
         
         self.X, self.Y, self.Z = 0.0, 0.0, 0.0
