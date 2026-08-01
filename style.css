@@ -181,6 +181,23 @@ table.status th { color: var(--text-muted); font-weight: 600; font-size: 0.82rem
 }
 .empty-gallery .icon { font-size: 2.2rem; margin-bottom: 0.75rem; }
 .gallery-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-top: 2rem; }
+.gallery-photo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.gallery-photo img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #000;
+}
+.gallery-photo span {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
 .gallery-placeholder {
   aspect-ratio: 4 / 3;
   border: 1px dashed var(--border);
