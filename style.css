@@ -157,6 +157,21 @@ table.status th { color: var(--text-muted); font-weight: 600; font-size: 0.82rem
   color: var(--text-muted);
 }
 
+.sample-video video {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #000;
+  display: block;
+}
+.sample-video .caption {
+  margin: 0.75rem 0 0;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+
 .empty-gallery {
   text-align: center;
   padding: 3.5rem 1.5rem;
