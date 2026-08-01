@@ -70,5 +70,5 @@ imaging pipeline developed iteratively across earlier RoboCam repositories.
 - **GitHub Actions CI** — runs pytest on Python 3.10, 3.11, and 3.12.
 - **MIT license**.
 
-[Unreleased]: https://github.com/dairyking98/RoboCam3.1/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/dairyking98/RoboCam3.1/releases/tag/v0.1.0
+[Unreleased]: https://github.com/E-Lab-SFSU/RoboCam3.1/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/E-Lab-SFSU/RoboCam3.1/releases/tag/v0.1.0
