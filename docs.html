@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs — RoboCam 3.1</title>
+<meta name="description" content="Installation, GUI walkthrough, and CLI reference for RoboCam 3.1.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="index.html">RoboCam 3.1</a>
+    <div class="links">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#roadmap">Roadmap</a>
+      <a href="docs.html" class="current">Docs</a>
+      <a href="gallery.html">Gallery</a>
+      <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Documentation</div>
+    <h1>Getting started</h1>
+    <p class="tagline">Installation, a tour of the six GUI tabs, and the headless CLI. For deeper architecture notes, see <a href="https://github.com/E-Lab-SFSU/RoboCam3.1#readme">the full README</a> on GitHub.</p>
+  </div>
+</header>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Installation</h2>
+    <p>Requires Python 3.10+. Raspberry Pi OS Bookworm is recommended, but any Linux system works.</p>
+
+    <h3 class="subhead">1. Clone</h3>
+    <pre><code>git clone https://github.com/E-Lab-SFSU/RoboCam3.1.git
+cd RoboCam3.1</code></pre>
+
+    <h3 class="subhead">2. Setup</h3>
+    <pre><code>bash setup.sh</code></pre>
+    <p>Creates <code>.venv</code> (with <code>--system-site-packages</code> on a detected Raspberry Pi), installs <code>requirements.txt</code>, and — on a Pi — additionally installs <code>lgpio</code>, <code>RPi.GPIO</code>, and <code>picamera2</code>. Finishes by downloading and patching the Player One SDK (safe to skip if you don't have that camera). Windows: run <code>setup.bat</code> instead.</p>
+
+    <h3 class="subhead">3. Launch</h3>
+    <pre><code>bash start_robocam.sh</code></pre>
+    <p><code>start_robocam.bat</code> on Windows.</p>
+  </div>
+</section>
+
+<section id="tabs">
+  <div class="wrap">
+    <h2>The six tabs</h2>
+
+    <h3 class="subhead">1 — Setup</h3>
+    <p>Scan and pick a camera (Player One, Picamera2, or OpenCV); configure the printer backend (Marlin serial or Klipper HTTP); configure the laser/GPIO output; watch live connection and homing status.</p>
+
+    <h3 class="subhead">2 — Motion Profiles</h3>
+    <p>Placeholder tab — feed-rate, acceleration, and jerk settings (<code>M203</code>/<code>M201</code>/<code>M204</code>/<code>M205</code>) for both backends. Not yet implemented.</p>
+
+    <h3 class="subhead">3 — Calibration</h3>
+    <p>Jog to the four physical corners of the well plate and click Set for each — the well map auto-generates once all four are set. Choose grid dimensions and scan pattern (Raster or Snake), then save the calibration as JSON. Quick Capture grabs a still or short raw burst directly from this tab.</p>
+
+    <h3 class="subhead">4 — Experiment</h3>
+    <p>Pick a calibration and capture mode (Image or Raw Burst, with optional laser stimulus split into Pre/ON/Post phases), select wells on the grid, and run. Auto-process can hand the finished output straight to the Processing tab.</p>
+
+    <h3 class="subhead">5 — Manual Control</h3>
+    <p>Direct hardware control outside of an experiment: homing, stepper disable, jog pad, go-to by coordinate, manual laser toggle, and a raw G-code sender.</p>
+
+    <h3 class="subhead">6 — Processing</h3>
+    <p>Batch-converts one or more experiment folders' <code>.npy</code> bursts into PNG image sequences and/or video (MP4 + VFR MKV), with per-well and overall progress.</p>
+  </div>
+</section>
+
+<section id="cli">
+  <div class="wrap">
+    <h2>Headless CLI</h2>
+    <p>Test hardware or script workflows without launching the GUI:</p>
+    <pre><code>source .venv/bin/activate
+
+python -m robocam status
+python -m robocam motion pos
+python -m robocam motion home
+python -m robocam motion move --x 50 --y 50
+python -m robocam motion gcode G28
+python -m robocam camera info
+python -m robocam camera capture --output frame.jpg
+python -m robocam config show
+python -m robocam config set paths.output_dir /mnt/ssd/outputs
+
+# Simulation mode (no hardware required)
+python -m robocam --simulate status</code></pre>
+  </div>
+</section>
+
+<section id="postprocess">
+  <div class="wrap">
+    <h2>Post-processing</h2>
+    <p>Run after an experiment (or use the Processing tab) to produce per-frame images and video from the raw <code>.npy</code> burst:</p>
+    <pre><code># All wells in an experiment directory
+python scripts/reconstruct_vfr.py outputs/20260625_133324_my_experiment/
+
+# Images only
+python scripts/reconstruct_vfr.py outputs/exp/ --no-video
+
+# Video only
+python scripts/reconstruct_vfr.py outputs/exp/ --no-images
+
+# Lossless video
+python scripts/reconstruct_vfr.py outputs/exp/ --codec ffv1</code></pre>
+  </div>
+</section>
+
+<section id="testing">
+  <div class="wrap">
+    <h2>Testing</h2>
+    <p>Hardware-free unit tests (pytest): calibration bilinear interpolation, config persistence, and CLI argument parsing.</p>
+    <pre><code>pip install -e ".[dev]"
+pytest</code></pre>
+    <p>See <a href="https://github.com/E-Lab-SFSU/RoboCam3.1/blob/master/TESTING.md">TESTING.md</a> for the manual hardware checklist used on a live Raspberry Pi session.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    MIT licensed · <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">E-Lab-SFSU/RoboCam3.1</a> · <a href="index.html">Back to home</a>
+  </div>
+</footer>
+
+</body>
+</html>
