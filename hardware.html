@@ -48,8 +48,12 @@
         <p>Commonlands CIL 535 (C-mount), attached via a printed T2-to-C adapter.</p>
       </div>
       <div class="feature">
-        <h3>Illumination</h3>
+        <h3>Stimulus illumination</h3>
         <p>Two LEDs, 495–600 nm, 2.0–2.4V forward voltage, 700 mA rated each (~500 mA combined when wired in parallel), driven through a MOSFET switched from a Raspberry Pi GPIO pin. Light passes through a tube-and-aperture system, reaching up to 500 lux at the height of a 24-well plate.</p>
+      </div>
+      <div class="feature">
+        <h3>IR backlight</h3>
+        <p>A DIY light pad built from an acrylic sheet edge-lit by IR LED strips, sitting beneath the well plate to provide even backlighting for imaging — separate from the visible-spectrum stimulus LEDs above.</p>
       </div>
       <div class="feature">
         <h3>Camera/lens mount</h3>
@@ -57,7 +61,7 @@
       </div>
       <div class="feature">
         <h3>Well-plate stage</h3>
-        <p>Darkfield masks (24-well and 96-well variants) plus a base plate that clips the light plate to the printer bed with two sprung fingers for repeatable removal/reattachment.</p>
+        <p>Darkfield masks (24-well and 96-well variants) plus a base plate that clips the IR light pad to the printer bed with two sprung fingers for repeatable removal/reattachment.</p>
       </div>
     </div>
   </div>
@@ -65,8 +69,9 @@
 
 <section id="illumination">
   <div class="wrap">
-    <h2>Illumination driver</h2>
-    <p>The two LEDs are switched together via a MOSFET, gated from a Raspberry Pi GPIO pin — the same output the software's <a href="https://github.com/E-Lab-SFSU/RoboCam3.1/blob/master/robocam/peripherals.py"><code>LaserController</code></a> drives in <code>rpi_gpio</code> mode (configurable BCM pin, set in the Setup tab). Measured draw is ~500 mA combined with both LEDs wired in parallel, each individually rated to 700 mA at 2.0–2.4V.</p>
+    <h2>Illumination</h2>
+    <p>The two stimulus LEDs are switched together via a MOSFET, gated from a Raspberry Pi GPIO pin — the same output the software's <a href="https://github.com/E-Lab-SFSU/RoboCam3.1/blob/master/robocam/peripherals.py"><code>LaserController</code></a> drives in <code>rpi_gpio</code> mode (configurable BCM pin, set in the Setup tab). Measured draw is ~500 mA combined with both LEDs wired in parallel, each individually rated to 700 mA at 2.0–2.4V.</p>
+    <p>Imaging illumination is handled separately by an IR backlight pad beneath the well plate: an acrylic sheet edge-lit by IR LED strips, diffusing light evenly upward through the plate rather than being switched per-experiment like the stimulus LEDs.</p>
   </div>
 </section>
 
@@ -81,7 +86,7 @@
       <a href="hardware/darkfield_24well.stl">Darkfield mask — 24-well plate (.stl)</a>
       <a href="hardware/darkfield_96well.stl">Darkfield mask — 96-well plate (.stl)</a>
     </div>
-    <p class="verified">The T2-to-C adapter has tight tolerances — it was designed for and printed on a Bambu X1C at highest layer precision with random seams enabled. Other printers/settings may need adjustment. The lens mount is specific to the Ender-5 S1's extruder mounting arrangement; other printers will need a redesign. An IR light plate design is planned but not yet included.</p>
+    <p class="verified">The T2-to-C adapter has tight tolerances — it was designed for and printed on a Bambu X1C at highest layer precision with random seams enabled. Other printers/settings may need adjustment. The lens mount is specific to the Ender-5 S1's extruder mounting arrangement; other printers will need a redesign. The IR backlight pad itself is not a 3D-printed part — it's built from an acrylic sheet and IR LED strips — so there's no STL for it yet; a CAD design for a proper enclosure/mount may be added later.</p>
   </div>
 </section>
 
@@ -93,8 +98,8 @@
       <li>Remove the Ender-5 S1's stock extruder/hotend and install the Lens Mount in its place.</li>
       <li>Attach the T2-to-C adapter to the mount, then attach the C-mount lens.</li>
       <li>Mount the Player One camera to the lens assembly.</li>
-      <li>Wire the two illumination LEDs through the MOSFET driver to a Raspberry Pi GPIO pin (set the pin in RoboCam's Setup tab, laser/GPIO mode <code>rpi_gpio</code>).</li>
-      <li>Clip the darkfield mask/light plate to the printer bed using the StentorCam Base's sprung fingers.</li>
+      <li>Wire the two stimulus LEDs through the MOSFET driver to a Raspberry Pi GPIO pin (set the pin in RoboCam's Setup tab, laser/GPIO mode <code>rpi_gpio</code>).</li>
+      <li>Build the IR backlight pad (acrylic sheet edge-lit with IR LED strips) and clip it to the printer bed using the StentorCam Base's sprung fingers, with the darkfield mask on top.</li>
       <li>Connect the printer (USB/serial for Marlin) and camera to the machine running RoboCam 3.1, then follow the <a href="docs.html">Docs</a> page to calibrate the four well-plate corners.</li>
     </ol>
   </div>
