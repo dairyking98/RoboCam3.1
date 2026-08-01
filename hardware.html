@@ -18,6 +18,7 @@
       <a href="docs.html">Docs</a>
       <a href="hardware.html" class="current">Hardware</a>
       <a href="gallery.html">Gallery</a>
+      <a href="team.html">Team</a>
       <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">GitHub</a>
     </div>
   </div>
@@ -31,6 +32,15 @@
   </div>
 </header>
 
+<section id="rig-photo">
+  <div class="wrap">
+    <div class="sample-video" style="max-width:500px;">
+      <img src="hardware/rig_photo.jpg" alt="The RoboCam/StentorCam rig, labeled: camera, lens, laser, 96-well plate with mask, IR pad, modified 3D printer" style="width:100%;border-radius:12px;border:1px solid var(--border);">
+      <p class="caption">The apparatus, labeled — from the team's CCC Quarterly poster.</p>
+    </div>
+  </div>
+</section>
+
 <section id="overview">
   <div class="wrap">
     <h2>What it consists of</h2>
@@ -42,6 +52,10 @@
       <div class="feature">
         <h3>Camera</h3>
         <p>Player One <strong>Mars 662M</strong> (monochrome astronomy camera). A Player One <strong>Uranus M</strong> is currently being evaluated as an alternative.</p>
+      </div>
+      <div class="feature">
+        <h3>Compute &amp; storage</h3>
+        <p><strong>Raspberry Pi 5</strong>, with an M.2 HAT+ and a 512GB NVMe SSD for local storage — replacing the earlier Pi 4 + microSD setup with much faster, higher-capacity storage for raw-burst capture.</p>
       </div>
       <div class="feature">
         <h3>Lens</h3>
@@ -62,16 +76,6 @@
       <div class="feature">
         <h3>Well-plate stage</h3>
         <p>Darkfield masks (24-well and 96-well variants) plus a base plate that clips the IR light pad to the printer bed with two sprung fingers for repeatable removal/reattachment.</p>
-      </div>
-    </div>
-    <div class="gallery-grid" style="margin-top:1.5rem;">
-      <div class="gallery-photo">
-        <img src="hardware/camera_mars662m.png" alt="Player One Mars 662M camera" style="object-fit:contain;background:var(--bg-alt);">
-        <span>Player One Mars 662M</span>
-      </div>
-      <div class="gallery-photo">
-        <img src="hardware/raspi4.png" alt="Raspberry Pi 4" style="object-fit:contain;background:var(--bg-alt);">
-        <span>Raspberry Pi 4</span>
       </div>
     </div>
   </div>
@@ -116,6 +120,30 @@
       <li>Build the IR backlight pad (acrylic sheet edge-lit with IR LED strips) and clip it to the printer bed using the StentorCam Base's sprung fingers, with the darkfield mask on top.</li>
       <li>Connect the printer (USB/serial for Marlin) and camera to the machine running RoboCam 3.1, then follow the <a href="docs.html">Docs</a> page to calibrate the four well-plate corners.</li>
     </ol>
+  </div>
+</section>
+
+<section id="cost">
+  <div class="wrap">
+    <h2>Parts cost</h2>
+    <table class="status">
+      <tr><th>Item</th><th>Cost</th></tr>
+      <tr><td>3D printer (Ender-5 S1)</td><td>$264</td></tr>
+      <tr><td>Enclosure/tent</td><td>$70</td></tr>
+      <tr><td>Monitor</td><td>$50</td></tr>
+      <tr><td>Camera (Player One Mars 662M)</td><td>$270</td></tr>
+      <tr><td>Lens</td><td>$50</td></tr>
+      <tr><td>Compute &amp; storage (Raspberry Pi 5 + M.2 HAT+ + 512GB SSD)</td><td>updating</td></tr>
+      <tr><td>Acrylic diffuser sheet</td><td>$15</td></tr>
+      <tr><td>LED strip</td><td>$30</td></tr>
+      <tr><td>LED/laser driver</td><td>$60</td></tr>
+      <tr><td>Laser safety goggles</td><td>$20</td></tr>
+      <tr><td>Acrylic backlight panel</td><td>$30</td></tr>
+      <tr><td>Laser diode module</td><td>$13</td></tr>
+      <tr><td>Misc. optics/assembly</td><td>$40</td></tr>
+      <tr><td><strong>Total (before tax)</strong></td><td><strong>updating</strong></td></tr>
+    </table>
+    <p class="verified">Original bill of materials totaled $982 (before tax) with a Raspberry Pi 4 + microSD card ($80 combined) for compute/storage — now upgraded to a Raspberry Pi 5 with an M.2 HAT+ and 512GB NVMe SSD. Total will be updated once the new compute/storage cost is finalized.</p>
   </div>
 </section>
 
