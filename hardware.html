@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hardware — RoboCam 3.1</title>
+<meta name="description" content="The physical apparatus RoboCam 3.1 drives: motion stage, camera, lens, illumination, and 3D-printed mounts — what it consists of and how to build it.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="index.html">RoboCam 3.1</a>
+    <div class="links">
+      <a href="index.html#features">Features</a>
+      <a href="docs.html">Docs</a>
+      <a href="hardware.html" class="current">Hardware</a>
+      <a href="gallery.html">Gallery</a>
+      <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Hardware</div>
+    <h1>The apparatus</h1>
+    <p class="tagline">RoboCam 3.1 is the software layer. This page covers the physical rig it drives on the current lab build — what it's made of, and how to build one.</p>
+  </div>
+</header>
+
+<section id="overview">
+  <div class="wrap">
+    <h2>What it consists of</h2>
+    <div class="features">
+      <div class="feature">
+        <h3>Motion stage</h3>
+        <p>Creality Ender-5 S1 3D printer, stock Marlin firmware, repurposed as an XYZ positioning stage. Klipper-based controller boards are also supported by the software if you build on different hardware.</p>
+      </div>
+      <div class="feature">
+        <h3>Camera</h3>
+        <p>Player One <strong>Mars 662M</strong> (monochrome astronomy camera). A Player One <strong>Uranus M</strong> is currently being evaluated as an alternative.</p>
+      </div>
+      <div class="feature">
+        <h3>Lens</h3>
+        <p>Commonlands CIL 535 (C-mount), attached via a printed T2-to-C adapter.</p>
+      </div>
+      <div class="feature">
+        <h3>Illumination</h3>
+        <p>Two LEDs, 495–600 nm, 2.0–2.4V forward voltage, 700 mA rated each (~500 mA combined when wired in parallel), driven through a MOSFET switched from a Raspberry Pi GPIO pin. Light passes through a tube-and-aperture system, reaching up to 500 lux at the height of a 24-well plate.</p>
+      </div>
+      <div class="feature">
+        <h3>Camera/lens mount</h3>
+        <p>Custom 3D-printed mount replacing the printer's extruder, holding the Player One camera and lens assembly in place of the print head.</p>
+      </div>
+      <div class="feature">
+        <h3>Well-plate stage</h3>
+        <p>Darkfield masks (24-well and 96-well variants) plus a base plate that clips the light plate to the printer bed with two sprung fingers for repeatable removal/reattachment.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="illumination">
+  <div class="wrap">
+    <h2>Illumination driver</h2>
+    <p>The two LEDs are switched together via a MOSFET, gated from a Raspberry Pi GPIO pin — the same output the software's <a href="https://github.com/E-Lab-SFSU/RoboCam3.1/blob/master/robocam/peripherals.py"><code>LaserController</code></a> drives in <code>rpi_gpio</code> mode (configurable BCM pin, set in the Setup tab). Measured draw is ~500 mA combined with both LEDs wired in parallel, each individually rated to 700 mA at 2.0–2.4V.</p>
+  </div>
+</section>
+
+<section id="print-files">
+  <div class="wrap">
+    <h2>3D-printed parts</h2>
+    <p>Designed in Fusion 360 for the Ender-5 S1 + Player One combination above. STL files for printing are below; Fusion 360 source (<code>.f3d</code>) and step/iges exports are kept in the <a href="https://github.com/dairyking98/StentorCam">StentorCam</a> repository's <code>cad/</code> folder for anyone who needs to modify them.</p>
+    <div class="download-links">
+      <a href="hardware/stentorcam_base.stl">StentorCam Base — clips the light plate to the printer bed (.stl)</a>
+      <a href="hardware/lens_mount_ender_playerone.stl">Lens Mount (Ender + Player One) — replaces the extruder, holds camera + lens (.stl)</a>
+      <a href="hardware/t2_male_to_c_female.stl">T2-male-to-C-female adapter — mates the mount to a C-mount lens (.stl)</a>
+      <a href="hardware/darkfield_24well.stl">Darkfield mask — 24-well plate (.stl)</a>
+      <a href="hardware/darkfield_96well.stl">Darkfield mask — 96-well plate (.stl)</a>
+    </div>
+    <p class="verified">The T2-to-C adapter has tight tolerances — it was designed for and printed on a Bambu X1C at highest layer precision with random seams enabled. Other printers/settings may need adjustment. The lens mount is specific to the Ender-5 S1's extruder mounting arrangement; other printers will need a redesign. An IR light plate design is planned but not yet included.</p>
+  </div>
+</section>
+
+<section id="assembly">
+  <div class="wrap">
+    <h2>Assembly overview</h2>
+    <ol>
+      <li>Print the mount, adapter, base, and darkfield mask (see print notes above).</li>
+      <li>Remove the Ender-5 S1's stock extruder/hotend and install the Lens Mount in its place.</li>
+      <li>Attach the T2-to-C adapter to the mount, then attach the C-mount lens.</li>
+      <li>Mount the Player One camera to the lens assembly.</li>
+      <li>Wire the two illumination LEDs through the MOSFET driver to a Raspberry Pi GPIO pin (set the pin in RoboCam's Setup tab, laser/GPIO mode <code>rpi_gpio</code>).</li>
+      <li>Clip the darkfield mask/light plate to the printer bed using the StentorCam Base's sprung fingers.</li>
+      <li>Connect the printer (USB/serial for Marlin) and camera to the machine running RoboCam 3.1, then follow the <a href="docs.html">Docs</a> page to calibrate the four well-plate corners.</li>
+    </ol>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    MIT licensed · <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">E-Lab-SFSU/RoboCam3.1</a> · <a href="index.html">Back to home</a>
+  </div>
+</footer>
+
+</body>
+</html>
