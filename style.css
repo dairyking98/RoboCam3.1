@@ -181,6 +181,41 @@ table.status th { color: var(--text-muted); font-weight: 600; font-size: 0.82rem
 }
 .empty-gallery .icon { font-size: 2.2rem; margin-bottom: 0.75rem; }
 .gallery-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-top: 2rem; }
+.part-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1.25rem;
+  margin: 1.5rem 0;
+}
+.part-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-alt);
+}
+.part-card img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  background: #fff;
+  display: block;
+}
+.part-card .part-info {
+  padding: 0.75rem 0.9rem 1rem;
+}
+.part-card .part-info a {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.88rem;
+  text-decoration: none;
+}
+.part-card .part-info a:hover { text-decoration: underline; }
+.part-card .part-info p {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
 .gallery-photo {
   display: flex;
   flex-direction: column;
