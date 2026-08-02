@@ -99,8 +99,13 @@ function createScene(container) {
         roughness: 0.55,
       });
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.rotation.x = -Math.PI / 2.4;
-      mesh.rotation.z = Math.PI / 6;
+      // These STLs are Z-up (OpenSCAD/CAD/slicer convention: Z is "up,"
+      // matching the printer's build direction). three.js is Y-up. A
+      // clean -90 deg rotation about X is the correct, general conversion
+      // for any part; the previous -Math.PI/2.4 + a Math.PI/6 Z twist were
+      // eyeballed against a single part and don't generalize across the 5
+      // differently-shaped parts sharing this one viewer.
+      mesh.rotation.x = -Math.PI / 2;
       scene.add(mesh);
       currentMesh = mesh;
 
