@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motion Profiles tab — RoboCam 3.1 Docs</title>
+<meta name="description" content="RoboCam 3.1 Motion Profiles tab: planned feed-rate, acceleration, and jerk controls for Marlin and Klipper.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="../index.html">RoboCam 3.1</a>
+    <div class="links">
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#roadmap">Roadmap</a>
+      <a href="../docs.html" class="current">Docs</a>
+      <a href="../hardware.html">Hardware</a>
+      <a href="../gallery.html">Gallery</a>
+      <a href="../team.html">Team</a>
+      <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Documentation · Tab 2 of 6</div>
+    <h1>Motion Profiles</h1>
+    <p class="tagline">Placeholder tab — not required for the calibrate-then-experiment flow today. Defaults from the connected backend apply.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="docs-subnav">
+      <a href="workflow.html">Workflow guide</a>
+      <a href="setup.html">1 · Setup</a>
+      <a href="motion-profiles.html" class="current">2 · Motion Profiles</a>
+      <a href="calibration.html">3 · Calibration</a>
+      <a href="experiment.html">4 · Experiment</a>
+      <a href="manual-control.html">5 · Manual Control</a>
+      <a href="processing.html">6 · Processing</a>
+    </div>
+
+    <h2>What's planned</h2>
+    <p>This tab will expose feed-rate, acceleration, and jerk settings — <code>M203</code> / <code>M201</code> / <code>M204</code> / <code>M205</code> — for both the Marlin and Klipper backends, letting you tune motion speed and smoothness without dropping to a raw G-code console. It's tracked on the <a href="../index.html#roadmap">roadmap</a> and not yet implemented.</p>
+    <p>Until it lands, motion runs at whatever feed-rate/acceleration/jerk the printer's firmware config already has, and any one-off changes can be sent as raw G-code from the <a href="manual-control.html">Manual Control</a> tab's G-code sender.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap pager">
+    <a class="pager-prev" href="setup.html"><span class="pager-label">← Previous</span>Setup</a>
+    <a class="pager-next" href="calibration.html"><span class="pager-label">Next →</span>Calibration</a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    MIT licensed · <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">E-Lab-SFSU/RoboCam3.1</a> · <a href="../docs.html">Back to docs</a>
+  </div>
+</footer>
+
+</body>
+</html>

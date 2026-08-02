@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Processing tab — RoboCam 3.1 Docs</title>
+<meta name="description" content="RoboCam 3.1 Processing tab: batch conversion of raw .npy bursts into PNG image sequences and video.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="../index.html">RoboCam 3.1</a>
+    <div class="links">
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#roadmap">Roadmap</a>
+      <a href="../docs.html" class="current">Docs</a>
+      <a href="../hardware.html">Hardware</a>
+      <a href="../gallery.html">Gallery</a>
+      <a href="../team.html">Team</a>
+      <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Documentation · Tab 6 of 6</div>
+    <h1>Processing</h1>
+    <p class="tagline">Turns raw sensor bursts into things you can actually look at: per-frame PNGs and timing-accurate video.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="docs-subnav">
+      <a href="workflow.html">Workflow guide</a>
+      <a href="setup.html">1 · Setup</a>
+      <a href="motion-profiles.html">2 · Motion Profiles</a>
+      <a href="calibration.html">3 · Calibration</a>
+      <a href="experiment.html">4 · Experiment</a>
+      <a href="manual-control.html">5 · Manual Control</a>
+      <a href="processing.html" class="current">6 · Processing</a>
+    </div>
+
+    <h2>How it works</h2>
+    <p>Batch-converts one or more experiment folders' <code>.npy</code> bursts into PNG image sequences and/or video (MP4 + VFR MKV). Add folders manually, or let the Experiment tab's <strong>Auto-process</strong> feature queue and start a folder automatically the moment a run finishes. Per-well and overall progress bars, plus a scrolling log, track a batch as it runs.</p>
+
+    <h3 class="subhead">What comes out</h3>
+    <p>For each well: a PNG per frame, filenamed with frame index, timestamp, and laser state (e.g. <code>A1_00152_005003ms_laser-on.png</code>) for direct use in downstream tracking pipelines; a VFR MKV with per-frame PTS accurate to about 1&nbsp;ms (archival); and a constant-fps MP4 with a laser-ON asterisk overlay (smooth, Pi-hardware-decodable playback).</p>
+
+    <h3 class="subhead">Same thing, headless</h3>
+    <p>The CLI equivalent is <code>scripts/reconstruct_vfr.py</code>, useful for scripting or running on a machine without the GUI open:</p>
+    <pre><code># All wells in an experiment directory
+python scripts/reconstruct_vfr.py outputs/20260625_133324_my_experiment/
+
+# Images only
+python scripts/reconstruct_vfr.py outputs/exp/ --no-video
+
+# Video only
+python scripts/reconstruct_vfr.py outputs/exp/ --no-images
+
+# Lossless video
+python scripts/reconstruct_vfr.py outputs/exp/ --codec ffv1</code></pre>
+  </div>
+</section>
+
+<section>
+  <div class="wrap pager">
+    <a class="pager-prev" href="manual-control.html"><span class="pager-label">← Previous</span>Manual Control</a>
+    <a class="pager-next" href="workflow.html"><span class="pager-label">↻ Back to</span>Workflow guide</a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    MIT licensed · <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">E-Lab-SFSU/RoboCam3.1</a> · <a href="../docs.html">Back to docs</a>
+  </div>
+</footer>
+
+</body>
+</html>

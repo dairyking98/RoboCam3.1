@@ -348,3 +348,83 @@ table.status th { color: var(--text-muted); font-weight: 600; font-size: 0.82rem
 
 footer { padding: 2.5rem 0 4rem; color: var(--text-muted); font-size: 0.85rem; }
 footer a { color: var(--accent); }
+
+/* Docs sub-navigation (tab pages + workflow guide) */
+.docs-subnav { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: -1.25rem 0 2.5rem; }
+.docs-subnav a {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  white-space: nowrap;
+}
+.docs-subnav a:hover { color: var(--accent); border-color: var(--accent); }
+.docs-subnav a.current { color: #fff; background: var(--accent); border-color: var(--accent); }
+
+/* Prev/next pager at the bottom of a docs page */
+.pager { display: flex; justify-content: space-between; gap: 1rem; }
+.pager a {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.9rem 1.1rem;
+  text-decoration: none;
+  color: var(--text);
+  background: var(--bg-alt);
+}
+.pager a:hover { border-color: var(--accent); }
+.pager .pager-label {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 0.2rem;
+}
+.pager .pager-next { text-align: right; }
+
+/* Numbered step flow (workflow guide) */
+.step-flow { display: flex; flex-direction: column; }
+.step { display: flex; gap: 1.1rem; position: relative; padding-bottom: 2.25rem; }
+.step:last-child { padding-bottom: 0; }
+.step-num {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.95rem;
+  position: relative;
+  z-index: 1;
+}
+.step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 17px;
+  top: 34px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--border);
+}
+.step-body { padding-top: 0.15rem; }
+.step-body h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
+.step-body p { margin: 0 0 0.6rem; color: var(--text-muted); font-size: 0.92rem; }
+.step-body .step-link { font-size: 0.85rem; font-weight: 600; color: var(--accent); text-decoration: none; }
+.step-body .step-link:hover { text-decoration: underline; }
+.step-note {
+  background: var(--accent-bg);
+  border-radius: 8px;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  margin-top: 0.5rem;
+}

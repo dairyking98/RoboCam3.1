@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup tab — RoboCam 3.1 Docs</title>
+<meta name="description" content="RoboCam 3.1 Setup tab: camera enumeration, printer backend connection, laser/GPIO configuration, and hardware status.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="../index.html">RoboCam 3.1</a>
+    <div class="links">
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#roadmap">Roadmap</a>
+      <a href="../docs.html" class="current">Docs</a>
+      <a href="../hardware.html">Hardware</a>
+      <a href="../gallery.html">Gallery</a>
+      <a href="../team.html">Team</a>
+      <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Documentation · Tab 1 of 6</div>
+    <h1>Setup</h1>
+    <p class="tagline">Connect the camera, the printer, and the laser/GPIO output. This is the first tab you touch every session — nothing downstream works until the printer reports connected and homed.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="docs-subnav">
+      <a href="workflow.html">Workflow guide</a>
+      <a href="setup.html" class="current">1 · Setup</a>
+      <a href="motion-profiles.html">2 · Motion Profiles</a>
+      <a href="calibration.html">3 · Calibration</a>
+      <a href="experiment.html">4 · Experiment</a>
+      <a href="manual-control.html">5 · Manual Control</a>
+      <a href="processing.html">6 · Processing</a>
+    </div>
+
+    <h2>Camera</h2>
+    <p>Click <strong>Scan for Cameras</strong> to enumerate Player One, Picamera2, and OpenCV devices in a background thread (the UI stays responsive during the scan). Pick a device, choose a resolution and an optional FPS cap, then <strong>Apply &amp; Reconnect Camera</strong>.</p>
+    <p>If a Player One camera is detected but blocked by USB permissions, an in-app <strong>Install USB Rules</strong> button installs the udev rule and reloads udev — no replug needed.</p>
+
+    <h3 class="subhead">3-D Printer</h3>
+    <p>Select the motion backend — <strong>Marlin</strong> (USB/serial: pick the serial port and baud rate) or <strong>Klipper</strong> (Moonraker HTTP API: host and port) — then <strong>Apply &amp; Reconnect Printer</strong>.</p>
+
+    <h3 class="subhead">Laser / GPIO</h3>
+    <p>Choose a mode: <code>disabled</code>, <code>rpi_gpio</code> (set the BCM pin), or <code>klipper</code> (set the ON/OFF G-code strings). Apply to make it available to Calibration's Quick Capture and the Experiment tab's laser-stimulus phases.</p>
+
+    <h3 class="subhead">Hardware Status</h3>
+    <p>Live connection and homing indicators, polled every 2 seconds. If the printer is connected but not homed — either it reports (0,0,0) or it's sitting at the firmware park position — a warning banner appears with a <strong>Home All Axes</strong> button. Experiments (and relative jogs) stay blocked until homing succeeds.</p>
+
+    <div class="step-note">Do this tab first, every session, before Calibration or Experiment. All other tabs except Experiment are disabled while an experiment is actually running.</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap pager">
+    <a class="pager-prev" href="workflow.html"><span class="pager-label">← Guide</span>Workflow overview</a>
+    <a class="pager-next" href="motion-profiles.html"><span class="pager-label">Next →</span>Motion Profiles</a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    MIT licensed · <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">E-Lab-SFSU/RoboCam3.1</a> · <a href="../docs.html">Back to docs</a>
+  </div>
+</footer>
+
+</body>
+</html>

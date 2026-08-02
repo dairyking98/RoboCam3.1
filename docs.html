@@ -52,26 +52,34 @@ cd RoboCam3.1</code></pre>
   </div>
 </section>
 
+<section id="workflow">
+  <div class="wrap">
+    <h2>Workflow guide</h2>
+    <p>New to a run? Read <a href="docs/workflow.html"><strong>New well plate → calibration → experiment data</strong></a> first — it walks the tabs in the order you actually use them, instead of tab-by-tab reference order.</p>
+  </div>
+</section>
+
 <section id="tabs">
   <div class="wrap">
     <h2>The six tabs</h2>
+    <p>Reference for each tab individually. All tabs except <strong>Experiment</strong> are disabled while an experiment is running.</p>
 
-    <h3 class="subhead">1 — Setup</h3>
+    <h3 class="subhead"><a href="docs/setup.html">1 — Setup</a></h3>
     <p>Scan and pick a camera (Player One, Picamera2, or OpenCV); configure the printer backend (Marlin serial or Klipper HTTP); configure the laser/GPIO output; watch live connection and homing status.</p>
 
-    <h3 class="subhead">2 — Motion Profiles</h3>
+    <h3 class="subhead"><a href="docs/motion-profiles.html">2 — Motion Profiles</a></h3>
     <p>Placeholder tab — feed-rate, acceleration, and jerk settings (<code>M203</code>/<code>M201</code>/<code>M204</code>/<code>M205</code>) for both backends. Not yet implemented.</p>
 
-    <h3 class="subhead">3 — Calibration</h3>
+    <h3 class="subhead"><a href="docs/calibration.html">3 — Calibration</a></h3>
     <p>Jog to the four physical corners of the well plate and click Set for each — the well map auto-generates once all four are set. Choose grid dimensions and scan pattern (Raster or Snake), then save the calibration as JSON. Quick Capture grabs a still or short raw burst directly from this tab.</p>
 
-    <h3 class="subhead">4 — Experiment</h3>
+    <h3 class="subhead"><a href="docs/experiment.html">4 — Experiment</a></h3>
     <p>Pick a calibration and capture mode (Image or Raw Burst, with optional laser stimulus split into Pre/ON/Post phases), select wells on the grid, and run. Auto-process can hand the finished output straight to the Processing tab.</p>
 
-    <h3 class="subhead">5 — Manual Control</h3>
+    <h3 class="subhead"><a href="docs/manual-control.html">5 — Manual Control</a></h3>
     <p>Direct hardware control outside of an experiment: homing, stepper disable, jog pad, go-to by coordinate, manual laser toggle, and a raw G-code sender.</p>
 
-    <h3 class="subhead">6 — Processing</h3>
+    <h3 class="subhead"><a href="docs/processing.html">6 — Processing</a></h3>
     <p>Batch-converts one or more experiment folders' <code>.npy</code> bursts into PNG image sequences and/or video (MP4 + VFR MKV), with per-well and overall progress.</p>
   </div>
 </section>

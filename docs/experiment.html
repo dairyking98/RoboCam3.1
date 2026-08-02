@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Experiment tab — RoboCam 3.1 Docs</title>
+<meta name="description" content="RoboCam 3.1 Experiment tab: capture modes, well selection, laser-stimulus phases, presets, and run control.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="../index.html">RoboCam 3.1</a>
+    <div class="links">
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#roadmap">Roadmap</a>
+      <a href="../docs.html" class="current">Docs</a>
+      <a href="../hardware.html">Hardware</a>
+      <a href="../gallery.html">Gallery</a>
+      <a href="../team.html">Team</a>
+      <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Documentation · Tab 4 of 6</div>
+    <h1>Experiment</h1>
+    <p class="tagline">Where data collection actually happens: pick a calibration, choose a capture mode, select wells, and run.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="docs-subnav">
+      <a href="workflow.html">Workflow guide</a>
+      <a href="setup.html">1 · Setup</a>
+      <a href="motion-profiles.html">2 · Motion Profiles</a>
+      <a href="calibration.html">3 · Calibration</a>
+      <a href="experiment.html" class="current">4 · Experiment</a>
+      <a href="manual-control.html">5 · Manual Control</a>
+      <a href="processing.html">6 · Processing</a>
+    </div>
+
+    <h3 class="subhead">1. Name it and pick a calibration</h3>
+    <p>Enter an experiment name and select a saved calibration file (refresh the list with the ↺ button if you just saved a new one on the Calibration tab).</p>
+
+    <h3 class="subhead">2. Choose a capture mode</h3>
+    <p><strong>Image</strong> — a single still per well (JPG/PNG/TIF), with configurable dwell time.</p>
+    <p><strong>Raw Burst</strong> — max-rate raw sensor frames for a set record duration; this is the primary scientific capture mode. With <strong>Use Laser</strong> checked, the burst is split into Pre-laser / Laser ON / Post-laser phases, all captured continuously within one burst so timing is never interrupted.</p>
+
+    <h3 class="subhead">3. Set the output folder</h3>
+    <p>Defaults to <code>outputs/</code>; persisted to <code>config/default_config.json</code> and applied to the live runner immediately — no restart needed.</p>
+
+    <h3 class="subhead">4. Presets (optional)</h3>
+    <p>Save or load named <strong>Experiment Presets</strong> (JSON files under <code>config/experiment_presets/</code>) to reuse a full configuration across runs.</p>
+
+    <h3 class="subhead">5. Select wells</h3>
+    <p>Click or drag on the grid to select wells; Check All / Uncheck All / Invert are available as shortcuts.</p>
+
+    <h3 class="subhead">6. Auto-process (optional)</h3>
+    <p>Check <strong>Auto-process after experiment</strong> to have the Processing tab automatically pick up and convert the output the moment the run finishes — skips a manual trip to that tab.</p>
+
+    <h3 class="subhead">7. Run it</h3>
+    <p><strong>Start Experiment</strong> is blocked if the printer isn't homed. <strong>Pause/Resume</strong> and <strong>Stop</strong> are available mid-run. The live preview is paused and overlaid with "EXPERIMENT IN PROGRESS" for the whole run. All other tabs except this one are disabled while a run is in progress.</p>
+
+    <div class="step-note">Output layout: <code>raw/</code> holds the per-well <code>.npy</code> frames, per-frame metadata JSON, and a shared <code>camera_meta.json</code>, plus a top-level points CSV. See the <a href="https://github.com/E-Lab-SFSU/RoboCam3.1#output-structure-raw-burst-mode">full output structure</a> on GitHub.</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap pager">
+    <a class="pager-prev" href="calibration.html"><span class="pager-label">← Previous</span>Calibration</a>
+    <a class="pager-next" href="manual-control.html"><span class="pager-label">Next →</span>Manual Control</a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    MIT licensed · <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">E-Lab-SFSU/RoboCam3.1</a> · <a href="../docs.html">Back to docs</a>
+  </div>
+</footer>
+
+</body>
+</html>

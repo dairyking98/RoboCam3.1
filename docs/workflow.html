@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow — RoboCam 3.1 Docs</title>
+<meta name="description" content="The end-to-end RoboCam 3.1 workflow: mounting a new well plate, calibrating to it, and collecting experiment data.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="../index.html">RoboCam 3.1</a>
+    <div class="links">
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#roadmap">Roadmap</a>
+      <a href="../docs.html" class="current">Docs</a>
+      <a href="../hardware.html">Hardware</a>
+      <a href="../gallery.html">Gallery</a>
+      <a href="../team.html">Team</a>
+      <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Documentation · Workflow</div>
+    <h1>New well plate → calibration → experiment data</h1>
+    <p class="tagline">The order things actually happen in, end to end: from dropping a fresh plate on the stage to a folder of per-frame images and video. Each step links to the full reference for that tab.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="docs-subnav">
+      <a href="workflow.html" class="current">Workflow guide</a>
+      <a href="setup.html">1 · Setup</a>
+      <a href="motion-profiles.html">2 · Motion Profiles</a>
+      <a href="calibration.html">3 · Calibration</a>
+      <a href="experiment.html">4 · Experiment</a>
+      <a href="manual-control.html">5 · Manual Control</a>
+      <a href="processing.html">6 · Processing</a>
+    </div>
+
+    <div class="step-flow">
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h3>Connect hardware (once per session)</h3>
+          <p>On the <strong>Setup</strong> tab, scan for and apply a camera, connect the printer backend (Marlin or Klipper), and configure the laser/GPIO output if this run uses stimulus. Check the Hardware Status panel — if the printer shows not-homed, everything downstream is blocked.</p>
+          <a class="step-link" href="setup.html">Full Setup reference →</a>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h3>Home all axes</h3>
+          <p>Homing is a hard gate: experiments (and even relative jogs) refuse to run from an unhomed state, because the printer's reported position can't be trusted until it does. Use "Home All Axes" from the Setup warning banner or the Manual Control tab.</p>
+          <a class="step-link" href="manual-control.html">Manual Control reference →</a>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h3>Mount the new well plate</h3>
+          <p>Physically place the plate on the stage. Any existing calibration was measured against the <em>previous</em> plate's exact position — a new plate (or the same plate reseated) needs its own calibration before the well map can be trusted again.</p>
+          <div class="step-note">Skip this only if you're re-running against a plate that was never removed and still has a valid saved calibration.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h3>Calibrate to the plate</h3>
+          <p>On the <strong>Calibration</strong> tab, jog to and Set all four physical corners (Upper-Left, Lower-Left, Upper-Right, Lower-Right). Set the grid dimensions and scan pattern, then Update Well Map — bilinear interpolation fills in every well position from the four corners. Save the calibration as a named JSON profile so it's selectable from the Experiment tab.</p>
+          <p>Use <strong>Quick Capture</strong> here to grab a still or short burst from a well or two and sanity-check focus and exposure before committing to a full run.</p>
+          <a class="step-link" href="calibration.html">Full Calibration reference →</a>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-body">
+          <h3>Configure and run the experiment</h3>
+          <p>On the <strong>Experiment</strong> tab, name the run and select the calibration you just saved. Choose Image (single still per well) or Raw Burst (max-rate timestamped frames, optionally split into Pre/ON/Post laser phases). Select wells on the grid, set the output folder, and optionally enable <strong>Auto-process after experiment</strong> so Processing picks up the output the moment the run finishes. Start Experiment.</p>
+          <a class="step-link" href="experiment.html">Full Experiment reference →</a>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">6</div>
+        <div class="step-body">
+          <h3>Convert raw data</h3>
+          <p>If auto-process wasn't enabled, open the <strong>Processing</strong> tab and add the experiment's output folder to the queue. This turns each well's raw <code>.npy</code> burst into a PNG image sequence and video (VFR MKV + display MP4). The same conversion is available headlessly via <code>scripts/reconstruct_vfr.py</code>.</p>
+          <a class="step-link" href="processing.html">Full Processing reference →</a>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">7</div>
+        <div class="step-body">
+          <h3>Data lands per well</h3>
+          <p>Each experiment folder ends up with <code>raw/</code> (source <code>.npy</code> frames + per-well metadata JSON), a top-level points CSV, and — after processing — <code>images/&lt;well&gt;/</code> and <code>videos/</code>. See the <a href="https://github.com/E-Lab-SFSU/RoboCam3.1#output-structure-raw-burst-mode">full output structure</a> on GitHub.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Mid-run recovery</h2>
+    <p class="tagline" style="margin-bottom:0;">Pause/Resume/Stop live directly on the Experiment tab during a run. For anything else — a stuck jog, re-homing after an e-stop, toggling the laser by hand — the <a href="manual-control.html">Manual Control</a> tab is the tool for it, and it's also gated on homing for the same safety reason as step 2.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    MIT licensed · <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">E-Lab-SFSU/RoboCam3.1</a> · <a href="../docs.html">Back to docs</a>
+  </div>
+</footer>
+
+</body>
+</html>

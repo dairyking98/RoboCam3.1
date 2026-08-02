@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manual Control tab — RoboCam 3.1 Docs</title>
+<meta name="description" content="RoboCam 3.1 Manual Control tab: homing, jog pad, go-to, manual laser toggle, and raw G-code sender.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="../index.html">RoboCam 3.1</a>
+    <div class="links">
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#roadmap">Roadmap</a>
+      <a href="../docs.html" class="current">Docs</a>
+      <a href="../hardware.html">Hardware</a>
+      <a href="../gallery.html">Gallery</a>
+      <a href="../team.html">Team</a>
+      <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Documentation · Tab 5 of 6</div>
+    <h1>Manual Control</h1>
+    <p class="tagline">Direct hardware control outside of an experiment — homing, jogging, and troubleshooting.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="docs-subnav">
+      <a href="workflow.html">Workflow guide</a>
+      <a href="setup.html">1 · Setup</a>
+      <a href="motion-profiles.html">2 · Motion Profiles</a>
+      <a href="calibration.html">3 · Calibration</a>
+      <a href="experiment.html">4 · Experiment</a>
+      <a href="manual-control.html" class="current">5 · Manual Control</a>
+      <a href="processing.html">6 · Processing</a>
+    </div>
+
+    <h2>What's here</h2>
+    <ul>
+      <li><strong>Home All Axes</strong> / <strong>Disable Steppers</strong> (<code>M18</code>).</li>
+      <li><strong>XY/Z jog pad</strong> with preset or custom step size.</li>
+      <li><strong>Go-To</strong> by absolute coordinate.</li>
+      <li><strong>Manual Laser ON/OFF</strong> toggle.</li>
+      <li><strong>Raw G-code sender</strong> with a scrolling response log, for anything not exposed by a dedicated control.</li>
+    </ul>
+
+    <h3 class="subhead">Why this tab exists in the flow</h3>
+    <p>It's not part of the Calibration → Experiment happy path, but it's where you go when something needs correcting outside a run: initial homing after power-on, recovering from an e-stop or a stall, or manually checking the laser wiring before trusting it inside an experiment's Pre/ON/Post phases.</p>
+    <p>Relative jogging is gated on homed state, same as starting an experiment — the printer's reported position can't be trusted for a relative move until it's been homed at least once.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap pager">
+    <a class="pager-prev" href="experiment.html"><span class="pager-label">← Previous</span>Experiment</a>
+    <a class="pager-next" href="processing.html"><span class="pager-label">Next →</span>Processing</a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    MIT licensed · <a href="https://github.com/E-Lab-SFSU/RoboCam3.1">E-Lab-SFSU/RoboCam3.1</a> · <a href="../docs.html">Back to docs</a>
+  </div>
+</footer>
+
+</body>
+</html>
