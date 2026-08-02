@@ -13,14 +13,18 @@ This is the third rebuild of the platform, following [screamuch/RoboCam](https:/
 | **PySide6 GUI** | Six-tab desktop application: Setup, Motion Profiles, Calibration, Experiment, Manual Control, Processing. |
 | **Dual Motion Backends** | **Marlin** (USB/Serial) and **Klipper** (Moonraker HTTP API). Simulation backend for testing without hardware. |
 | **Multi-Camera Support** | Player One astronomy cameras (`pyPOACamera` SDK), Raspberry Pi cameras (Picamera2, true raw Bayer burst), and generic USB webcams (OpenCV). Setup tab enumerates and lets you pick a specific device. |
-| **4-Corner Calibration** | Bilinear interpolation from four physical corner coordinates. Saves/loads JSON profiles. Well map syncs live to the Experiment tab. |
-| **Two Capture Modes** | **Image** (single still per well) and **Raw Burst** (max-rate timestamped `.npy` sensor frames — the primary scientific capture mode; real-time AVI recording has been removed in favor of post-processing). |
+| **Motion Profiles** | Slider-based feed-rate (`M203`)/acceleration (`M201`)/jerk (`M205`) editor for Marlin, with save/load presets and three bundled Ender-5 S1 starting points. |
+| **4-Corner Calibration** | Bilinear interpolation from four physical corner coordinates. Saves/loads JSON profiles. Well map syncs live to the Experiment tab. Live preview has a toggleable, size-adjustable crosshair for aligning a well before recording a corner. |
+| **Two Capture Modes** | **Image** (single still per well, PNG/JPG/TIF) and **Raw Burst** (max-rate timestamped `.npy` sensor frames — the primary scientific capture mode; real-time AVI recording has been removed in favor of post-processing). |
 | **Laser Stimulation** | GPIO (`lgpio`, falling back to `RPi.GPIO`) or Klipper-gcode laser trigger, precisely timed within Raw Burst captures. Pre/ON/Post phases recorded continuously in one burst. |
 | **Per-Frame Timestamps** | Every raw burst frame is timestamped with `time.perf_counter()` precision. Actual inter-frame intervals are preserved — never averaged. |
-| **Post-Processing Pipeline** | The Processing tab (GUI) and `scripts/reconstruct_vfr.py` (CLI) convert `.npy` bursts into per-frame PNGs, a VFR MKV (archival, accurate timing), and a constant-fps MP4 (Pi-friendly playback). |
+| **Live Experiment ETA** | A countdown computed from the motion profile and measured capture/finalize costs, shown alongside verbose per-stage logging while a run is in progress. |
+| **Auto-Home & Powered Steppers** | Experiments auto-home if position isn't known; steppers stay powered (idle-timeout disabled) for the life of the connection so a parked axis can't drift. |
+| **Post-Processing Pipeline** | The Processing tab (GUI) and `scripts/reconstruct_vfr.py` (CLI) convert `.npy` bursts into per-frame PNG/JPEG images (loose or zipped), a VFR MKV (archival, lossless `ffv1` by default), and a constant-fps MP4 (Pi-friendly playback). |
 | **Session Persistence** | All experiment parameters, calibration selection, and camera settings restore automatically on next launch (`~/.local/share/RoboCam3/session.json`). |
-| **Homing Safety** | On motion connect, position is checked. If unhomed (0,0,0) or at the firmware park position, the printer is flagged as not-homed and experiments are blocked until "Home All Axes" is run. |
+| **Homing Safety** | On motion connect, position is checked. If unhomed (0,0,0) or at the firmware park position, the printer is flagged as not-homed and experiments are blocked until "Home All Axes" is run (or auto-homed when starting an experiment). |
 | **Headless CLI** | `python -m robocam <command>` for hardware testing and scripting without the GUI. |
+| **Demo Mode** | Fullscreen, keyboard-driven kiosk view (Manual Control tab) for well navigation and laser control from a distance. |
 
 ---
 
@@ -45,10 +49,11 @@ RoboCam3.1/
 │   ├── __init__.py                 # Empty package marker
 │   ├── main_window.py              # QMainWindow with six tabs, cross-panel wiring
 │   ├── setup_panel.py              # Hardware connection, camera enumeration, laser config
-│   ├── motion_profiles_panel.py    # Placeholder tab (feed-rate/accel/jerk — planned)
-│   ├── manual_control_panel.py     # Jog, go-to, laser toggle, raw G-code sender
-│   ├── calibration_panel.py        # Corner capture, well map, calibration save/load, quick capture
-│   ├── experiment_panel.py         # Experiment configuration and run control
+│   ├── motion_profiles_panel.py    # Feed-rate (M203)/accel (M201)/jerk (M205) editor, Marlin only, save/load presets
+│   ├── profile_slider.py           # ProfileSliderRow: labeled slider + spinbox + ghost-tick marker
+│   ├── manual_control_panel.py     # Jog, go-to, laser toggle, raw G-code sender, fullscreen Demo Mode
+│   ├── calibration_panel.py        # Corner capture, well map, crosshair overlay, calibration save/load, quick capture
+│   ├── experiment_panel.py         # Experiment configuration, ETA/experiment log, run control
 │   ├── processing_panel.py         # Batch .npy -> images/video conversion queue + progress
 │   ├── camera_widget.py            # Shared live preview (_FrameGrabber + _LivePreview)
 │   └── well_grid.py                # Custom-painted well-plate grid widget (navigate/select modes)
@@ -56,13 +61,18 @@ RoboCam3.1/
 │   ├── install_playerone_sdk.py    # Downloads and patches Player One SDK for Linux/ARM
 │   └── reconstruct_vfr.py          # CLI wrapper for robocam/postprocess.py
 ├── config/
-│   └── default_config.json         # Hardware and path configuration (auto-created/updated)
+│   ├── default_config.json         # Hardware and path configuration (auto-created/updated)
+│   ├── calibrations/               # Saved calibration JSON profiles
+│   ├── experiment_presets/         # Saved experiment configuration JSON files
+│   └── motion_profile_presets/     # Saved motion profile JSON files (feed/accel/jerk)
 ├── tests/
 │   ├── test_calibration.py         # WellPlate bilinear interpolation + path generation
 │   ├── test_config.py              # Config get/set/deep-update/persistence
-│   └── test_cli.py                 # Headless CLI argument parser (no hardware required)
+│   ├── test_cli.py                 # Headless CLI argument parser (no hardware required)
+│   └── test_experiment.py          # ExperimentRunner: target-fps pacing, ETA estimates, and more
 ├── docs/
 │   ├── recording_modes.md          # Design notes on raw-burst-first capture philosophy
+│   ├── robustness_log.md           # Debugging trail for hardware issues reported on other builds
 │   └── history.md                  # Project lineage: FlyCam -> screamuch/RoboCam -> RoboCam-Suite -> Suite2.0 -> 3.1
 ├── outputs/                        # Experiment output folders (configurable in GUI)
 ├── setup.sh / setup.bat            # Linux/Pi and Windows setup scripts
@@ -124,7 +134,7 @@ RoboCam 3.1's main window has six tabs. All tabs except **Experiment** are disab
 
 ### Tab 2 — Motion Profiles
 
-Placeholder tab. Will expose feed-rate, acceleration, and jerk settings (`M203`/`M201`/`M204`/`M205`) for both backends — not yet implemented.
+Read/edit/write max feed rate (`M203`), max acceleration (`M201`), and jerk (`M205`) for X/Y/Z via slider rows (X and Y always chained into a single "XY:" control). Each slider shows a "ghost tick" marking the value last confirmed on the printer; the field's border highlights orange when the current position would actually change something on Apply. **Read** queries `M503`; **Apply** sends the M-codes and saves to EEPROM (`M500`); **Reset to Defaults** reverts sliders to the last-read/applied values without contacting the printer. **Load** (Motion Profile Presets) only populates the sliders — it does not send anything to the printer; Apply is the only action that does. Marlin only — Klipper shows a disabled "not supported" message. Slider ranges are this rig's real firmware edit ceilings (a Creality Ender-5 S1), not generic values; three bundled presets (`slow`/`medium`/`fast`, all low-vibration-biased) ship in `config/motion_profile_presets/`, with `slow` applied by default on first printer connect each session. See `PROJECT_STATE.md` § 2 Tab 2 for full detail. Untested on real Marlin hardware — only exercised in simulate mode so far.
 
 ### Tab 3 — Calibration
 
@@ -139,21 +149,21 @@ Placeholder tab. Will expose feed-rate, acceleration, and jerk settings (`M203`/
 
 1. Enter an experiment name and pick a calibration file (refresh with the ↺ button).
 2. Choose capture mode:
-   - **Image**: single still per well (JPG/PNG/TIF), dwell time configurable.
+   - **Image**: single still per well (**PNG default**, or JPG/TIF), dwell time configurable.
    - **Raw Burst**: max-rate raw sensor frames for a set record duration. With **Use Laser** checked, the burst is split into Pre-laser / Laser ON / Post-laser phases, all captured continuously in one burst.
 3. Set/browse the output folder (defaults to `outputs/`; persisted to `config/default_config.json` and applied to the live runner immediately, no restart needed).
 4. Optionally save/load named **Experiment Presets** (JSON files under `config/experiment_presets/`).
 5. Select wells by clicking or dragging on the grid (Check All / Uncheck All / Invert helpers).
 6. Check **Auto-process after experiment** to have the Processing tab automatically pick up and convert the output the moment the run finishes.
-7. **Start Experiment** (blocked if the printer isn't homed). **Pause/Resume** and **Stop** are available mid-run. The live preview is paused and overlaid with "EXPERIMENT IN PROGRESS" for the whole run.
+7. **Start Experiment** — auto-homes first if position isn't known, otherwise blocked only on other guard-clause failures (no calibration, no wells selected). **Pause/Resume** and **Stop** are available mid-run. The live preview is paused and overlaid with "EXPERIMENT IN PROGRESS" for the whole run, alongside a scrolling **Experiment log** (per-stage: homing/moving/dwelling/recording/laser) and a live **ETA** countdown.
 
 ### Tab 5 — Manual Control
 
-Direct hardware control outside of an experiment: Home All Axes / Disable Steppers (M18), XY/Z jog pad with preset or custom step size, Go-To by absolute coordinate, manual Laser ON/OFF toggle, and a raw G-code sender with a scrolling response log.
+Direct hardware control outside of an experiment: Home All Axes / Disable Steppers (M18), XY/Z jog pad with preset or custom step size, Go-To by absolute coordinate, manual Laser ON/OFF toggle, a raw G-code sender with a scrolling response log (bypasses all safety checks — flagged with an on-screen warning), and a **Demo Mode** button that opens a fullscreen, keyboard-driven view for well navigation and laser control from a distance.
 
 ### Tab 6 — Processing
 
-Batch-converts one or more experiment folders' `.npy` bursts into PNG image sequences and/or video (MP4 + VFR MKV). Add folders manually, or let the Experiment tab's auto-process feature queue and start a folder automatically. Shows per-well and overall progress bars plus a scrolling log.
+Batch-converts one or more experiment folders' `.npy` bursts into independent PNG/JPEG image sequences (loose or zipped) and/or video (MP4 display + VFR MKV archival, lossless `ffv1` by default). Add folders manually, or let the Experiment tab's auto-process feature queue and start a folder automatically. Shows per-well and overall progress bars plus a scrolling log.
 
 ---
 
@@ -162,32 +172,37 @@ Batch-converts one or more experiment folders' `.npy` bursts into PNG image sequ
 ```
 outputs/20260625_133324_my_experiment/
   raw/
-    camera_meta.json                     ← written once per experiment (backend, bit depth, bayer pattern, gain, exposure, fps)
-    A1_20260625_133324_f00000.npy        ← raw sensor frames
-    A1_20260625_133324_f00001.npy
-    ...
-    A1_20260625_133324_metadata.json     ← per-frame timestamps, laser events, fps_average, duration_actual_s
+    camera_meta.json                          ← written once per experiment (backend, bit depth, bayer pattern, gain, exposure, fps, ...)
+    A1_20260625_133324_stack.npy              ← one memory-mapped (n_frames, H, W) array for the whole well
+    A1_20260625_133324_frames.jsonl           ← one JSON line per frame, appended as captured (crash-resilient sidecar)
+    A1_20260625_133324_metadata.json          ← frames_file, per-frame timestamps, laser events, fps_average, duration_actual_s
     A2_20260625_133324_metadata.json
     ...
   20260625_133324_my_experiment_points.csv   ← well positions and capture log
 ```
 
-After running the post-processing pipeline (Processing tab or `scripts/reconstruct_vfr.py`), `images/` and `videos/` are added:
+(Pre-2026-07-06 captures used one `.npy` file per frame instead of a stacked array — `postprocess.py` still reads that older format too.)
+
+After running the post-processing pipeline (Processing tab or `scripts/reconstruct_vfr.py`), image/video folders are added — each output format gets its own folder, never mixed together:
 
 ```
-  images/
+  images_png/
     A1/
       A1_00000_000006ms_laser-off.png   ← debayered, clean (no overlay)
       A1_00152_005003ms_laser-on.png
       ...
     A2/
       ...
-  videos/
-    A1_20260625_133324_vfr.mkv   ← VFR archival (accurate per-frame PTS)
+  images_jpeg/            ← only if JPEG output was selected
+    ...
+  videos_mp4/
     A1_20260625_133324.mp4       ← constant-fps display (H.264 baseline, Pi-friendly)
+  videos_vfr/
+    A1_20260625_133324_vfr.mkv   ← VFR archival (lossless ffv1 by default, accurate per-frame PTS)
     A2_20260625_133324_vfr.mkv
-    A2_20260625_133324.mp4
 ```
+
+Images/videos can optionally be packaged into one `.zip` per experiment per format (`images_png.zip`, `images_jpeg.zip`) instead of loose files, streamed directly into the archive.
 
 ---
 
@@ -202,14 +217,15 @@ python scripts/reconstruct_vfr.py outputs/20260625_133324_my_experiment/
 # Single well
 python scripts/reconstruct_vfr.py outputs/exp/raw/A1_20260625_133324_metadata.json
 
-# Images only
-python scripts/reconstruct_vfr.py outputs/exp/ --no-video
+# Each output format is a plain opt-in flag (no --no-X negations) — combine any of:
+python scripts/reconstruct_vfr.py outputs/exp/ --png
+python scripts/reconstruct_vfr.py outputs/exp/ --jpeg
+python scripts/reconstruct_vfr.py outputs/exp/ --mp4
+python scripts/reconstruct_vfr.py outputs/exp/ --vfr
+python scripts/reconstruct_vfr.py outputs/exp/ --png --zip   # zip the PNG sequence instead of loose files
 
-# Video only
-python scripts/reconstruct_vfr.py outputs/exp/ --no-images
-
-# Lossless video
-python scripts/reconstruct_vfr.py outputs/exp/ --codec ffv1
+# Alternate lossless VFR codec (default is ffv1)
+python scripts/reconstruct_vfr.py outputs/exp/ --vfr --codec ffv1
 
 # Monochrome sensor (skip Bayer debayer)
 python scripts/reconstruct_vfr.py outputs/exp/ --mono
@@ -279,7 +295,7 @@ The Setup tab's camera enumerator lets you override this and pick a specific dev
 
 ## Testing
 
-`tests/` contains hardware-free unit tests (pytest): calibration bilinear interpolation (`test_calibration.py`), config get/set/persistence (`test_config.py`), and CLI argument parsing (`test_cli.py`). Run with:
+`tests/` contains hardware-free unit tests (pytest): calibration bilinear interpolation (`test_calibration.py`), config get/set/persistence (`test_config.py`), CLI argument parsing (`test_cli.py`), and `ExperimentRunner` target-fps pacing / ETA estimates via a fake camera (`test_experiment.py`). Run with:
 
 ```bash
 pip install -e ".[dev]"
@@ -324,9 +340,9 @@ Three interchangeable motion backends behind a common `MotionBackend` interface 
 
 ### `robocam/experiment.py`
 
-`ExperimentRunner.run()` is the main experiment loop: for each selected well it moves the stage there (`move_absolute`), waits `delay_per_well` seconds to stabilize, captures (either a single still via `camera.get_frame()`, or a raw burst via the internal `_write_raw_burst()`), and appends a row to a per-experiment `points.csv`. In `raw` mode it also writes `camera_meta.json` once (from `camera.get_camera_meta()`) so the post-processing step knows how to debayer later.
+`ExperimentRunner.run()` is the main experiment loop: auto-homes if `motion.is_homed` is false, computes `eta_finish_time` from the motion profile plus measured capture/finalize costs, then for each selected well moves the stage there (`move_absolute`), waits `delay_per_well` seconds to stabilize, captures (either a single still via `camera.get_frame()`, or a raw burst via the internal `_write_raw_burst()`), and appends a row to a per-experiment `points.csv`. In `raw` mode it also writes `camera_meta.json` once (from `camera.get_camera_meta()`) so the post-processing step knows how to debayer later.
 
-`_write_raw_burst()` is the time-critical inner loop: it calls `camera.get_raw_frame()` back-to-back with no sleep, timestamping each frame with `time.perf_counter()` *after* the frame is in hand (not before capture is requested) and saving it immediately as a `.npy` file. If a `LaserController` is passed, it flips the laser on/off at the requested offsets within the same continuous loop and records each transition as a `laser_events` entry — this is what lets Pre/ON/Post all be captured in one uninterrupted burst rather than three separate recordings. The loop also polls `self.running`, which `stop()` clears, and `self.paused`/`resume()` let the outer loop (invoked between wells) pause without killing an in-flight capture. Runs are always driven from a background `QThread` (`ui/experiment_panel.py`'s `_ExperimentThread`), never the Qt main thread.
+`_write_raw_burst()` is the time-critical inner loop: it calls `camera.get_raw_frame()` back-to-back (paced to `Camera.get_target_fps()` when set below the exposure-derived ceiling), timestamping each frame with `time.perf_counter()` *after* the frame is in hand and writing it into a preallocated, memory-mapped `(n_frames, H, W)` `.npy` array via a bounded producer/writer-thread queue (`RAW_BURST_QUEUE_MAXSIZE`) so disk I/O doesn't block acquisition timing. If a `LaserController` is passed, it flips the laser on/off at the requested offsets within the same continuous loop and records each transition as a `laser_events` entry — this is what lets Pre/ON/Post all be captured in one uninterrupted burst rather than three separate recordings. The loop also polls `self.running`, which `stop()` clears, and `self.paused`/`resume()` let the outer loop (invoked between wells) pause without killing an in-flight capture. Once a well's frames are all in memory, the expensive finalize step (`stack.flush()` + `_trim_raw_stack()` down to the real frame count) is handed off to `_finalize_raw_burst_process()`, a `multiprocessing` **spawn** subprocess, so it overlaps with the next well's movement instead of blocking it (see `PROJECT_STATE.md` § 3 for why spawn, not fork). Runs are always driven from a background `QThread` (`ui/experiment_panel.py`'s `_ExperimentThread`), never the Qt main thread.
 
 ### `robocam/postprocess.py`
 
@@ -370,15 +386,15 @@ Builds five group boxes (Camera, 3-D Printer, Laser/GPIO, Hardware Status, Conne
 
 ### `ui/motion_profiles_panel.py`
 
-Single-widget placeholder tab — just a centered label describing planned functionality (reading/writing Marlin `M203`/`M201`/`M204`/`M205` or Klipper equivalents). No logic yet.
+Slider-based feed-rate (`M203`)/acceleration (`M201`)/jerk (`M205`) editor for X/Y (chained) and Z, using `ui/profile_slider.py`'s `ProfileSliderRow` (ghost-tick marker + orange border when Apply would change something). Read queries `M503`; Apply sends the M-codes plus `M500` to save to EEPROM; Reset to Defaults reverts sliders locally. Load (named presets under `config/motion_profile_presets/`) only populates the sliders — Apply is the only action that talks to the printer. Marlin only; shows a disabled message on Klipper. Untested on real Marlin hardware.
 
 ### `ui/manual_control_panel.py`
 
-Two-pane (`QSplitter`) layout: live preview on the left, scrollable controls on the right (Machine Controls, Jog, Go-To, Laser, raw G-code sender). All hardware calls run in short-lived daemon `threading.Thread`s (not `QThread`s, unlike the experiment/enumeration workers) so a slow serial round-trip never freezes the UI; the position label is refreshed by a 500ms `QTimer` reading `hw_state.get_motion()` directly rather than via a signal. The manual laser toggle keeps its own `LaserController` instance alive across button presses (reset to `None` on error so the next press re-initializes it) — deliberately separate from the one `ExperimentRunner` constructs internally during a run, so a leftover manual laser session can't collide with GPIO claims made during an experiment.
+Two-pane (`QSplitter`) layout: live preview on the left, scrollable controls on the right (Machine Controls, Jog, Go-To, Laser, raw G-code sender). All hardware calls run in short-lived daemon `threading.Thread`s (not `QThread`s, unlike the experiment/enumeration workers) so a slow serial round-trip never freezes the UI; the position label is refreshed by a 500ms `QTimer` reading `hw_state.get_motion()` directly rather than via a signal. The manual laser toggle keeps its own `LaserController` instance alive across button presses (reset to `None` on error so the next press re-initializes it) — deliberately separate from the one `ExperimentRunner` constructs internally during a run, so a leftover manual laser session can't collide with GPIO claims made during an experiment. Absolute-move paths (`_move_well`, `_goto`) warn-and-block when the printer isn't homed, same as Calibration's well-map click. The raw G-code sender shows a bold on-screen warning since it bypasses every safety check by design. `_enter_demo_mode()` opens a separate fullscreen `QMainWindow` (untested on real hardware) for kiosk-style well navigation and laser control: arrow-key jogging, on-screen keyboard-shortcut hints, nav buttons disabled at grid edges, keyboard-only exit (no on-screen button).
 
 ### `ui/calibration_panel.py`
 
-Three-column (`QSplitter`) layout: live preview, a scrollable stack of control groups (Movement, Camera Controls, Corner Calibration, Plate Dimensions, Save/Load, Quick Capture), and a clickable well map (`WellMapWidget`, wrapping a `WellGrid` in `NAVIGATE` mode). Setting all four corners (`_set_corner`) auto-triggers well-map generation once all four are present; `_compute_well_positions()` re-implements the same bilinear interpolation as `robocam.calibration.WellPlate` inline (kept in sync manually — both must agree since experiment loading falls back to recomputing from raw corners for older calibration files that lack `interpolated_positions`). "Quick Capture" reuses `ExperimentRunner._write_raw_burst()` directly (constructing a throwaway `ExperimentRunner` if `hw_state` doesn't have one yet) to record a short raw burst without going through the full experiment flow — written to `outputs/quick_capture/`. Session state (grid dimensions, pattern, camera exposure/gain, step size, last-loaded calibration path) is persisted through `session_manager` on every meaningful change and restored on tab construction.
+Three-column (`QSplitter`) layout: live preview (with a toggleable, size-adjustable crosshair overlay for centering a well before a corner capture), a scrollable stack of control groups (Movement, Camera Controls, Corner Calibration, Plate Dimensions, Save/Load, Quick Capture), and a clickable well map (`WellMapWidget`, wrapping a `WellGrid` in `NAVIGATE` mode). Setting all four corners (`_set_corner`) auto-triggers well-map generation once all four are present; `_compute_well_positions()` re-implements the same bilinear interpolation as `robocam.calibration.WellPlate` inline (kept in sync manually — both must agree since experiment loading falls back to recomputing from raw corners for older calibration files that lack `interpolated_positions`). "Quick Capture" reuses `ExperimentRunner._write_raw_burst()` directly (constructing a throwaway `ExperimentRunner` if `hw_state` doesn't have one yet) to record a short raw burst without going through the full experiment flow — written to `outputs/quick_capture/`. Session state (grid dimensions, pattern, camera exposure/gain, step size, last-loaded calibration path) is persisted through `session_manager` on every meaningful change and restored on tab construction.
 
 ### `ui/experiment_panel.py`
 
@@ -416,13 +432,13 @@ Hardware-free pytest suite. `test_calibration.py` checks `WellPlate`'s bilinear 
 
 | Status | Item |
 |---|---|
-| Bug (open) | Raw burst capture on the Pi camera (Picamera2 backend) is not producing correct output — something between `Camera.get_raw_frame()` and the `.npy` → BGR conversion in `postprocess.npy_to_bgr()` is wrong. Needs investigation: check the `raw` stream's actual format/bit-depth from `capture_array("raw")` vs. what `camera_meta.json` (`bit_depth`, `bayer_pattern`) claims, and whether the >8-bit scaling in `npy_to_bgr()` matches the real packed/unpacked pixel format. The Player One backend path is unaffected and has been verified working on real hardware, including full laser-timed experiment runs. |
+| Bug (open) | Raw burst capture on the Pi camera (Picamera2 backend) is not producing correct output — leading hypothesis is that the CSI-2 **packed** raw format (e.g. `SRGGB10_CSI2P`) is never unpacked before being treated as one `uint16` per pixel. Needs a Pi camera to confirm. The Player One backend path is unaffected and has been verified working on real hardware, including full laser-timed experiment runs. See `PROJECT_STATE.md` § 9 for the full diagnostic writeup. |
 | Untested | The Klipper motion backend is implemented (Moonraker HTTP API) but has not yet been run against real Klipper hardware — only Marlin has been verified end-to-end so far. |
+| Untested on real hardware | Motion Profiles tab, Demo Mode, crosshair overlay/slider, auto-home/ETA countdown, and Target FPS/Exposure decoupling are all implemented but have only been exercised in `simulate=True`/offscreen-Qt checks so far — see `PROJECT_STATE.md` § 9 for what's still pending real-hardware confirmation on each. |
 | Pending | Z-hop during experiment travel — a single `G0` command moves X/Y/Z simultaneously; collision risk if the lens is close to the plate walls. |
-| Planned | Motion Profiles tab: feed-rate/acceleration/jerk (`M203`/`M201`/`M204`/`M205`) read/write for both backends. |
 | Planned | Temperature control widgets. |
 | Planned | Extruder as pump/dispenser. |
 
-**Verified working on real hardware:** Player One raw-burst capture (including laser-timed Pre/ON/Post runs), the Processing tab's batch `.npy` → image/video conversion, `lgpio`-based laser control on Pi 5, the Setup tab's udev USB auto-installer for Player One permissions, and multi-camera enumeration/selection in the Setup tab.
+**Verified working on real hardware:** Player One raw-burst capture at its exposure-bound fps ceiling (including laser-timed Pre/ON/Post runs and the PR #14 throughput/ETA fixes), the Processing tab's batch `.npy` → image/video conversion (including the PNG/JPEG/MP4/VFR format split and ffv1 lossless default), `lgpio`-based laser control on Pi 5, the Setup tab's udev USB auto-installer for Player One permissions, multi-camera enumeration/selection in the Setup tab, and the PR #12 ETA-accuracy/homing-safety fixes.
 
 See `CHANGELOG.md` for released/unreleased change history and `PROJECT_STATE.md` for a deeper architecture snapshot intended as AI-agent handoff context.
