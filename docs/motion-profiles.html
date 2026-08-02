@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Motion Profiles tab — RoboCam 3.1 Docs</title>
-<meta name="description" content="RoboCam 3.1 Motion Profiles tab: planned feed-rate, acceleration, and jerk controls for Marlin and Klipper.">
+<meta name="description" content="RoboCam 3.1 Motion Profiles tab: read/write feed-rate, acceleration, and jerk on Marlin, with named presets.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
 <link rel="stylesheet" href="../style.css">
 </head>
@@ -30,7 +30,7 @@
   <div class="wrap">
     <div class="eyebrow">Documentation · Tab 2 of 6</div>
     <h1>Motion Profiles</h1>
-    <p class="tagline">Placeholder tab — not required for the calibrate-then-experiment flow today. Defaults from the connected backend apply.</p>
+    <p class="tagline">Read, tune, and save feed-rate, acceleration, and jerk on the Marlin backend. Optional — not required for the calibrate-then-experiment flow.</p>
   </div>
 </header>
 
@@ -46,9 +46,22 @@
       <a href="processing.html">6 · Processing</a>
     </div>
 
-    <h2>What's planned</h2>
-    <p>This tab will expose feed-rate, acceleration, and jerk settings — <code>M203</code> / <code>M201</code> / <code>M204</code> / <code>M205</code> — for both the Marlin and Klipper backends, letting you tune motion speed and smoothness without dropping to a raw G-code console. It's tracked on the <a href="../index.html#roadmap">roadmap</a> and not yet implemented.</p>
-    <p>Until it lands, motion runs at whatever feed-rate/acceleration/jerk the printer's firmware config already has, and any one-off changes can be sent as raw G-code from the <a href="manual-control.html">Manual Control</a> tab's G-code sender.</p>
+    <h2>What's here</h2>
+    <p>Read, edit, and write max feed rate (<code>M203</code>), max acceleration (<code>M201</code>), and jerk (<code>M205</code>) for X/Y/Z via slider rows — X and Y are always chained into a single "XY:" control, since this rig never needs them independent. Each slider shows a "ghost tick" marking the value last confirmed on the printer, and the field's border highlights orange when the current slider position would actually change something on Apply.</p>
+
+    <h3 class="subhead">Read / Apply / Reset</h3>
+    <p><strong>Read from Printer</strong> queries <code>M503</code>. <strong>Apply to Printer</strong> sends the M-codes and saves to EEPROM (<code>M500</code>). <strong>Reset to Defaults</strong> reverts the sliders to the last-read/applied values without contacting the printer.</p>
+
+    <h3 class="subhead">Presets</h3>
+    <p>Save or load named slider configurations under <code>config/motion_profile_presets/</code>. Loading a preset only populates the sliders — it doesn't send anything to the printer; Apply is the one action that actually pushes gcode. Three bundled presets ship at fast/medium/slow speed tiers, all biased toward low vibration; <strong>slow</strong> is the fallback default, applied automatically the first time the printer connects each session if nothing else has been read, applied, or loaded yet.</p>
+
+    <h3 class="subhead">Marlin only</h3>
+    <p>Klipper has no gcode equivalent for these settings, so the tab shows a disabled "not supported" message when that backend is selected. Sliders stay editable regardless of connection state, so a profile can be prepared offline and applied once a printer connects.</p>
+
+    <h3 class="subhead">Slider ranges</h3>
+    <p>Not generic placeholders — the min/max on every slider is this rig's actual firmware edit ceiling, sourced from the Creality Ender-5 S1's shipped Marlin <code>Configuration.h</code> (<code>LIMITED_MAX_FR_EDITING</code> / <code>LIMITED_MAX_ACCEL_EDITING</code> / <code>LIMITED_JERK_EDITING</code>). Sending a value above these gets silently clamped by the firmware anyway.</p>
+
+    <div class="step-note">Implemented and exercised in simulate mode, but not yet validated on real Marlin hardware — treat the bundled presets as reasoned starting points, not confirmed-optimal settings.</div>
   </div>
 </section>
 
