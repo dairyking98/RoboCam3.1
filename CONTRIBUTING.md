@@ -7,7 +7,7 @@ hardware compatibility, robustness, or reusability are especially welcome.
 ## Quick start
 
 ```bash
-git clone https://github.com/dairyking98/RoboCam3.1.git
+git clone https://github.com/E-Lab-SFSU/RoboCam3.1.git
 cd RoboCam3.1
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
@@ -40,7 +40,7 @@ parser. If you add a new feature, please add corresponding tests.
 
 ## Reporting bugs
 
-Open an issue at https://github.com/dairyking98/RoboCam3.1/issues and include:
+Open an issue at https://github.com/E-Lab-SFSU/RoboCam3.1/issues and include:
 - OS and Python version
 - Hardware (printer backend, camera model)
 - Steps to reproduce

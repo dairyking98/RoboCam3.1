@@ -97,7 +97,7 @@ RoboCam3.1/
 ### 1. Clone
 
 ```bash
-git clone https://github.com/dairyking98/RoboCam3.1.git
+git clone https://github.com/E-Lab-SFSU/RoboCam3.1.git
 cd RoboCam3.1
 ```
 
