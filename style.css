@@ -246,6 +246,61 @@ table.status th { color: var(--text-muted); font-weight: 600; font-size: 0.82rem
   border: 1px solid var(--border);
   margin: 1.25rem 0;
 }
+
+.part-viewer { margin: 1.5rem 0; }
+.stl-viewer-stage {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  margin-bottom: 0.9rem;
+}
+.part-tabs {
+  display: flex;
+  gap: 0.6rem;
+  overflow-x: auto;
+  padding-bottom: 0.3rem;
+}
+.part-tab {
+  flex: 0 0 auto;
+  width: 84px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: var(--bg-alt);
+  padding: 0.3rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  font-family: inherit;
+}
+.part-tab img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  background: #fff;
+  border-radius: 5px;
+  display: block;
+}
+.part-tab span {
+  font-size: 0.66rem;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.2;
+}
+.part-tab:hover { background: var(--accent-bg); }
+.part-tab.active { border-color: var(--accent); background: var(--accent-bg); }
+.part-tab.active span { color: var(--accent); font-weight: 600; }
+.part-active-info { margin-top: 0.9rem; }
+.part-active-download {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.92rem;
+  text-decoration: none;
+}
+.part-active-download:hover { text-decoration: underline; }
+.part-active-desc { font-size: 0.85rem; color: var(--text-muted); margin: 0.3rem 0 0; }
 .part-card .part-info {
   padding: 0.75rem 0.9rem 1rem;
 }

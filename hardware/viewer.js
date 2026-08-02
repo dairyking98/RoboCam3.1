@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-function initViewer(container) {
-  const src = container.dataset.src;
+const stlLoader = new STLLoader();
+
+function createScene(container) {
   const width = container.clientWidth;
   const height = container.clientHeight;
 
@@ -26,12 +27,6 @@ function initViewer(container) {
   rim.position.set(0, -1, -1.5);
   scene.add(rim);
 
-  const material = new THREE.MeshStandardMaterial({
-    color: 0xc9cbd2,
-    metalness: 0.15,
-    roughness: 0.55,
-  });
-
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
@@ -50,44 +45,6 @@ function initViewer(container) {
     resumeTimer = setTimeout(() => { controls.autoRotate = true; }, 2500);
   });
 
-  const loader = new STLLoader();
-  loader.load(src, (geometry) => {
-    geometry.computeBoundingBox();
-    geometry.computeVertexNormals();
-    const box = geometry.boundingBox;
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-    geometry.translate(-center.x, -center.y, -center.z);
-
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const radius = size.length() / 2 || 1;
-
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.rotation.x = -Math.PI / 2.4;
-    mesh.rotation.z = Math.PI / 6;
-    scene.add(mesh);
-
-    camera.position.set(radius * 1.6, radius * 1.2, radius * 1.8);
-    camera.near = radius / 100;
-    camera.far = radius * 20;
-    camera.updateProjectionMatrix();
-    controls.target.set(0, 0, 0);
-    controls.minDistance = radius * 0.6;
-    controls.maxDistance = radius * 6;
-    controls.update();
-
-    container.classList.add('loaded');
-  }, undefined, (err) => {
-    console.error('STL load failed:', src, err);
-    container.classList.add('loaded');
-    container.style.setProperty('--fallback', '1');
-    const msg = document.createElement('div');
-    msg.textContent = 'model failed to load';
-    msg.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.78rem;color:var(--text-muted);text-align:center;padding:1rem;';
-    container.appendChild(msg);
-  });
-
   renderer.setAnimationLoop(() => {
     controls.update();
     renderer.render(scene, camera);
@@ -101,6 +58,104 @@ function initViewer(container) {
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
   });
+
+  let currentMesh = null;
+
+  function showError() {
+    container.classList.add('loaded');
+    const msg = document.createElement('div');
+    msg.textContent = 'model failed to load';
+    msg.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.78rem;color:var(--text-muted);text-align:center;padding:1rem;';
+    container.appendChild(msg);
+  }
+
+  function loadSTL(src, onDone) {
+    container.classList.remove('loaded');
+    const existingMsg = container.querySelector('.viewer-error');
+    if (existingMsg) existingMsg.remove();
+
+    stlLoader.load(src, (geometry) => {
+      if (currentMesh) {
+        scene.remove(currentMesh);
+        currentMesh.geometry.dispose();
+        currentMesh.material.dispose();
+        currentMesh = null;
+      }
+
+      geometry.computeBoundingBox();
+      geometry.computeVertexNormals();
+      const box = geometry.boundingBox;
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      geometry.translate(-center.x, -center.y, -center.z);
+
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const radius = size.length() / 2 || 1;
+
+      const material = new THREE.MeshStandardMaterial({
+        color: 0xc9cbd2,
+        metalness: 0.15,
+        roughness: 0.55,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.rotation.x = -Math.PI / 2.4;
+      mesh.rotation.z = Math.PI / 6;
+      scene.add(mesh);
+      currentMesh = mesh;
+
+      camera.position.set(radius * 1.6, radius * 1.2, radius * 1.8);
+      camera.near = radius / 100;
+      camera.far = radius * 20;
+      camera.updateProjectionMatrix();
+      controls.target.set(0, 0, 0);
+      controls.minDistance = radius * 0.6;
+      controls.maxDistance = radius * 6;
+      controls.update();
+
+      container.classList.add('loaded');
+      if (onDone) onDone();
+    }, undefined, (err) => {
+      console.error('STL load failed:', src, err);
+      showError();
+    });
+  }
+
+  return { loadSTL };
 }
 
-document.querySelectorAll('.stl-viewer').forEach(initViewer);
+// Simple static viewers: one STL per container, loads once.
+document.querySelectorAll('.stl-viewer[data-src]').forEach((container) => {
+  const { loadSTL } = createScene(container);
+  loadSTL(container.dataset.src);
+});
+
+// Tabbed stage viewers: one large viewer with a thumbnail strip to swap models.
+document.querySelectorAll('.part-viewer').forEach((widget) => {
+  const stage = widget.querySelector('.stl-viewer-stage');
+  const tabs = widget.querySelectorAll('.part-tab');
+  const nameEl = widget.querySelector('.part-active-name');
+  const descEl = widget.querySelector('.part-active-desc');
+  const downloadEl = widget.querySelector('.part-active-download');
+  if (!stage || !tabs.length) return;
+
+  const { loadSTL } = createScene(stage);
+
+  function activate(tab) {
+    tabs.forEach((t) => t.classList.remove('active'));
+    tab.classList.add('active');
+    loadSTL(tab.dataset.src);
+    if (nameEl) nameEl.textContent = tab.dataset.name || '';
+    if (descEl) descEl.textContent = tab.dataset.desc || '';
+    if (downloadEl) {
+      downloadEl.href = tab.dataset.src;
+      downloadEl.textContent = `Download ${tab.dataset.name || 'model'} (.stl)`;
+    }
+  }
+
+  tabs.forEach((tab) => {
+    tab.addEventListener('click', () => activate(tab));
+  });
+
+  activate(tabs[0]);
+});

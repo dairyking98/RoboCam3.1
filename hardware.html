@@ -106,41 +106,33 @@
   <div class="wrap">
     <h2>3D-printed parts</h2>
     <p>Designed in Fusion 360 for the Ender-5 S1 + Player One combination above. STL files for printing are below; Fusion 360 source (<code>.f3d</code>) and step/iges exports are kept in the <a href="https://github.com/dairyking98/StentorCam">StentorCam</a> repository's <code>cad/</code> folder for anyone who needs to modify them.</p>
-    <div class="part-grid">
-      <div class="part-card">
-        <div class="stl-viewer" data-src="hardware/stentorcam_base.stl"></div>
-        <div class="part-info">
-          <a href="hardware/stentorcam_base.stl">StentorCam Base (.stl)</a>
-          <p>Clips the light plate to the printer bed.</p>
-        </div>
+    <div class="part-viewer">
+      <div class="stl-viewer stl-viewer-stage"></div>
+      <div class="part-tabs">
+        <button type="button" class="part-tab" data-src="hardware/stentorcam_base.stl" data-name="StentorCam Base" data-desc="Clips the light plate to the printer bed.">
+          <img src="hardware/renders/base.jpg" alt="StentorCam Base thumbnail">
+          <span>Base</span>
+        </button>
+        <button type="button" class="part-tab" data-src="hardware/lens_mount_ender_playerone.stl" data-name="Lens Mount (Ender + Player One)" data-desc="Replaces the extruder, holds camera + lens.">
+          <img src="hardware/renders/lensmount.jpg" alt="Lens Mount thumbnail">
+          <span>Lens Mount</span>
+        </button>
+        <button type="button" class="part-tab" data-src="hardware/t2_male_to_c_female.stl" data-name="T2-to-C Adapter" data-desc="Mates the mount to a C-mount lens.">
+          <img src="hardware/renders/t2adapter.jpg" alt="T2-to-C adapter thumbnail">
+          <span>T2-C Adapter</span>
+        </button>
+        <button type="button" class="part-tab" data-src="hardware/darkfield_24well.stl" data-name="Darkfield Mask, 24-well" data-desc="See the dedicated Darkfield mask section below.">
+          <img src="hardware/renders/darkfield24.jpg" alt="24-well darkfield mask thumbnail">
+          <span>Darkfield 24</span>
+        </button>
+        <button type="button" class="part-tab" data-src="hardware/darkfield_96well.stl" data-name="Darkfield Mask, 96-well" data-desc="See the dedicated Darkfield mask section below.">
+          <img src="hardware/renders/darkfield96.jpg" alt="96-well darkfield mask thumbnail">
+          <span>Darkfield 96</span>
+        </button>
       </div>
-      <div class="part-card">
-        <div class="stl-viewer" data-src="hardware/lens_mount_ender_playerone.stl"></div>
-        <div class="part-info">
-          <a href="hardware/lens_mount_ender_playerone.stl">Lens Mount, Ender + Player One (.stl)</a>
-          <p>Replaces the extruder, holds camera + lens.</p>
-        </div>
-      </div>
-      <div class="part-card">
-        <div class="stl-viewer" data-src="hardware/t2_male_to_c_female.stl"></div>
-        <div class="part-info">
-          <a href="hardware/t2_male_to_c_female.stl">T2-to-C adapter (.stl)</a>
-          <p>Mates the mount to a C-mount lens.</p>
-        </div>
-      </div>
-      <div class="part-card">
-        <div class="stl-viewer" data-src="hardware/darkfield_24well.stl"></div>
-        <div class="part-info">
-          <a href="hardware/darkfield_24well.stl">Darkfield mask, 24-well (.stl)</a>
-          <p>See the <a href="#darkfield">dedicated section</a> below.</p>
-        </div>
-      </div>
-      <div class="part-card">
-        <div class="stl-viewer" data-src="hardware/darkfield_96well.stl"></div>
-        <div class="part-info">
-          <a href="hardware/darkfield_96well.stl">Darkfield mask, 96-well (.stl)</a>
-          <p>See the <a href="#darkfield">dedicated section</a> below.</p>
-        </div>
+      <div class="part-active-info">
+        <a class="part-active-download" href="#"></a>
+        <p class="part-active-desc"></p>
       </div>
     </div>
     <p class="verified">The T2-to-C adapter has tight tolerances — it was designed for and printed on a Bambu X1C at highest layer precision with random seams enabled. Other printers/settings may need adjustment. The lens mount is specific to the Ender-5 S1's extruder mounting arrangement; other printers will need a redesign. The IR backlight pad itself is not a 3D-printed part — it's built from an acrylic sheet and IR LED strips — so there's no STL for it yet; a CAD design for a proper enclosure/mount may be added later.</p>
