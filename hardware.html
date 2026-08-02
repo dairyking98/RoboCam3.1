@@ -7,6 +7,7 @@
 <meta name="description" content="The physical apparatus RoboCam 3.1 drives: motion stage, camera, lens, illumination, and 3D-printed mounts — what it consists of and how to build it.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%93%B7</text></svg>">
 <link rel="stylesheet" href="style.css">
+<script type="module" src="hardware/viewer.js"></script>
 </head>
 <body>
 
@@ -99,35 +100,35 @@
     <p>Designed in Fusion 360 for the Ender-5 S1 + Player One combination above. STL files for printing are below; Fusion 360 source (<code>.f3d</code>) and step/iges exports are kept in the <a href="https://github.com/dairyking98/StentorCam">StentorCam</a> repository's <code>cad/</code> folder for anyone who needs to modify them.</p>
     <div class="part-grid">
       <div class="part-card">
-        <img src="hardware/renders/base.jpg" alt="StentorCam Base render">
+        <div class="stl-viewer" data-src="hardware/stentorcam_base.stl"></div>
         <div class="part-info">
           <a href="hardware/stentorcam_base.stl">StentorCam Base (.stl)</a>
           <p>Clips the light plate to the printer bed.</p>
         </div>
       </div>
       <div class="part-card">
-        <img src="hardware/renders/lensmount.jpg" alt="Lens Mount Ender PlayerOne render">
+        <div class="stl-viewer" data-src="hardware/lens_mount_ender_playerone.stl"></div>
         <div class="part-info">
           <a href="hardware/lens_mount_ender_playerone.stl">Lens Mount, Ender + Player One (.stl)</a>
           <p>Replaces the extruder, holds camera + lens.</p>
         </div>
       </div>
       <div class="part-card">
-        <img src="hardware/renders/t2adapter.jpg" alt="T2-male-to-C-female adapter render">
+        <div class="stl-viewer" data-src="hardware/t2_male_to_c_female.stl"></div>
         <div class="part-info">
           <a href="hardware/t2_male_to_c_female.stl">T2-to-C adapter (.stl)</a>
           <p>Mates the mount to a C-mount lens.</p>
         </div>
       </div>
       <div class="part-card">
-        <img src="hardware/renders/darkfield24.jpg" alt="24-well darkfield mask render">
+        <div class="stl-viewer" data-src="hardware/darkfield_24well.stl"></div>
         <div class="part-info">
           <a href="hardware/darkfield_24well.stl">Darkfield mask, 24-well (.stl)</a>
           <p>See the <a href="#darkfield">dedicated section</a> below.</p>
         </div>
       </div>
       <div class="part-card">
-        <img src="hardware/renders/darkfield96.jpg" alt="96-well darkfield mask render">
+        <div class="stl-viewer" data-src="hardware/darkfield_96well.stl"></div>
         <div class="part-info">
           <a href="hardware/darkfield_96well.stl">Darkfield mask, 96-well (.stl)</a>
           <p>See the <a href="#darkfield">dedicated section</a> below.</p>
@@ -143,6 +144,7 @@
     <h2>The darkfield mask</h2>
     <p>The darkfield mask is the part that makes the imaging itself work, not just the mounting. It implements <strong>transmission dark-field imaging</strong> for standard multi-well plates using a purely geometric trick — no additional optics required — so that a camera positioned above the plate sees a dark background with only the light <em>scattered</em> by objects in the well (e.g. a swimming <em>Stentor</em>) showing up as bright features. Unscattered illumination is rejected by the mask geometry itself.</p>
     <img src="hardware/renders/darkfield_diagram.png" alt="Darkfield imaging system geometry: mask, well plate, and camera arrangement, with parameters A, B, C labeled" style="width:100%;max-width:700px;display:block;margin:1.25rem 0;border-radius:10px;border:1px solid var(--border);background:#fff;">
+    <div class="stl-viewer stl-viewer-large" data-src="hardware/darkfield_24well.stl"></div>
     <p>An opaque mask beneath the well plate is aligned so each well sits above a corresponding masked region. Illumination from below is blocked by the mask directly under the well and can only emerge from the unmasked area around it, entering the well at oblique angles. Three parameters, tuned jointly, govern whether this works:</p>
     <ul>
       <li><strong>A — mask stop diameter:</strong> the opaque region's width beneath each well. Larger A blocks more direct light (better rejection) but throttles throughput; smaller A passes more light but risks direct-illumination leakage into the camera.</li>

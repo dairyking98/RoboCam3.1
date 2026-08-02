@@ -200,6 +200,52 @@ table.status th { color: var(--text-muted); font-weight: 600; font-size: 0.82rem
   background: #fff;
   display: block;
 }
+.stl-viewer {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: radial-gradient(circle at 50% 40%, #fdfdfe, #eef0f3);
+  cursor: grab;
+  touch-action: none;
+  overflow: hidden;
+}
+.stl-viewer:active { cursor: grabbing; }
+.stl-viewer canvas { display: block; width: 100% !important; height: 100% !important; }
+.stl-viewer::before {
+  content: "loading model…";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  background: inherit;
+}
+.stl-viewer.loaded::before { content: none; }
+.stl-viewer::after {
+  content: "drag to rotate · scroll to zoom · shift+drag to pan";
+  position: absolute;
+  left: 0.5rem;
+  bottom: 0.4rem;
+  font-size: 0.65rem;
+  color: rgba(0,0,0,0.45);
+  background: rgba(255,255,255,0.65);
+  padding: 0.1rem 0.4rem;
+  border-radius: 5px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.stl-viewer.loaded:hover::after,
+.stl-viewer.loaded:focus-within::after { opacity: 1; }
+.stl-viewer-large {
+  max-width: 500px;
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  margin: 1.25rem 0;
+}
 .part-card .part-info {
   padding: 0.75rem 0.9rem 1rem;
 }
