@@ -24,6 +24,9 @@ DEFAULT_SESSION: Dict[str, Any] = {
         "laser_on": 1.0,
         "post": 2.0,
         "cal_file": "",
+        "loop_enabled": False,
+        "loop_interval_s": 0.0,
+        "loop_duration_s": 3600.0,
     },
     "calibration": {
         "cols": 12,

@@ -1,10 +1,16 @@
-"""Tests for the raw-burst .npy stack trim helper and fps pacing."""
+"""Tests for the raw-burst .npy stack trim helper, fps pacing, and loop mode."""
+import json
+import threading
 import time
+from datetime import datetime, timedelta
 
 import numpy as np
 import pytest
 
-from robocam.experiment import ExperimentRunner, _trim_raw_stack, _finalize_raw_burst_process
+from robocam.experiment import (
+    ExperimentRunner, _trim_raw_stack, _finalize_raw_burst_process,
+    estimate_loop_cycle_count, estimate_loop_finish_s,
+)
 
 
 class _FakeCamera:
@@ -16,6 +22,18 @@ class _FakeCamera:
         self.resolution = resolution
         self._exposure_us = exposure_us
         self._target_fps = target_fps
+        self.backend = "generic"
+
+    def get_frame(self):
+        # Still-image path (loop mode / growth imaging) -- unlike
+        # get_raw_frame(), no exposure-length sleep here since these frames
+        # aren't used for fps-pacing assertions, just for run()/run_loop()
+        # integration tests that need a valid cv2.imwrite()-able array.
+        w, h = self.resolution  # resolution is (w, h), matching _write_raw_burst's unpacking
+        return np.zeros((h, w), dtype=np.uint8)
+
+    def get_camera_meta(self):
+        return {"bit_depth": 8}
 
     def get_exposure(self):
         return self._exposure_us
@@ -42,6 +60,41 @@ class _FakeCamera:
         # per second regardless of exposure.
         time.sleep(self._exposure_us / 1_000_000.0)
         return np.zeros(self.resolution, dtype=np.uint8)
+
+
+class _FakeMotion:
+    """Minimal stand-in for the Marlin motion controller -- just enough
+    surface for ExperimentRunner.run()/run_loop() to run end-to-end without
+    real hardware. supports_profiles=False (the default) skips the
+    ETA-estimate branch entirely (the simplest path for tests that don't
+    care about estimation itself, just loop-mode mechanics); pass
+    supports_profiles=True for tests that need estimate_cycle_duration_s()
+    to actually return a value."""
+
+    def __init__(self, supports_profiles=False):
+        self.is_homed = True
+        self.supports_profiles = supports_profiles
+        self.X = self.Y = self.Z = 0.0
+        self.command_delay = 0.0
+
+    def home(self):
+        self.is_homed = True
+
+    def move_absolute(self, X, Y, Z):
+        self.X, self.Y, self.Z = X, Y, Z
+
+    def read_profiles(self):
+        return {
+            "max_feed_x": 100.0, "max_accel_x": 500.0,
+            "max_feed_y": 100.0, "max_accel_y": 500.0,
+            "max_feed_z": 20.0, "max_accel_z": 100.0,
+        }
+
+    def get_cached_profile(self):
+        # estimate_cycle_duration_s() reads the cache by default (see its
+        # docstring) rather than triggering a live read -- mirror
+        # MotionController's real behavior (cache == last-read profile).
+        return self.read_profiles()
 
 
 def _make_stack(path, ceiling, real, h=8, w=10, dtype=np.uint8, fill=None):
@@ -155,3 +208,372 @@ class TestTargetFpsPacing:
         camera = _FakeCamera(exposure_us=10_000, target_fps=5_000.0)
         result = self._run_burst(tmp_path, monkeypatch, camera)
         assert result["fps_average"] < 150
+
+
+def _make_runner(tmp_path, camera=None, motion=None):
+    runner = ExperimentRunner(motion_controller=motion or _FakeMotion(), camera=camera or _FakeCamera())
+    runner.out_dir = str(tmp_path)
+    return runner
+
+
+def _manifest_records(loop_dir):
+    manifest = loop_dir / "loop_manifest.jsonl"
+    if not manifest.exists():
+        return []
+    return [json.loads(line) for line in manifest.read_text().splitlines() if line.strip()]
+
+
+class TestRunLoop:
+    """Loop mode: repeat run() with an inter-cycle interval (0 = back-to-back
+    "habituation"-style, N seconds = "growth imaging"-style) until a
+    wall-clock duration elapses. Any capture mode is supported -- there's
+    no separate growth-imaging flag, just interval_s/duration_s params."""
+
+    def test_habituation_back_to_back_nested_folders(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        runner.run_loop(
+            name="hab", positions=[(0, 0, 0), (1, 1, 0)], labels=["A1", "A2"],
+            delay_per_well=0.1, mode="image",
+            interval_s=0.0, duration_s=1.0,
+        )
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_hab_loop")]
+        assert len(loop_dirs) == 1
+        loop_dir = loop_dirs[0]
+
+        records = _manifest_records(loop_dir)
+        ok_records = [r for r in records if r["status"] == "ok"]
+        assert len(ok_records) >= 2, "expected at least 2 back-to-back cycles in 1s"
+        for r in ok_records:
+            assert r["labels"] == ["A1", "A2"]
+
+        cycle_dirs = sorted(d for d in loop_dir.iterdir() if d.is_dir())
+        assert len(cycle_dirs) == len(ok_records)
+        for d in cycle_dirs:
+            assert list(d.glob("*_points.csv")), f"{d} missing points.csv -- not a normal experiment dir"
+
+    def test_mid_loop_status_says_pass_not_experiment_finished(self, tmp_path):
+        # A per-cycle "Experiment finished" message would misleadingly read
+        # as the whole loop being done while it's actually still looping
+        # (waiting out the interval, or about to start the next cycle).
+        runner = _make_runner(tmp_path)
+        messages = []
+        runner.run_loop(
+            name="wording", positions=[(0, 0, 0)], labels=["A1"],
+            delay_per_well=0.0, mode="image", callback=messages.append,
+            interval_s=0.0, duration_s=1.0,
+        )
+        assert any(m.startswith("Pass ") and m.endswith(" finished.") for m in messages), messages
+        assert not any(m == "Experiment finished." for m in messages), messages
+
+    def test_loop_deadline_set_during_run_and_cleared_after(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        seen_deadline = {}
+
+        def _capture_deadline(msg):
+            if runner.loop_deadline is not None and "deadline" not in seen_deadline:
+                seen_deadline["deadline"] = runner.loop_deadline
+
+        before = datetime.now()
+        runner.run_loop(
+            name="deadline", positions=[(0, 0, 0)], labels=["A1"],
+            delay_per_well=0.0, mode="image", callback=_capture_deadline,
+            interval_s=0.0, duration_s=1.0,
+        )
+        after = datetime.now()
+
+        assert "deadline" in seen_deadline, "loop_deadline should be set while looping"
+        # No motion profile (default _FakeMotion) -> falls back to the raw
+        # duration_s-based deadline, ~1s after the loop started.
+        assert before <= seen_deadline["deadline"] <= after + timedelta(seconds=1.0)
+        assert runner.loop_deadline is None, "loop_deadline should be cleared once the loop ends"
+
+    def test_loop_deadline_uses_calculated_finish_when_profile_available(self, tmp_path):
+        # With a motion profile cached, loop_deadline should reflect
+        # estimate_loop_finish_s() -- the realistic finish estimate -- not
+        # a naive start + duration_s.
+        motion = _FakeMotion(supports_profiles=True)
+        runner = _make_runner(tmp_path, motion=motion)
+        positions = [(10.0, 0.0, 0.0)]
+
+        estimate = runner.estimate_cycle_duration_s(positions, delay_per_well=0.0, mode="image")
+        assert estimate is not None
+        pass_s, _ = estimate
+        expected_finish_s = estimate_loop_finish_s(pass_s, interval_s=0.0, duration_s=1.0)
+
+        seen_deadline = {}
+
+        def _capture_deadline(msg):
+            if runner.loop_deadline is not None and "deadline" not in seen_deadline:
+                seen_deadline["deadline"] = runner.loop_deadline
+
+        start = datetime.now()
+        runner.run_loop(
+            name="calcfinish", positions=positions, labels=["A1"],
+            delay_per_well=0.0, mode="image", callback=_capture_deadline,
+            interval_s=0.0, duration_s=1.0,
+        )
+
+        assert "deadline" in seen_deadline
+        actual_span = (seen_deadline["deadline"] - start).total_seconds()
+        assert abs(actual_span - expected_finish_s) < 0.2
+
+    def test_interval_spacing(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        interval_s = 2.0
+        runner.run_loop(
+            name="growth", positions=[(0, 0, 0)], labels=["A1"],
+            delay_per_well=0.0, mode="image",
+            interval_s=interval_s, duration_s=3.5,
+        )
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_growth_loop")]
+        loop_dir = loop_dirs[0]
+        ok_records = [r for r in _manifest_records(loop_dir) if r["status"] == "ok"]
+        assert len(ok_records) >= 2
+
+        starts = [datetime.fromisoformat(r["start"]) for r in ok_records[:2]]
+        gap = (starts[1] - starts[0]).total_seconds()
+        # Cycle work itself is near-instant (1 well, no dwell), so the gap
+        # should track the configured interval, not be back-to-back.
+        assert interval_s - 1.0 < gap < interval_s + 1.5
+
+    def test_raw_mode_allowed_in_loop(self, tmp_path):
+        # Growth imaging's old still-image-only restriction is gone -- any
+        # capture mode works in loop mode now, including raw bursts.
+        camera = _FakeCamera(exposure_us=5_000)
+        runner = _make_runner(tmp_path, camera=camera)
+        runner.run_loop(
+            name="rawloop", positions=[(0, 0, 0)], labels=["A1"],
+            mode="raw", pre_duration=0.05,
+            interval_s=0.0, duration_s=1.0,
+        )
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_rawloop_loop")]
+        assert len(loop_dirs) == 1
+        ok_records = [r for r in _manifest_records(loop_dirs[0]) if r["status"] == "ok"]
+        assert len(ok_records) >= 1
+        for d in loop_dirs[0].iterdir():
+            if not d.is_dir():
+                continue
+            assert list((d / "raw").glob("*_stack.npy")), f"{d} missing raw stack"
+
+    def test_retry_once_then_abort(self, tmp_path, monkeypatch):
+        runner = _make_runner(tmp_path)
+        call_count = {"n": 0}
+
+        def fake_run(**kwargs):
+            call_count["n"] += 1
+            runner.status_msg = "Experiment error: forced failure"
+            runner.last_run_ok = False
+            runner.last_cycle_estimate_s = None
+
+        monkeypatch.setattr(runner, "run", fake_run)
+        runner.run_loop(
+            name="fail", positions=[(0, 0, 0)], labels=["A1"],
+            interval_s=0.0, duration_s=60.0,
+        )
+
+        assert call_count["n"] == 2, "should retry exactly once, not loop forever"
+        assert runner.looping is False
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_fail_loop")]
+        records = _manifest_records(loop_dirs[0])
+        statuses = [r["status"] for r in records]
+        assert statuses == ["error_retrying", "aborted_after_retry_failure"]
+
+    def test_stop_during_inter_cycle_sleep_is_immediate(self, tmp_path):
+        runner = _make_runner(tmp_path)
+        thread = threading.Thread(
+            target=runner.run_loop,
+            kwargs=dict(
+                name="stopme", positions=[(0, 0, 0)], labels=["A1"],
+                delay_per_well=0.0, mode="image",
+                interval_s=600.0, duration_s=600.0,
+            ),
+        )
+        thread.start()
+        # Wait for cycle 1 to complete and enter the (long) inter-cycle sleep.
+        deadline = time.time() + 5.0
+        while time.time() < deadline and runner.current_cycle < 1:
+            time.sleep(0.02)
+        time.sleep(0.1)  # let it settle into the sleep loop
+
+        runner.stop()
+        thread.join(timeout=3.0)
+        assert not thread.is_alive(), "stop() during inter-cycle sleep must not wait out the interval"
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_stopme_loop")]
+        ok_records = [r for r in _manifest_records(loop_dirs[0]) if r["status"] == "ok"]
+        assert len(ok_records) == 1
+
+    def test_deadline_passing_during_sleep_ends_the_loop_promptly(self, tmp_path):
+        # interval_s (10s) >> duration_s (1s): cycle 1 finishes fast, then
+        # computes a ~10s sleep -- but the deadline has already passed by
+        # then, so the loop must not sleep out the full interval waiting
+        # for a cycle 2 that will never be allowed to start.
+        runner = _make_runner(tmp_path)
+        start = time.time()
+        runner.run_loop(
+            name="deadlinesleep", positions=[(0, 0, 0)], labels=["A1"],
+            delay_per_well=0.0, mode="image",
+            interval_s=10.0, duration_s=1.0,
+        )
+        elapsed = time.time() - start
+        assert elapsed < 3.0, f"run_loop() took {elapsed:.1f}s -- slept out the interval instead of respecting duration_s"
+
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_deadlinesleep_loop")]
+        ok_records = [r for r in _manifest_records(loop_dirs[0]) if r["status"] == "ok"]
+        assert len(ok_records) == 1
+
+    def test_disk_space_check_aborts_before_new_cycle(self, tmp_path, monkeypatch):
+        runner = _make_runner(tmp_path)
+
+        class _FakeUsage:
+            free = 1  # far below MIN_FREE_DISK_BYTES
+
+        monkeypatch.setattr(
+            "robocam.experiment.shutil.disk_usage", lambda path: _FakeUsage()
+        )
+        runner.run_loop(
+            name="full", positions=[(0, 0, 0)], labels=["A1"],
+            interval_s=0.0, duration_s=60.0,
+        )
+
+        assert runner.current_cycle == 0
+        loop_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.endswith("_full_loop")]
+        records = _manifest_records(loop_dirs[0])
+        assert len(records) == 1
+        assert records[0]["status"] == "aborted_disk_full"
+        assert [d for d in loop_dirs[0].iterdir() if d.is_dir()] == []
+
+
+class TestEstimateCycleDuration:
+    """estimate_cycle_duration_s() is the single source of truth run()'s own
+    ETA and loop mode's pre-flight interval-vs-duration check both use."""
+
+    def test_returns_none_without_motion_profile(self, tmp_path):
+        runner = _make_runner(tmp_path)  # default _FakeMotion: supports_profiles=False
+        result = runner.estimate_cycle_duration_s([(0, 0, 0)], delay_per_well=1.0, mode="image")
+        assert result is None
+
+    def test_returns_estimate_with_motion_profile(self, tmp_path):
+        motion = _FakeMotion(supports_profiles=True)
+        runner = _make_runner(tmp_path, motion=motion)
+        result = runner.estimate_cycle_duration_s([(10.0, 0.0, 0.0)], delay_per_well=1.0, mode="image")
+        assert result is not None
+        total_s, move_estimates = result
+        assert total_s > 1.0  # at least the dwell time
+        assert len(move_estimates) == 1
+
+    def test_passed_in_profile_skips_hardware_read(self, tmp_path):
+        # A caller recomputing this live on every UI change (e.g. well
+        # selection) must not trigger a fresh motion.read_profiles() call --
+        # for Marlin that's a real serial round-trip. supports_profiles is
+        # left False here specifically so a fallback read would return None,
+        # proving the profile= value is what's actually used.
+        motion = _FakeMotion(supports_profiles=False)
+        runner = _make_runner(tmp_path, motion=motion)
+        cached_profile = {
+            "max_feed_x": 100.0, "max_accel_x": 500.0,
+            "max_feed_y": 100.0, "max_accel_y": 500.0,
+            "max_feed_z": 20.0, "max_accel_z": 100.0,
+        }
+        result = runner.estimate_cycle_duration_s(
+            [(10.0, 0.0, 0.0)], delay_per_well=1.0, mode="image", profile=cached_profile,
+        )
+        assert result is not None
+        total_s, _ = result
+        assert total_s > 1.0
+
+    def test_default_path_never_calls_read_profiles(self, tmp_path):
+        # run() calls this once per cycle in loop mode -- profile=None (the
+        # default) must go through the cache (get_cached_profile()), never
+        # a fresh read_profiles() call, or a multi-day loop would hammer
+        # the printer with hundreds of unnecessary M503 round-trips.
+        class _AssertNoLiveRead(_FakeMotion):
+            def read_profiles(self):
+                raise AssertionError("read_profiles() must not be called by the default path")
+
+            def get_cached_profile(self):
+                # Must NOT delegate to read_profiles() -- that's the whole
+                # point of a cache: available with zero hardware I/O.
+                return {
+                    "max_feed_x": 100.0, "max_accel_x": 500.0,
+                    "max_feed_y": 100.0, "max_accel_y": 500.0,
+                    "max_feed_z": 20.0, "max_accel_z": 100.0,
+                }
+
+        motion = _AssertNoLiveRead(supports_profiles=True)
+        runner = _make_runner(tmp_path, motion=motion)
+        result = runner.estimate_cycle_duration_s([(10.0, 0.0, 0.0)], delay_per_well=1.0, mode="image")
+        assert result is not None
+
+
+class TestEstimateLoopCycleCount:
+    def test_back_to_back_uses_pass_time_as_period(self):
+        # interval_s=0 -> cycles run back-to-back, period is just pass_s.
+        assert estimate_loop_cycle_count(pass_s=10.0, interval_s=0.0, duration_s=95.0) == 10
+
+    def test_interval_longer_than_pass_time_dominates(self):
+        assert estimate_loop_cycle_count(pass_s=5.0, interval_s=30.0, duration_s=95.0) == 4
+
+    def test_pass_time_longer_than_interval_dominates(self):
+        # A too-short interval doesn't speed anything up -- period is still
+        # bounded by how long a pass actually takes.
+        assert estimate_loop_cycle_count(pass_s=30.0, interval_s=5.0, duration_s=95.0) == 4
+
+    def test_at_least_one_cycle_if_duration_positive(self):
+        assert estimate_loop_cycle_count(pass_s=1000.0, interval_s=0.0, duration_s=1.0) == 1
+
+    def test_zero_duration_or_pass_time_gives_zero(self):
+        assert estimate_loop_cycle_count(pass_s=10.0, interval_s=0.0, duration_s=0.0) == 0
+        assert estimate_loop_cycle_count(pass_s=0.0, interval_s=0.0, duration_s=60.0) == 0
+
+
+class TestEstimateLoopFinishS:
+    """The loop's actual total runtime is always at least duration_s --
+    run_loop() only stops *starting* new cycles once duration_s elapses,
+    but the inter-cycle sleep after the last cycle still runs out (capped
+    at that same deadline), so elapsed time reaches duration_s regardless
+    of how the interval divides into it. It can be *more* than duration_s
+    only when the last cycle's own pass_s alone pushes past the deadline
+    (pass-bound case) -- unavoidable, a cycle always finishes rather than
+    aborting mid-well."""
+
+    def test_back_to_back_extends_past_duration_by_the_final_pass(self):
+        # 10 cycles of 10s each = 100s actual, vs. the 95s configured.
+        assert estimate_loop_finish_s(pass_s=10.0, interval_s=0.0, duration_s=95.0) == 100.0
+
+    def test_interval_bound_clamps_to_duration_even_though_the_last_cycle_finishes_earlier(self):
+        # Regression case for the exact scenario reported live: 4 cycles at
+        # a 30s period (start at 0/30/60/90), each a 14s pass -- the last
+        # one's own capture finishes at 90+14=104s, well under the
+        # configured 120s, but the trailing inter-cycle sleep (capped at
+        # the deadline) still runs the loop out to the full 120s. Before
+        # this fix, the formula returned the too-short 104s.
+        assert estimate_loop_finish_s(pass_s=14.0, interval_s=30.0, duration_s=120.0) == 120.0
+
+    def test_interval_bound_lines_up_exactly_with_duration(self):
+        # 4 cycles at a 30s period (start at 0/30/60/90), last one
+        # finishes at 90 + 5s pass = 95, which happens to equal the
+        # configured duration exactly here.
+        assert estimate_loop_finish_s(pass_s=5.0, interval_s=30.0, duration_s=95.0) == 95.0
+
+    def test_pass_bound_extends_past_duration_by_the_full_last_pass(self):
+        # 4 cycles at a 30s period (pass_s dominates the period too here),
+        # start at 0/30/60/90, last one finishes at 90 + 30 = 120 -- a
+        # genuine overrun past the 95s configured duration.
+        assert estimate_loop_finish_s(pass_s=30.0, interval_s=5.0, duration_s=95.0) == 120.0
+
+    def test_falls_back_to_duration_when_no_cycles_expected(self):
+        assert estimate_loop_finish_s(pass_s=0.0, interval_s=0.0, duration_s=60.0) == 60.0
+
+    def test_never_returns_less_than_duration(self):
+        import random
+        rng = random.Random(0)
+        for _ in range(200):
+            pass_s = rng.uniform(0.1, 50.0)
+            interval_s = rng.uniform(0.0, 50.0)
+            duration_s = rng.uniform(1.0, 200.0)
+            assert estimate_loop_finish_s(pass_s, interval_s, duration_s) >= duration_s

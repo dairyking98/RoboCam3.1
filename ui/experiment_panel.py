@@ -25,12 +25,13 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QPushButton, QComboBox, QLineEdit,
-    QDoubleSpinBox, QCheckBox, QSplitter, QScrollArea,
+    QDoubleSpinBox, QSpinBox, QCheckBox, QSplitter, QScrollArea,
     QMessageBox, QFileDialog, QTextEdit,
 )
 
 from robocam.calibration import WellPlate
 from robocam.config import get_config
+from robocam.experiment import estimate_loop_cycle_count
 import robocam.hw_state as hw_state
 from robocam.session import session_manager
 from ui.camera_widget import _FrameGrabber, _LivePreview
@@ -56,9 +57,12 @@ class _ExperimentThread(QThread):
 
     def __init__(self, runner, name, positions, labels, delay,
                  mode, image_format, use_laser,
-                 pre_duration, laser_on_duration, post_duration, parent=None):
+                 pre_duration, laser_on_duration, post_duration,
+                 loop_enabled=False, interval_s=0.0,
+                 duration_s=3600.0, parent=None):
         super().__init__(parent)
         self._runner = runner
+        self._loop_enabled = loop_enabled
         self._kwargs = dict(
             name=name, positions=positions, labels=labels,
             delay_per_well=delay, callback=self._on_status,
@@ -66,12 +70,20 @@ class _ExperimentThread(QThread):
             pre_duration=pre_duration, laser_on_duration=laser_on_duration,
             post_duration=post_duration,
         )
+        if loop_enabled:
+            self._kwargs.update(
+                interval_s=interval_s,
+                duration_s=duration_s,
+            )
 
     def _on_status(self, msg: str):
         self.status_update.emit(msg)
 
     def run(self):
-        self._runner.run(**self._kwargs)
+        if self._loop_enabled:
+            self._runner.run_loop(**self._kwargs)
+        else:
+            self._runner.run(**self._kwargs)
         self.finished.emit()
 
     def stop(self):
@@ -131,6 +143,7 @@ class ExperimentPanel(QWidget):
         col2_layout.setSpacing(6)
         col2_layout.setContentsMargins(4, 4, 4, 4)
         col2_layout.addWidget(self._build_settings_group())
+        col2_layout.addWidget(self._build_loop_group())
         col2_layout.addWidget(self._build_presets_group())
         col2_layout.addWidget(self._build_control_group())
         col2_layout.addStretch()
@@ -174,6 +187,28 @@ class ExperimentPanel(QWidget):
         self.duration_spin.valueChanged.connect(self._autosave)
         self.laser_on_spin.valueChanged.connect(self._autosave)
         self.post_spin.valueChanged.connect(self._autosave)
+        self.loop_enabled_chk.toggled.connect(self._autosave)
+        for spin in (self.loop_interval_h_spin, self.loop_interval_m_spin, self.loop_interval_s_spin,
+                     self.loop_duration_h_spin, self.loop_duration_m_spin, self.loop_duration_s_spin):
+            spin.valueChanged.connect(self._autosave)
+
+        # Live "estimated time per pass" recompute (debounced) whenever
+        # anything that feeds estimate_cycle_duration_s() changes.
+        self.well_grid.selection_changed.connect(self._schedule_pass_estimate)
+        self.mode_combo.currentTextChanged.connect(self._schedule_pass_estimate)
+        self.dwell_spin.valueChanged.connect(self._schedule_pass_estimate)
+        self.duration_spin.valueChanged.connect(self._schedule_pass_estimate)
+        self.use_laser_chk.toggled.connect(self._schedule_pass_estimate)
+        self.laser_on_spin.valueChanged.connect(self._schedule_pass_estimate)
+        self.post_spin.valueChanged.connect(self._schedule_pass_estimate)
+        self.img_fmt_combo.currentTextChanged.connect(self._schedule_pass_estimate)
+        self.override_cal_chk.toggled.connect(self._schedule_pass_estimate)
+        self.cal_combo.currentIndexChanged.connect(self._schedule_pass_estimate)
+        self.loop_enabled_chk.toggled.connect(self._schedule_pass_estimate)
+        for spin in (self.loop_interval_h_spin, self.loop_interval_m_spin, self.loop_interval_s_spin,
+                     self.loop_duration_h_spin, self.loop_duration_m_spin, self.loop_duration_s_spin):
+            spin.valueChanged.connect(self._schedule_pass_estimate)
+        self._schedule_pass_estimate()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -187,6 +222,13 @@ class ExperimentPanel(QWidget):
             w, h = self._h_splitter.width(), self._v_splitter.height()
             self._h_splitter.setSizes([w // 2, w - w // 2])
             self._v_splitter.setSizes([h * 2 // 3, h - h * 2 // 3])
+
+        # Every time this tab becomes visible (including app launch), not
+        # just once: hardware may have connected (or a motion profile been
+        # applied) on the Setup/Motion Profiles tab since the last time this
+        # estimate was computed, with nothing on *this* tab having changed
+        # to otherwise trigger a recompute.
+        self._schedule_pass_estimate()
 
     def closeEvent(self, event):
         self._grabber.stop()
@@ -297,8 +339,90 @@ class ExperimentPanel(QWidget):
         browse_btn.setFixedWidth(70)
         browse_btn.clicked.connect(self._browse_output_dir)
         out_row.addWidget(browse_btn)
-        layout.addLayout(out_row, row, 1)
+        layout.addLayout(out_row, row, 1); row += 1
 
+        # Live estimate of one pass's duration -- recomputed as well
+        # selection, calibration, mode, or timing settings change. Shared
+        # by loop mode (which adds its own cycle-count line, see
+        # _build_loop_group()) and plain single-run experiments alike, so
+        # it lives here rather than inside the Loop Mode group.
+        self.pass_estimate_lbl = QLabel("")
+        self.pass_estimate_lbl.setWordWrap(True)
+        self.pass_estimate_lbl.setStyleSheet("font-style: italic; color: #555;")
+        layout.addWidget(self.pass_estimate_lbl, row, 0, 1, 2); row += 1
+
+        self._pass_estimate_timer = QTimer(self)
+        self._pass_estimate_timer.setSingleShot(True)
+        self._pass_estimate_timer.setInterval(400)
+        self._pass_estimate_timer.timeout.connect(self._recompute_pass_estimate)
+
+        return grp
+
+    def _build_hms_row(self, h_max: int = 999) -> tuple[QWidget, QSpinBox, QSpinBox, QSpinBox]:
+        """Build an hours/minutes/seconds spinbox triplet in one row widget.
+        h_max defaults to 999 (not 23) since loop durations can legitimately
+        span many days (growth imaging), unlike a QTimeEdit which wraps at 24h."""
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        h_spin = QSpinBox(); h_spin.setRange(0, h_max); h_spin.setSuffix(" h")
+        m_spin = QSpinBox(); m_spin.setRange(0, 59); m_spin.setSuffix(" m")
+        s_spin = QSpinBox(); s_spin.setRange(0, 59); s_spin.setSuffix(" s")
+        for w in (h_spin, m_spin, s_spin):
+            row_layout.addWidget(w)
+        return row_widget, h_spin, m_spin, s_spin
+
+    @staticmethod
+    def _hms_seconds(h_spin: QSpinBox, m_spin: QSpinBox, s_spin: QSpinBox) -> float:
+        return float(h_spin.value() * 3600 + m_spin.value() * 60 + s_spin.value())
+
+    @staticmethod
+    def _set_hms_seconds(h_spin: QSpinBox, m_spin: QSpinBox, s_spin: QSpinBox, total_seconds: float):
+        total = max(0, int(round(total_seconds)))
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        h_spin.setValue(h)
+        m_spin.setValue(m)
+        s_spin.setValue(s)
+
+    def _loop_interval_seconds(self) -> float:
+        return self._hms_seconds(self.loop_interval_h_spin, self.loop_interval_m_spin, self.loop_interval_s_spin)
+
+    def _loop_duration_seconds(self) -> float:
+        return self._hms_seconds(self.loop_duration_h_spin, self.loop_duration_m_spin, self.loop_duration_s_spin)
+
+    def _build_loop_group(self) -> QGroupBox:
+        grp = QGroupBox("Loop Mode")
+        layout = QGridLayout(grp)
+
+        self.loop_enabled_chk = QCheckBox("Enable Loop Mode")
+        self.loop_enabled_chk.toggled.connect(self._update_loop_visibility)
+        layout.addWidget(self.loop_enabled_chk, 0, 0, 1, 2)
+
+        row = 1
+        self.lbl_loop_interval = QLabel("Interval (0 = back-to-back):")
+        layout.addWidget(self.lbl_loop_interval, row, 0)
+        (self.loop_interval_row, self.loop_interval_h_spin,
+         self.loop_interval_m_spin, self.loop_interval_s_spin) = self._build_hms_row()
+        layout.addWidget(self.loop_interval_row, row, 1); row += 1
+
+        self.lbl_loop_duration = QLabel("Total duration:")
+        layout.addWidget(self.lbl_loop_duration, row, 0)
+        (self.loop_duration_row, self.loop_duration_h_spin,
+         self.loop_duration_m_spin, self.loop_duration_s_spin) = self._build_hms_row()
+        self.loop_duration_h_spin.setValue(1)  # default: 1 hour, matches run_loop()'s duration_s default
+        layout.addWidget(self.loop_duration_row, row, 1); row += 1
+
+        # Cycle-count estimate given the shared per-pass estimate (Experiment
+        # Settings group, below Output folder) plus this loop's own
+        # interval/duration -- recomputed alongside that estimate, see
+        # _recompute_pass_estimate() / _schedule_pass_estimate().
+        self.loop_cycle_count_lbl = QLabel("")
+        self.loop_cycle_count_lbl.setWordWrap(True)
+        self.loop_cycle_count_lbl.setStyleSheet("font-style: italic; color: #555;")
+        layout.addWidget(self.loop_cycle_count_lbl, row, 0, 1, 2); row += 1
+
+        self._update_loop_visibility()
         return grp
 
     def _build_presets_group(self) -> QGroupBox:
@@ -351,6 +475,10 @@ class ExperimentPanel(QWidget):
         self.eta_lbl = QLabel("ETA: —")
         self.eta_lbl.setStyleSheet("font-style: italic; color: #555;")
         layout.addWidget(self.eta_lbl)
+
+        self.loop_status_lbl = QLabel("")
+        self.loop_status_lbl.setStyleSheet("font-style: italic; color: #555;")
+        layout.addWidget(self.loop_status_lbl)
 
         self.dump_log_chk = QCheckBox("Save experiment log to output folder on completion")
         self.dump_log_chk.setToolTip(
@@ -443,6 +571,14 @@ class ExperimentPanel(QWidget):
         self.lbl_post.setVisible(use_laser)
         self.post_spin.setVisible(use_laser)
 
+    def _update_loop_visibility(self):
+        enabled = self.loop_enabled_chk.isChecked()
+        self.lbl_loop_interval.setVisible(enabled)
+        self.loop_interval_row.setVisible(enabled)
+        self.lbl_loop_duration.setVisible(enabled)
+        self.loop_duration_row.setVisible(enabled)
+        self.loop_cycle_count_lbl.setVisible(enabled)
+
     def _update_sel_count(self):
         sel = self.well_grid.selected_count()
         tot = self.well_grid.total_count()
@@ -468,6 +604,7 @@ class ExperimentPanel(QWidget):
             self._update_sel_count()
             self._well_placeholder.hide()
             self._well_scroll.show()
+        self._schedule_pass_estimate()
 
     def _update_active_cal_label(self):
         """Reflect the Calibration tab's currently active (loaded+saved,
@@ -525,6 +662,9 @@ class ExperimentPanel(QWidget):
             "laser_on": self.laser_on_spin.value(),
             "post": self.post_spin.value(),
             "cal_file": self.cal_combo.currentText(),
+            "loop_enabled": self.loop_enabled_chk.isChecked(),
+            "loop_interval_s": self._loop_interval_seconds(),
+            "loop_duration_s": self._loop_duration_seconds(),
         }
 
     def _apply_preset_data(self, data: dict):
@@ -545,6 +685,12 @@ class ExperimentPanel(QWidget):
             cal_idx = self.cal_combo.findText(cal)
             if cal_idx >= 0:
                 self.cal_combo.setCurrentIndex(cal_idx)
+        self.loop_enabled_chk.setChecked(bool(data.get("loop_enabled", False)))
+        self._set_hms_seconds(self.loop_interval_h_spin, self.loop_interval_m_spin,
+                               self.loop_interval_s_spin, float(data.get("loop_interval_s", 0.0)))
+        self._set_hms_seconds(self.loop_duration_h_spin, self.loop_duration_m_spin,
+                               self.loop_duration_s_spin, float(data.get("loop_duration_s", 3600.0)))
+        self._update_loop_visibility()
         self._update_mode_visibility()
 
     def _refresh_presets(self):
@@ -607,6 +753,12 @@ class ExperimentPanel(QWidget):
             if cal_idx >= 0:
                 self.cal_combo.setCurrentIndex(cal_idx)
         self.override_cal_chk.setChecked(bool(s.get("use_cal_override", False)))
+        self.loop_enabled_chk.setChecked(bool(s.get("loop_enabled", False)))
+        self._set_hms_seconds(self.loop_interval_h_spin, self.loop_interval_m_spin,
+                               self.loop_interval_s_spin, float(s.get("loop_interval_s", 0.0)))
+        self._set_hms_seconds(self.loop_duration_h_spin, self.loop_duration_m_spin,
+                               self.loop_duration_s_spin, float(s.get("loop_duration_s", 3600.0)))
+        self._update_loop_visibility()
 
     def _autosave(self, *_):
         self._save_session()
@@ -624,6 +776,9 @@ class ExperimentPanel(QWidget):
             "post": self.post_spin.value(),
             "cal_file": self.cal_combo.currentText(),
             "use_cal_override": self.override_cal_chk.isChecked(),
+            "loop_enabled": self.loop_enabled_chk.isChecked(),
+            "loop_interval_s": self._loop_interval_seconds(),
+            "loop_duration_s": self._loop_duration_seconds(),
         })
 
     # ------------------------------------------------------------------
@@ -745,6 +900,51 @@ class ExperimentPanel(QWidget):
         mode_map = {"Image": "image", "Raw Burst": "raw"}
         mode = mode_map.get(self.mode_combo.currentText(), "image")
 
+        if self.loop_enabled_chk.isChecked():
+            interval_s = self._loop_interval_seconds()
+            duration_s = self._loop_duration_seconds()
+            if interval_s > duration_s:
+                logger.warning(
+                    f"Start Experiment blocked: interval ({self._format_hms(interval_s)}) "
+                    f"exceeds total duration ({self._format_hms(duration_s)})."
+                )
+                QMessageBox.critical(
+                    self, "Error",
+                    f"Interval ({self._format_hms(interval_s)}) exceeds the total duration "
+                    f"({self._format_hms(duration_s)}) -- at most one cycle could ever run.\n"
+                    f"Reduce the interval or increase the duration."
+                )
+                return
+            if interval_s > 0:
+                estimate = runner.estimate_cycle_duration_s(
+                    filtered_pos, self.dwell_spin.value(), mode,
+                    self.img_fmt_combo.currentText(), self.use_laser_chk.isChecked(),
+                    self.duration_spin.value(), self.laser_on_spin.value(), self.post_spin.value(),
+                )
+                if estimate is not None:
+                    total_estimate_s, _ = estimate
+                    # "Close to or exceeds" the interval: warn at 90% rather
+                    # than only once it's actually over, since the estimate
+                    # itself has margin for error — better to flag early.
+                    if total_estimate_s >= interval_s * 0.9:
+                        logger.warning(
+                            f"Estimated pass duration ({self._format_hms(total_estimate_s)}) is close "
+                            f"to or exceeds the configured interval ({self._format_hms(interval_s)})."
+                        )
+                        proceed = QMessageBox.question(
+                            self, "Interval may be too short",
+                            f"Estimated time for one pass over the selected wells is "
+                            f"~{self._format_hms(total_estimate_s)}, close to or exceeding "
+                            f"the configured interval ({self._format_hms(interval_s)}). If "
+                            f"this holds, cycles will run back-to-back instead of on schedule.\n\n"
+                            f"Start anyway?",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.No,
+                        )
+                        if proceed != QMessageBox.StandardButton.Yes:
+                            logger.info("Start Experiment cancelled: declined interval warning.")
+                            return
+
         # Grabber pausing (all tabs, not just this one) is centralized in
         # MainWindow via the experiment_started/experiment_finished signals
         # this panel emits — see ui/main_window.py's _set_grabbers_paused.
@@ -768,6 +968,9 @@ class ExperimentPanel(QWidget):
             pre_duration=self.duration_spin.value(),
             laser_on_duration=self.laser_on_spin.value(),
             post_duration=self.post_spin.value(),
+            loop_enabled=self.loop_enabled_chk.isChecked(),
+            interval_s=self._loop_interval_seconds(),
+            duration_s=self._loop_duration_seconds(),
         )
         self._exp_thread.status_update.connect(
             lambda msg: self.status_lbl.setText(f"Status: {msg}")
@@ -822,15 +1025,136 @@ class ExperimentPanel(QWidget):
         except Exception as e:
             logger.warning(f"Could not save experiment log to {log_path!r}: {e!r}", exc_info=True)
 
+    def _cal_path_for_estimate(self) -> Optional[str]:
+        """Silent, no-dialog variant of the calibration-path resolution in
+        _start_experiment() -- used by the live pass-time estimate, which
+        should just go blank on any unresolved state (no calibration
+        loaded yet, etc.) rather than popping up error dialogs while the
+        user is mid-configuration."""
+        if self.override_cal_chk.isChecked():
+            cal_file = self.cal_combo.currentText()
+            if not cal_file:
+                return None
+            cfg = get_config()
+            return os.path.join(cfg.get("paths.calibration_dir", "config/calibrations"), cal_file)
+        return self._cal_panel.get_active_calibration_path() if self._cal_panel else None
+
+    def _schedule_pass_estimate(self, *_):
+        # Debounced: rapid-fire changes (e.g. dragging across the well
+        # grid, or several settings changed in a row) collapse into one
+        # recompute after a short pause, rather than recomputing --
+        # and re-reading the cached motion profile -- on every single event.
+        self._pass_estimate_timer.start()
+
+    @staticmethod
+    def _format_hms(total_seconds: float) -> str:
+        """Plain (unsigned) HH:MM:SS -- for a duration, not a countdown."""
+        total = max(0, int(round(total_seconds)))
+        hh, rem = divmod(total, 3600)
+        mm, ss = divmod(rem, 60)
+        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+    @staticmethod
+    def _format_hms_signed(remaining_seconds: float) -> tuple[str, bool]:
+        """Signed HH:MM:SS for a countdown -- returns (text, is_negative)."""
+        sign = "-" if remaining_seconds < 0 else ""
+        return f"{sign}{ExperimentPanel._format_hms(abs(remaining_seconds))}", remaining_seconds < 0
+
+    def _recompute_pass_estimate(self):
+        """Live 'estimated time per pass' (Experiment Settings group, below
+        Output folder -- shared by loop mode and plain single-run
+        experiments alike) and, in loop mode, the estimated cycle count
+        (Loop Mode group) -- recomputed as well selection/calibration/
+        mode/timing settings change. Safe to call this often:
+        estimate_cycle_duration_s() reads the cached motion profile by
+        default, never a fresh one -- see its docstring."""
+        runner = hw_state.get_runner()
+        if runner is None:
+            self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
+            return
+
+        cal_path = self._cal_path_for_estimate()
+        if not cal_path:
+            self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
+            return
+        try:
+            positions, labels = self._load_cal_positions(cal_path)
+        except Exception:
+            self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
+            return
+        if not positions:
+            self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
+            return
+
+        selected = self.well_grid.get_selected_indices()
+        filtered_pos = [positions[i] for i in selected if i < len(positions)]
+        if not filtered_pos:
+            self.pass_estimate_lbl.setText("")
+            self.loop_cycle_count_lbl.setText("")
+            return
+
+        mode_map = {"Image": "image", "Raw Burst": "raw"}
+        mode = mode_map.get(self.mode_combo.currentText(), "image")
+        estimate = runner.estimate_cycle_duration_s(
+            filtered_pos, self.dwell_spin.value(), mode,
+            self.img_fmt_combo.currentText(), self.use_laser_chk.isChecked(),
+            self.duration_spin.value(), self.laser_on_spin.value(), self.post_spin.value(),
+        )
+        if estimate is None:
+            self.pass_estimate_lbl.setText(
+                "Estimated time per pass: unavailable (no motion profile cached — connect/home first)"
+            )
+            self.loop_cycle_count_lbl.setText("")
+            return
+
+        pass_s, _ = estimate
+        self.pass_estimate_lbl.setText(f"Estimated time per pass: {self._format_hms(pass_s)}")
+
+        if self.loop_enabled_chk.isChecked():
+            n_cycles = estimate_loop_cycle_count(
+                pass_s, self._loop_interval_seconds(), self._loop_duration_seconds()
+            )
+            self.loop_cycle_count_lbl.setText(
+                f"~{n_cycles} cycle{'s' if n_cycles != 1 else ''} in configured duration"
+                if n_cycles > 0 else ""
+            )
+        else:
+            self.loop_cycle_count_lbl.setText("")
+
     def _update_eta_label(self):
         runner = hw_state.get_runner()
-        if runner is None or runner.eta_finish_time is None:
+        if runner is None:
             return
-        remaining = (runner.eta_finish_time - datetime.now()).total_seconds()
-        sign = "-" if remaining < 0 else ""
-        mm, ss = divmod(int(abs(remaining)), 60)
-        self.eta_lbl.setText(f"ETA: {sign}{mm:02d}:{ss:02d}")
-        self.eta_lbl.setStyleSheet(
-            "font-style: italic; color: #b00020;" if remaining < 0
-            else "font-style: italic; color: #555;"
-        )
+
+        if runner.looping and runner.loop_deadline is not None:
+            # While looping, count down runner.loop_deadline -- an
+            # estimated actual finish time (see estimate_loop_finish_s()),
+            # not just the raw configured duration -- since the loop is
+            # guaranteed to run past duration_s by some amount (the last
+            # cycle always finishes rather than aborting mid-well), so
+            # counting down to duration_s itself would read as an already-
+            # predictable overrun near the end.
+            remaining = (runner.loop_deadline - datetime.now()).total_seconds()
+            text, negative = self._format_hms_signed(remaining)
+            self.eta_lbl.setText(f"ETA: {text}")
+            self.eta_lbl.setStyleSheet(
+                "font-style: italic; color: #b00020;" if negative
+                else "font-style: italic; color: #555;"
+            )
+        elif runner.eta_finish_time is not None:
+            remaining = (runner.eta_finish_time - datetime.now()).total_seconds()
+            text, negative = self._format_hms_signed(remaining)
+            self.eta_lbl.setText(f"ETA: {text}")
+            self.eta_lbl.setStyleSheet(
+                "font-style: italic; color: #b00020;" if negative
+                else "font-style: italic; color: #555;"
+            )
+
+        if runner.looping:
+            self.loop_status_lbl.setText(f"Current cycle: {runner.current_cycle}")
+        else:
+            self.loop_status_lbl.setText("")

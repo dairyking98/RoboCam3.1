@@ -521,6 +521,11 @@ class MotionController:
         # mode well-nav clicks), and the serial connection is not safe for
         # interleaved writes/reads from multiple threads at once.
         self._lock = threading.RLock()
+        # Last motion profile actually read from the backend (at connect,
+        # or the last explicit read_profiles()/apply_profiles() call) --
+        # see get_cached_profile() for why this exists as a separate,
+        # zero-I/O accessor.
+        self._cached_profile: dict = {}
         self.connect()
 
     def connect(self):
@@ -551,6 +556,12 @@ class MotionController:
                 x, y, z = self.backend.X, self.backend.Y, self.backend.Z
                 not_homed = (x == 0.0 and y == 0.0 and z == 0.0) or (x == y)
                 self._homed = not not_homed
+
+            try:
+                self._cached_profile = dict(self.backend.read_profiles()) if self.backend.supports_profiles else {}
+            except Exception as e:
+                logger.warning(f"[MotionCtrl] Could not read motion profile on connect: {e}")
+                self._cached_profile = {}
 
     def disconnect(self):
         with self._lock:
@@ -637,8 +648,27 @@ class MotionController:
 
     def read_profiles(self) -> dict:
         with self._lock:
-            return self.backend.read_profiles()
+            profile = self.backend.read_profiles()
+        self._cached_profile = dict(profile)
+        return profile
+
+    def get_cached_profile(self) -> dict:
+        """Whatever motion profile was last actually read (at connect, or
+        the last read_profiles()/apply_profiles() call), without
+        triggering a new hardware query. read_profiles() itself is a real
+        M503 serial round-trip on Marlin (up to a 15s timeout) -- far too
+        slow to call on every UI change for a live pass-time estimate.
+        Empty dict if nothing has ever been read for the current backend
+        (e.g. simulate mode until a profile is explicitly applied --
+        simulate mode shouldn't invent plausible-looking numbers either)."""
+        return dict(self._cached_profile)
 
     def apply_profiles(self, profiles: dict):
         with self._lock:
             self.backend.apply_profiles(profiles)
+            try:
+                self._cached_profile = (
+                    dict(self.backend.read_profiles()) if self.backend.supports_profiles else {}
+                )
+            except Exception as e:
+                logger.warning(f"[MotionCtrl] Could not refresh cached motion profile after apply: {e}")
